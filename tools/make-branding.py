@@ -133,7 +133,9 @@ def make_background():
     d.rectangle((1306, 585, 1306 + 300, 589), fill=BRAND)
 
     sub = font(MEDIUM, 26)
-    d.text((1306, 616), "YouTube for PlayStation 3", font=sub, fill=MUTED)
+    # The one line in the project that would read as trademark USE rather than description, so it does not
+    # name anyone else's brand. "YT" is the owner's wording.
+    d.text((1306, 616), "YT Player for PlayStation 3 with adblock", font=sub, fill=MUTED)
 
     foot = font(MEDIUM, 24)
     text = "linktr.ee/theersysending"
