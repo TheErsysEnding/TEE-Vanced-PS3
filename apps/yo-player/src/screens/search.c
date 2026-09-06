@@ -4,6 +4,7 @@
 
 #include "screens/search.h"
 #include "screens/search-input.h"
+#include "screens/playlist-screen.h"
 #include "screens/play.h"
 #include "video-grid.h"
 #include "storage.h"
@@ -203,6 +204,7 @@ static void initSearch(void)
    addButtonHint(&hints, getConsoleGlyph(GLYPH_TRIANGLE), "Channel");
    addButtonHint(&hints, getConsoleGlyph(GLYPH_SELECT),   "Sort");
    addButtonHint(&hints, getConsoleGlyph(GLYPH_R3),       "Download");
+   addButtonHint(&hints, getConsoleGlyph(GLYPH_L3),       "Add to playlist");
    addButtonHint(&hints, getConsoleGlyph(GLYPH_START),    "Search");
    addButtonHint(&hints, getConsoleGlyph(GLYPH_L2),       "");
    addButtonHint(&hints, getConsoleGlyph(GLYPH_R2),       "Page");
@@ -253,6 +255,7 @@ static void updateSearch(void)
    if (!selected) return;
    if (isPadButtonPressed(PAD_BTN_SQUARE)) { toggleWatchLater(selected); return; }
    if (isPadButtonPressed(PAD_BTN_R3)) { if (!selected->isLive) enqueueDownload(selected); return; }
+   if (isPadButtonPressed(PAD_BTN_L3)) { openPlaylistChooser(selected); return; }   // L3 came free with the grid layout   // live can't be downloaded
    if (isPadButtonPressed(PAD_BTN_TRIANGLE)) { enterChannel(selected); return; }   // channel mode handled above
    if (isPadButtonPressed(PAD_BTN_CROSS)) {
       markWatchedItem(selected);   // full entry, so History can list it

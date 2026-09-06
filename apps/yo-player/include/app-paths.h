@@ -28,4 +28,4 @@ const char *getAppDataDir(void);
 // The version shown in the app and on its settings card. BUILD_STAMP is a git count+hash and stays
 // identical between builds while the tree is uncommitted, so it cannot tell two packages apart - which
 // is exactly what made a shipped-but-stale build hard to identify from a screenshot.
-#define APP_VERSION "V0.11 Beta"
+#define APP_VERSION "V0.12 Beta"

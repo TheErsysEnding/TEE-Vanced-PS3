@@ -16,7 +16,7 @@
 // subscribe button that could never save anything.
 static char dataDir[64];
 static char historyPath[96], subsPath[96], watchLaterPath[96], prefsPath[96], searchPath[96];
-static char watchedPath[96], migrateMarker[96];
+static char watchedPath[96], migrateMarker[96], playlistsPath[96];
 
 const char *getAppDataDir(void) { return dataDir[0] ? dataDir : YO_DATA_DIR; }
 
@@ -30,6 +30,7 @@ static void useDataDir(const char *dir)
    snprintf(searchPath,     sizeof searchPath,     "%s/searches.txt",      dataDir);
    snprintf(watchedPath,    sizeof watchedPath,    "%s/watched.txt",       dataDir);
    snprintf(migrateMarker,  sizeof migrateMarker,  "%s/.migrated",         dataDir);
+   snprintf(playlistsPath,  sizeof playlistsPath,  "%s/playlists.txt",     dataDir);
 }
 
 #define SUBS_LINE_MAX  (CHANNEL_ID_LEN + CHANNEL_NAME_LEN + 2)   // "id<TAB>name\n"
@@ -365,6 +366,153 @@ int getWatchLater(SearchResults *out)
 }
 
 
+// ---- playlists ----
+//
+// Held in RAM and mirrored to playlists.txt. The file is one "#Name" line per list followed by its videos in
+// exactly the serialisation the watch-later queue uses, so there is a single entry format in this app rather
+// than a second one to keep in step.
+#define PLAYLIST_BUFFER_BYTES (MAX_PLAYLISTS * (PLAYLIST_NAME_LEN + 4 + MAX_PLAYLIST_ITEMS * WATCHLATER_LINE_MAX) + 64)
+
+typedef struct {
+   char         name[PLAYLIST_NAME_LEN];
+   SearchResult items[MAX_PLAYLIST_ITEMS];
+   int          count;
+} Playlist;
+
+static Playlist playlists[MAX_PLAYLISTS];
+static int      playlistCount;
+static int      playlistsRevision;
+
+static void loadPlaylists(void)
+{
+   char *buffer = (char *)malloc(PLAYLIST_BUFFER_BYTES);
+   if (!buffer) { logError("[storage] playlists: no memory for the load buffer\n"); return; }
+
+   int length = readFile(playlistsPath, buffer, PLAYLIST_BUFFER_BYTES - 1);
+   if (length > 0) {
+      buffer[length] = 0;
+      Playlist *current = NULL;
+      for (char *line = strtok(buffer, "\r\n"); line; line = strtok(NULL, "\r\n")) {
+         if (line[0] == '#') {
+            if (playlistCount >= MAX_PLAYLISTS) { current = NULL; continue; }
+            current = &playlists[playlistCount++];
+            memset(current, 0, sizeof *current);
+            strCopy(current->name, PLAYLIST_NAME_LEN, line + 1);
+         } else if (current && current->count < MAX_PLAYLIST_ITEMS) {
+            if (parseWatchLater(line, &current->items[current->count])) current->count++;
+         }
+      }
+   }
+   free(buffer);
+   logInfo("[storage] playlists: %d loaded\n", playlistCount);
+}
+
+static void savePlaylists(void)
+{
+   char *buffer = (char *)malloc(PLAYLIST_BUFFER_BYTES);
+   if (!buffer) return;
+   int length = 0;
+   for (int p = 0; p < playlistCount; p++) {
+      length += snprintf(buffer + length, PLAYLIST_NAME_LEN + 4, "#%s\n", playlists[p].name);
+      for (int i = 0; i < playlists[p].count; i++) {
+         const SearchResult *item = &playlists[p].items[i];
+         length += snprintf(buffer + length, WATCHLATER_LINE_MAX + 1, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%d\n",
+                            item->videoId, item->channelId, item->title, item->duration,
+                            item->author, item->views, item->published, item->isLive);
+      }
+   }
+   saveFile(playlistsPath, buffer, length);
+   free(buffer);
+}
+
+static int validPlaylist(int playlist) { return playlist >= 0 && playlist < playlistCount; }
+
+int getPlaylistCount(void) { return playlistCount; }
+int getPlaylistsRevision(void) { return playlistsRevision; }
+
+const char *getPlaylistName(int playlist) { return validPlaylist(playlist) ? playlists[playlist].name : ""; }
+int getPlaylistItemCount(int playlist)    { return validPlaylist(playlist) ? playlists[playlist].count : 0; }
+
+int getPlaylistItems(int playlist, SearchResults *out)
+{
+   memset(out, 0, sizeof *out);
+   if (!validPlaylist(playlist)) return 0;
+   for (int i = 0; i < playlists[playlist].count && out->count < MAX_SEARCH_RESULTS; i++)
+      out->items[out->count++] = playlists[playlist].items[i];
+   return out->count;
+}
+
+int createPlaylist(const char *name)
+{
+   if (!name || !name[0]) return -1;
+   for (int p = 0; p < playlistCount; p++)
+      if (strcmp(playlists[p].name, name) == 0) return p;   // same name twice is the same list, not an error
+   if (playlistCount >= MAX_PLAYLISTS) return -1;
+
+   Playlist *list = &playlists[playlistCount];
+   memset(list, 0, sizeof *list);
+   strCopy(list->name, PLAYLIST_NAME_LEN, name);
+   playlistCount++;
+   playlistsRevision++;
+   savePlaylists();
+   return playlistCount - 1;
+}
+
+void deletePlaylist(int playlist)
+{
+   if (!validPlaylist(playlist)) return;
+   for (int p = playlist; p + 1 < playlistCount; p++) playlists[p] = playlists[p + 1];
+   playlistCount--;
+   playlistsRevision++;
+   savePlaylists();
+}
+
+void renamePlaylist(int playlist, const char *name)
+{
+   if (!validPlaylist(playlist) || !name || !name[0]) return;
+   strCopy(playlists[playlist].name, PLAYLIST_NAME_LEN, name);
+   playlistsRevision++;
+   savePlaylists();
+}
+
+int isInPlaylist(int playlist, const char *videoId)
+{
+   if (!validPlaylist(playlist)) return 0;
+   for (int i = 0; i < playlists[playlist].count; i++)
+      if (strcmp(playlists[playlist].items[i].videoId, videoId) == 0) return 1;
+   return 0;
+}
+
+int addToPlaylist(int playlist, const SearchResult *item)
+{
+   if (!validPlaylist(playlist) || !item->videoId[0]) return PLAYLIST_FULL;
+   if (isInPlaylist(playlist, item->videoId)) return PLAYLIST_ALREADY;
+
+   Playlist *list = &playlists[playlist];
+   if (list->count >= MAX_PLAYLIST_ITEMS) return PLAYLIST_FULL;
+   // newest first, like every other feed in this app
+   for (int i = list->count; i > 0; i--) list->items[i] = list->items[i - 1];
+   list->items[0] = *item;
+   list->count++;
+   playlistsRevision++;
+   savePlaylists();
+   return PLAYLIST_ADDED;
+}
+
+void removeFromPlaylist(int playlist, const char *videoId)
+{
+   if (!validPlaylist(playlist)) return;
+   Playlist *list = &playlists[playlist];
+   for (int i = 0; i < list->count; i++)
+      if (strcmp(list->items[i].videoId, videoId) == 0) {
+         for (int j = i; j + 1 < list->count; j++) list->items[j] = list->items[j + 1];
+         list->count--;
+         playlistsRevision++;
+         savePlaylists();
+         return;
+      }
+}
+
 // ---- search history ----
 
 // newest first, so the file reads in the order the list is drawn. Whole-file rewrite on every change: forty
@@ -546,7 +694,7 @@ void setAutoplay(int value)
 // result is predictable no matter how copyTree treats its destination.
 static const char *LEGACY_FILES[] = {
    "history.txt", "subscriptions.txt", "watchlater.txt", "prefs.txt", "searches.txt",
-   "watched.txt", "settings.txt", "themes.txt", "visitor.txt",
+   "watched.txt", "settings.txt", "themes.txt", "visitor.txt", "playlists.txt",
 };
 #define MIGRATE_BUFFER_BYTES (64 * 1024)
 
@@ -714,6 +862,7 @@ void initStorage(void)
    loadWatchHistory();
    loadPrefs();                       // before the reconcile: it carries the generation marker
    reconcileDefaultSubscriptions();
+   loadPlaylists();
    loadSearchHistory();
 }
 

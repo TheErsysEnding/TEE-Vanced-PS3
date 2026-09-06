@@ -86,6 +86,36 @@ void toggleWatchLater(const SearchResult *item);
 int  getWatchLater(SearchResults *out);
 int  getWatchLaterRevision(void);
 
+// ---- playlists ----
+//
+// Your own lists, kept here rather than on YouTube: there is no signed-in account to sync with, so a
+// playlist is simply a named set of the same entries the watch-later queue stores (playlists.txt, one
+// "#Name" line followed by its videos). That also means a list survives whatever Google does to yours.
+#define MAX_PLAYLISTS      12
+#define MAX_PLAYLIST_ITEMS 60
+#define PLAYLIST_NAME_LEN  48
+
+int         getPlaylistCount(void);
+const char *getPlaylistName(int playlist);
+int         getPlaylistItemCount(int playlist);
+int         getPlaylistItems(int playlist, SearchResults *out);   // fills a feed, newest addition first
+
+// -1 when the name is empty or the shelf is full; the index of an existing list with that name if it is
+// already there, so creating twice is not an error.
+int  createPlaylist(const char *name);
+void deletePlaylist(int playlist);
+void renamePlaylist(int playlist, const char *name);
+
+#define PLAYLIST_ADDED     1
+#define PLAYLIST_ALREADY   0
+#define PLAYLIST_FULL    (-1)
+int  addToPlaylist(int playlist, const SearchResult *item);
+void removeFromPlaylist(int playlist, const char *videoId);
+int  isInPlaylist(int playlist, const char *videoId);
+
+// bumped on every real change, so a cached feed built from a playlist knows to reload
+int  getPlaylistsRevision(void);
+
 // search history: the queries entered most recently, newest first. The system keyboard keeps no memory of
 // its own - cellOskDialog exposes no option for it, which is why typing in this app never offers what you
 // typed last time - so the app remembers the queries itself and offers them as a pickable list.
