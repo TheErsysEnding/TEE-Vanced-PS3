@@ -1,0 +1,33 @@
+TEE Vanced PS3
+Copyright 2026 TheErsysEnding
+
+Licensed under the Apache License, Version 2.0 (see LICENSE).
+
+This is a FORK. The application it is built from is Yo! Player, part of the
+ps3-dev project by Mohammed Asif ("mohasi"):
+
+  ps3-dev
+  Copyright 2026 Mohammed Asif
+  Licensed under the Apache License, Version 2.0
+  https://github.com/mohasi/ps3-dev
+
+Everything under apps/ and libs/ here is a modified copy of files from that
+project and remains under its licence. The original copyright notice above is
+preserved as Apache-2.0 section 4 requires. All credit for the application this
+is built on goes to mohasi and the ps3-dev contributors.
+
+The upstream project also carries third-party components under their own
+licences, which continue to apply wherever those components are used:
+
+  - BearSSL (libs/simple-lib-https/bearssl) - MIT License
+  - Ogg Vorbis headers (libs/simple-lib-av) - BSD License, by Xiph.Org
+
+The Cell SDK is Sony's own material and is not covered by this licence, and is
+not included here.
+
+Artwork under branding/ (ICON0.PNG, PIC1.PNG) and the TEE name and logo are the
+work of TheErsysEnding and are not part of the upstream project.
+
+---
+
+Contact: github@teebug.de

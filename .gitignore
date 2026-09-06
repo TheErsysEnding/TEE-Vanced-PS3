@@ -1,0 +1,32 @@
+# Build output
+obj/
+bin/
+*.o
+*.elf
+*.pkg
+build-ps3.bat
+
+# The upstream tree this fork is applied to - cloned, not vendored (see README)
+ps3-dev/
+
+# Local debug and user data pulled off the console
+*.log
+dbg.txt
+settings.txt
+themes.txt
+history.txt
+subscriptions.txt
+playlists.txt
+watched.txt
+watchlater.txt
+searches.txt
+prefs.txt
+
+# OS / editor
+.DS_Store
+*.swp
+.idea/
+.vscode/
+
+# Local build machine settings
+build.env
