@@ -104,6 +104,21 @@ survive uninstalling the app.
 
 A VPN on the console makes YouTube answer `LOGIN_REQUIRED`. Turn it off.
 
+### Nothing loads: no channel names, no thumbnails
+
+If the subscriptions list shows raw `UC...` ids and grey boxes instead of names
+and pictures, the app reached none of its servers — the tiles come from your own
+`subscriptions.txt`, only the names and images need the network.
+
+**Power the console fully off and on again.** Not an XMB restart — a real power
+cycle. This has fixed it for someone whose console had got into that state
+overnight and stayed there across two different builds. Worth trying before
+anything else.
+
+If it survives a power cycle, check the console's date and time as well: the
+certificate check uses the console's own clock, so a wrong date makes every
+secure connection fail at once. `/dev_hdd0/dbg.txt` names the reason.
+
 ---
 
 ## Licence
