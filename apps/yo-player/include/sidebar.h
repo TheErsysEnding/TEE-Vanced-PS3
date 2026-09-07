@@ -47,7 +47,7 @@ int  updateSidebar(void);
 
 void drawSidebar(int screenH);
 
-// Playlists has no storage behind it yet, so its entry is drawn dimmed and refuses to be picked. Showing it
-// greyed is deliberate: it says what is coming without pretending it is here.
+// Kept for entries that may be added before they work: a dimmed, unpickable row says what is coming without
+// pretending it is here. Everything currently listed leads somewhere, so this returns 1 throughout.
 int  isSidebarItemEnabled(SidebarItem item);
 const char *sidebarItemName(SidebarItem item);

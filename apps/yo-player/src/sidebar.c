@@ -45,7 +45,7 @@ static int   picked  = SIDE_SUBS;   // where the highlight sits while focused
 static int   focused;
 static int   panelHeight;
 
-int isSidebarItemEnabled(SidebarItem item) { return item != SIDE_PLAYLISTS; }
+int isSidebarItemEnabled(SidebarItem item) { (void)item; return 1; }   // every entry leads somewhere now
 const char *sidebarItemName(SidebarItem item)
 {
    return (item >= 0 && item < SIDE_COUNT) ? ITEM_NAMES[item] : "";

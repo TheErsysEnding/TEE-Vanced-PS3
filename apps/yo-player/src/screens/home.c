@@ -5,6 +5,7 @@
 #include "screens/search-input.h"
 #include "screens/settings-screen.h"
 #include "sidebar.h"
+#include "screens/playlist-screen.h"
 #include "screens/play.h"
 #include "video-grid.h"
 #include "storage.h"
@@ -51,7 +52,8 @@ static const char *TrendingNames[TREND_COUNT] = { "Gaming", "Sports", "Podcasts"
 #define HOME_CONTINUE    (TREND_COUNT + 1)
 #define HOME_WATCHLATER  (TREND_COUNT + 2)
 #define HOME_HISTORY     (TREND_COUNT + 3)
-#define HOME_CAT_COUNT   (TREND_COUNT + 4)
+#define HOME_PLAYLIST    (TREND_COUNT + 4)
+#define HOME_CAT_COUNT   (TREND_COUNT + 5)
 
 // each category's fully-loaded results, so returning to a tab skips the feed fetch (thumbnails still refetch).
 static SearchResults categoryCache[HOME_CAT_COUNT];
@@ -59,6 +61,8 @@ static int           categoryCached[HOME_CAT_COUNT];
 static int           subsRevisionSeen;         // subscriptions revision the cached HOME_SUBS feed was built at
 static int           watchLaterRevisionSeen;   // watch-later revision the cached HOME_WATCHLATER feed was built at
 static int           historyRevisionSeen;      // watch-history revision the cached HOME_HISTORY feed was built at
+static int           playlistRevisionSeen;     // playlists revision the cached HOME_PLAYLIST feed was built at
+static int           openPlaylist;             // which list HOME_PLAYLIST is showing
 
 static struct {
    VideoGrid grid;
@@ -127,6 +131,7 @@ static int homeFetch(const char *token, SearchResults *out, void *user)
    if (home.category == HOME_CONTINUE)   return getContinueWatching(out) > 0 ? 0 : -1;
    if (home.category == HOME_WATCHLATER) return getWatchLater(out) > 0 ? 0 : -1;
    if (home.category == HOME_HISTORY)    return getWatchHistory(out) > 0 ? 0 : -1;
+   if (home.category == HOME_PLAYLIST)   return getPlaylistItems(openPlaylist, out) > 0 ? 0 : -1;
    return getTrending(home.category, token, out);
 }
 
@@ -137,6 +142,7 @@ static void setHeading(void)
    else if (home.category == HOME_CONTINUE)   snprintf(heading, sizeof heading, "Continue watching");
    else if (home.category == HOME_WATCHLATER) snprintf(heading, sizeof heading, "Watch Later");
    else if (home.category == HOME_HISTORY)    snprintf(heading, sizeof heading, "History");
+   else if (home.category == HOME_PLAYLIST)   snprintf(heading, sizeof heading, "%s", getPlaylistName(openPlaylist));
    else                                       snprintf(heading, sizeof heading, "Trending \xe2\x80\xa2 %s", TrendingNames[home.category]);
    setLabelText(&titleLabel, heading);
    setButtonHintCaption(&hints, CROSS_HINT,    home.category == HOME_SUBS ? "Open channel" : "Play");
@@ -158,6 +164,7 @@ static SidebarItem itemForCategory(int category)
    if (category == HOME_CONTINUE)   return SIDE_CONTINUE;
    if (category == HOME_WATCHLATER) return SIDE_LATER;
    if (category == HOME_HISTORY)    return SIDE_HISTORY;
+   if (category == HOME_PLAYLIST)   return SIDE_PLAYLISTS;
    return SIDE_TRENDING;
 }
 
@@ -280,6 +287,19 @@ static void switchCategory(int delta)
    loadCategory();
 }
 
+// A playlist was chosen in the picker: show it as the feed. The cache is dropped first because the same
+// category slot serves EVERY playlist - what is cached under it belongs to whichever list was open before.
+static void onPlaylistOpened(int playlist)
+{
+   if (playlist < 0) return;
+   cacheCurrent();
+   openPlaylist = playlist;
+   categoryCached[HOME_PLAYLIST] = 0;
+   playlistRevisionSeen = getPlaylistsRevision();
+   home.category = HOME_PLAYLIST;
+   loadCategory();
+}
+
 // OSK confirmed: a link plays directly, anything else opens a search.
 static void onQueryEntered(const char *text)
 {
@@ -312,6 +332,7 @@ static void initHome(void)
    addButtonHint(&hints, getConsoleGlyph(GLYPH_SQUARE),   "Watch Later");
    addButtonHint(&hints, getConsoleGlyph(GLYPH_TRIANGLE), "Channel");
    addButtonHint(&hints, getConsoleGlyph(GLYPH_R3),       "Download");
+   addButtonHint(&hints, getConsoleGlyph(GLYPH_L3),       "Add to playlist");
    addButtonHint(&hints, getConsoleGlyph(GLYPH_START),    "Settings");
    addButtonHint(&hints, getConsoleGlyph(GLYPH_L1),       "");
    addButtonHint(&hints, getConsoleGlyph(GLYPH_R1),       "Category");
@@ -331,6 +352,7 @@ static void initHome(void)
    subsRevisionSeen = getSubscriptionsRevision();
    watchLaterRevisionSeen = getWatchLaterRevision();
    historyRevisionSeen = getWatchHistoryRevision();
+   playlistRevisionSeen = getPlaylistsRevision();
    home.category = HOME_SUBS;   // always start on Subscriptions
    loadCategory();
 }
@@ -364,11 +386,12 @@ static void updateHome(void)
       setGridInputSuppressed(&home.grid, 1);
       updateVideoGrid(&home.grid);
       if (picked >= 0) {
-         if (!isSidebarItemEnabled(picked)) {
-            showNotice("Playlists are not built yet - they are the next thing coming.");
-         } else if (picked == SIDE_SEARCH) {
+         if (picked == SIDE_SEARCH) {
             setSidebarFocused(0);
             openSearchInput(NULL, onQueryEntered);
+         } else if (picked == SIDE_PLAYLISTS) {
+            setSidebarFocused(0);
+            openPlaylists(onPlaylistOpened);
          } else if (picked == SIDE_SETTINGS) {
             setSidebarFocused(0);
             openSettingsScreen();
@@ -410,6 +433,7 @@ static void updateHome(void)
       if (home.category == HOME_WATCHLATER) watchLaterRevisionSeen = getWatchLaterRevision();
       if (home.category == HOME_HISTORY ||
           home.category == HOME_CONTINUE)   historyRevisionSeen = getWatchHistoryRevision();
+      if (home.category == HOME_PLAYLIST)   playlistRevisionSeen = getPlaylistsRevision();
    }
 
    const SearchResult *selected = gridSelected(&home.grid);
@@ -422,6 +446,9 @@ static void updateHome(void)
       return;
    }
    if (isPadButtonPressed(PAD_BTN_R3)) { if (!selected->isLive) enqueueDownload(selected); return; }   // live can't be downloaded
+   // L3 came free when the grid layout did. Filing a video is the thing you want a direct button for -
+   // everything else about a playlist happens on its own screen.
+   if (isPadButtonPressed(PAD_BTN_L3) && home.category != HOME_SUBS) { openPlaylistChooser(selected); return; }
    if (isPadButtonPressed(PAD_BTN_TRIANGLE)) {
       // In Subscriptions a tile IS a channel and X already opens it (just below), so Triangle was doing the
       // exact same thing as X here. It is also the button that unsubscribes one level down, inside the
@@ -501,10 +528,13 @@ static void resumeHome(void)
    if (laterStale)   categoryCached[HOME_WATCHLATER] = 0;
    if (historyStale) categoryCached[HOME_HISTORY] = 0;
    if (historyStale) categoryCached[HOME_CONTINUE] = 0;   // built from the same positions
+   int playlistStale = getPlaylistsRevision() != playlistRevisionSeen;
+   if (playlistStale) categoryCached[HOME_PLAYLIST] = 0;
 
    int showingStale = (subsStale && home.category == HOME_SUBS) ||
                       (laterStale && home.category == HOME_WATCHLATER) ||
-                      (historyStale && (home.category == HOME_HISTORY || home.category == HOME_CONTINUE));
+                      (historyStale && (home.category == HOME_HISTORY || home.category == HOME_CONTINUE)) ||
+                      (playlistStale && home.category == HOME_PLAYLIST);
 
    // Do NOT reload here. Autoplay resumes this screen only to pass straight through it: advanceAutoplay
    // pops the finished player, which lands here, and immediately pushes the next one - and the push calls
