@@ -5,8 +5,8 @@ hardware. A fork of **[mohasi's Yo! Player](https://github.com/mohasi/ps3-dev)**
 (Apache-2.0) — see [NOTICE](NOTICE); the application, its decoder and its
 libraries are his work.
 
-**Status: v0.11 beta.** Every version here has been installed and used on a real
-console before being called done.
+**Status: v0.12 beta.** Every version here has been installed and used on a real
+console before being called done. See [CHANGELOG.md](CHANGELOG.md).
 
 ---
 
@@ -48,8 +48,11 @@ because the PS3 keyboard keeps none.
 
 **Its own look.** Orange on warm black, matching the icon.
 
-Not shipped yet: playlists (built, on the `playlists` branch, untested on
-hardware) and search filters.
+**Your own playlists.** Not YouTube's — there are none to read without a signed-in
+account — but local lists that nobody else can change. L3 files the selected
+video; the sidebar opens them.
+
+Not shipped yet: search filters (date, duration, HD).
 
 ---
 
@@ -73,7 +76,7 @@ Then build and package:
 
 ```sh
 ./tools/sync-work.sh                # mirror sources onto the build machine
-./build-pkg-fromsource.sh TEE-Vanced-PS3-v0.11-beta "TEE Vanced PS3 V0.11 Beta"
+./build-pkg-fromsource.sh TEE-Vanced-PS3-v0.12-beta "TEE Vanced PS3 V0.12 Beta"
 ```
 
 `build-pkg-fromsource.sh` signs the ELF with `make_fself_npdrm` and packages it
@@ -86,7 +89,7 @@ stale object file and reported success, and shipped a package that silently did
 not contain the change. After building, check the change is really in the binary:
 
 ```sh
-ppu-lv2-strings yo-player.ppu.elf | grep "V0.11 Beta"
+ppu-lv2-strings yo-player.ppu.elf | grep "V0.12 Beta"
 ```
 
 ---
