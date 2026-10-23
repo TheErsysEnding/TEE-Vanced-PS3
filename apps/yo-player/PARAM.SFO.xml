@@ -6,7 +6,10 @@
 -->
 <paramsfo>
   <!-- overwritten with the build number by vmbuild; only a direct msbuild run keeps this value -->
-  <param key="APP_VER">01.00</param>
+  <!-- TEE Vanced: 01.74 is what every released package carries - the PARAM.SFO the first ones were made
+       from came out of mohasi's build 174. pkg/make-param-sfo.py takes it from here, so a new package
+       installs over an old one exactly as before. Change it deliberately, not in passing. -->
+  <param key="APP_VER">01.74</param>
 
   <!-- bitfield flags, 0 = defaults. common: 0x08 = xmb forced, 0x20 = bg music -->
   <param key="ATTRIBUTE">0</param>
