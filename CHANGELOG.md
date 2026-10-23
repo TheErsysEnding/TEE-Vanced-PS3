@@ -3,6 +3,31 @@
 Every release listed here was installed and used on a real PS3 (EVILNAT 4.92 DEX)
 before it was tagged. Anything that had not been is said so plainly.
 
+## Unreleased — build
+
+Not a release: nothing in the app changed. These are changes to how it is built,
+so it can be built from a Mac. None of them has been through a console yet.
+
+- **Building from macOS.** Every script on the building side now runs on the
+  bash 3.2 and Python 3.9 macOS ships, and `docs/BUILD-MACOS.md` sets up the
+  Windows VM that the Cell SDK needs, in UTM on the Mac.
+- **`build.sh`** does the whole build in one run and refuses to package an ELF
+  that does not contain this run's version string and build stamp.
+- **`tools/setup-build-vm.sh`** checks a build VM from ssh to an actual compile
+  and link, and gives a fresh one its source tree.
+- **Upstream is pinned** to eb4be76, the head of mohasi's tree when this fork
+  was built. The README used to say `git clone` his tree as it is today, which
+  has since replaced `pad.c` and added to the libraries this fork builds on.
+- **`sync-work.sh` works from a plain checkout.** It needed a `work/` directory
+  that only ever existed on the original build machine, and it never uploaded
+  this fork's `pad.c` to the VM.
+- **`PARAM.SFO` is built from `PARAM.SFO.xml`** instead of being patched into
+  one extracted from mohasi's released package. The result is the same file as
+  in v0.12 except for one field: TITLE's used length, which the in-place patch
+  left at 11 bytes, the length of "Yo! Player".
+- The repository's `patch-param-title.py` ignored the title it was given and
+  always wrote an old placeholder one. It now uses the title it is given.
+
 ## v0.12 beta — 2026-09-06
 
 ### Added
