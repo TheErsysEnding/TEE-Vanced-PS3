@@ -3,7 +3,7 @@
 Every release listed here was installed and used on a real PS3 (EVILNAT 4.92 DEX)
 before it was tagged. Anything that had not been is said so plainly.
 
-## Unreleased
+## v0.13 beta — not released yet
 
 Not yet installed on a console: everything below is built and tested off the
 console only, and will be called done once it has played on hardware.
@@ -34,10 +34,10 @@ console only, and will be called done once it has played on hardware.
   On every other video Square still toggles autoplay, which is also in the
   settings.
 
-## Unreleased — build
+### Build
 
-Not a release: nothing in the app changed. These are changes to how it is built,
-so it can be built from a Mac. None of them has been through a console yet.
+Changes to how the app is built, so it can be built from a Mac. None of them
+changes what the app does.
 
 - **Building from macOS.** Every script on the building side now runs on the
   bash 3.2 and Python 3.9 macOS ships, and `docs/BUILD-MACOS.md` sets up the

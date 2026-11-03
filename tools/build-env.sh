@@ -35,7 +35,7 @@ VM_SDK='C:\usr\local\cell'
 UPSTREAM_URL="${PS3_UPSTREAM_URL:-https://github.com/mohasi/ps3-dev}"
 UPSTREAM_REV="${PS3_UPSTREAM_REV:-eb4be76fd89866e4dfbcfadc0b2eced3337c014b}"
 
-# The version the app shows ("V0.12 Beta"), read from the clone after sync-work.sh put this fork's
+# The version the app shows ("V0.13 Beta"), read from the clone after sync-work.sh put this fork's
 # app-paths.h there - that is the copy that gets compiled, whichever source (work/ or apps/) it came from.
 app_version() {
    sed -n 's/^#define APP_VERSION "\(.*\)".*/\1/p' "$ROOT/ps3-dev/apps/yo-player/include/app-paths.h" 2>/dev/null | head -n 1
