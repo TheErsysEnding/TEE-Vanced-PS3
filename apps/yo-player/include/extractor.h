@@ -6,6 +6,7 @@
 
 #define MAX_STREAM_URL     2048
 #define MAX_STREAM_FORMATS 24
+#define MAX_AUDIO_TRACKS   32
 
 // one selectable stream. url may be empty if the source needs deobfuscation we
 // haven't done yet (e.g. youtube's cipher) -- formatCount still reflects what
@@ -21,7 +22,24 @@ typedef struct {
    int  isLiveSegmented;   // url is a DASH segment base: fetch "<url>sq/<n>/..." instead of opening it directly
    long liveStartSq;       // earliest segment number available (DVR window start)
    long liveEdgeSq;        // most recent segment number available (live edge)
+   int  isDrc;             // audio: the dynamic-range-compressed copy YouTube serves beside the normal mix
 } StreamFormat;
+
+// How much an audio track is worth playing by default, lowest first. YouTube serves some videos with several
+// audio tracks - the uploader's own other languages, AI auto-dubs (rolled out from 2025) and audio
+// description - and the track an English-language request is told is the default is often an auto-dub
+// rather than what was recorded. The original wins; an auto-dub only plays when nothing better is offered.
+enum { AUDIO_RANK_DESCRIPTIVE, AUDIO_RANK_DUBBED, AUDIO_RANK_OTHER, AUDIO_RANK_DEFAULT, AUDIO_RANK_ORIGINAL };
+
+// one audio track (language) of a video that has several. url is that track's best AAC stream.
+typedef struct {
+   char id[24];            // "en-US.4", or language + kind from the url's xtags when the reply names none
+   char name[64];          // "English (United States) original", "German (auto-dubbed)" - shown on screen
+   int  rank;              // AUDIO_RANK_*
+   int  itag;
+   int  isDrc;
+   char url[MAX_STREAM_URL];
+} AudioTrack;
 
 #define MAX_CAPTION_TRACKS 8
 
@@ -41,6 +59,12 @@ typedef struct {
    int  isLive;            // currently broadcasting: streams need live segment-sequence fetching, not a static moov
    int  formatCount;
    StreamFormat formats[MAX_STREAM_FORMATS];
+   // a video with several audio tracks: all of them, best first (see AudioTrack). formats[] then holds only
+   // audioTracks[0]'s stream, so playback and downloads pick it like any single audio stream - and two dozen
+   // dubs (two or three AAC streams each) can no longer push the original past the end of formats[]. 0 for
+   // the usual one-track video, whose audio is in formats[] as before.
+   int  audioTrackCount;
+   AudioTrack audioTracks[MAX_AUDIO_TRACKS];
 } StreamInfo;
 
 // accumulated across pages (infinite scroll); one page is ~20. only the ~30 on-screen tiles hold a

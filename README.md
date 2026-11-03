@@ -46,6 +46,13 @@ you open it first.
 paged rather than endlessly scrolled; the app keeps its own search history
 because the PS3 keyboard keeps none.
 
+**The original audio, and Square for the others.** YouTube serves more and more
+videos with AI auto-dubbed audio tracks in other languages, and the player used
+to take whichever track came last, so a video could start in a machine voice in
+a language nobody asked for. It now plays the original. When a video has
+several tracks, the player says so as it starts, and Square steps through them
+from where you are.
+
 **Its own look.** Orange on warm black, matching the icon.
 
 **Your own playlists.** Not YouTube's — there are none to read without a signed-in

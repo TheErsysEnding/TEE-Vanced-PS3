@@ -3,6 +3,37 @@
 Every release listed here was installed and used on a real PS3 (EVILNAT 4.92 DEX)
 before it was tagged. Anything that had not been is said so plainly.
 
+## Unreleased
+
+Not yet installed on a console: everything below is built and tested off the
+console only, and will be called done once it has played on hardware.
+
+### Fixed
+
+- **Videos played an AI-dubbed audio track instead of the original.** YouTube
+  serves many videos with extra audio tracks: the uploader's own other languages,
+  and AI auto-dubs. They are separate streams with the same itag, and the player
+  took the last itag 140 on offer, so whichever language YouTube listed last.
+  With many dubs there was a second fault: at two or three AAC streams per
+  track, the 24-entry format list could fill up before the original was
+  reached, and then a dub played at 48 kbit/s (itag 139). Each track is now recognised
+  from the reply (`audioTrack`, and the url's `xtags` where that is missing),
+  only the best stream of each track is kept, and the original plays (else
+  YouTube's default track, else any track that is not a dub). Reported on
+  psx-place: "Yo! Player plays AI generated audio on random videos". Downloads
+  pick the same track.
+- Where YouTube serves a dynamic-range-compressed copy of the audio beside the
+  normal one, the normal mix is now preferred; the old rule could land on
+  either.
+
+### Added
+
+- **Square switches the audio track** on a video that has more than one. The
+  player reopens on the next track at the same position and names it. As such
+  a video starts, a notice says which track is playing and how many there are.
+  On every other video Square still toggles autoplay, which is also in the
+  settings.
+
 ## Unreleased — build
 
 Not a release: nothing in the app changed. These are changes to how it is built,

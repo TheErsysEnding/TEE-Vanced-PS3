@@ -29,11 +29,17 @@ const StreamFormat *pickBestVideo(const StreamInfo *info)
 const StreamFormat *pickBestAudio(const StreamInfo *info)
 {
    const StreamFormat *best = NULL;
+   int bestScore = -1;
    for (int i = 0; i < info->formatCount; i++) {
       const StreamFormat *format = &info->formats[i];
       if (!format->hasAudio || format->hasVideo || format->needsCipher || !format->url[0]) continue;
       if (strcmp(format->container, "mp4") != 0) continue;
-      if (!best || format->itag == 140) best = format;
+      // itag 140 first, and YouTube's normal mix over the dynamic-range-compressed copy of it. This used to
+      // be "the last itag 140 wins", which on a video with several audio tracks meant whichever language
+      // happened to come last - often one of YouTube's AI dubs. The extractor now leaves only the original's
+      // stream in formats[] for such a video (see StreamInfo.audioTracks).
+      int score = (format->itag == 140 ? 2 : 0) + (format->isDrc ? 0 : 1);
+      if (score > bestScore) { best = format; bestScore = score; }
    }
    return best;
 }
