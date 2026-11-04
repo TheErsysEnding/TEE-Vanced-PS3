@@ -11,12 +11,20 @@
 // from a VSH PRX; see common/printf.h for rationale.
 #include "printf.h"
 
-// TEE Vanced: the log goes to /dev_hdd0/dbg.txt, not mohasi's /dev_hdd0/tmp/dbg.txt. /dev_hdd0/tmp is the
-// console's scratch space and it clears it away (the reason this app moved its data out - see app-paths.h);
-// openFs never creates a missing parent, so a log there is silently lost. v0.11 and v0.12 were built with
-// this line changed on the build machine but the change was never committed, and v0.13, built from a clean
-// checkout, left no log at all on the console it was tested on. It lives here now, so every build has it.
-#define DBG_LOG "/dev_hdd0/dbg.txt"
+// TEE Vanced: the log goes to a folder of its own in /dev_hdd0/tmp - neither to mohasi's /dev_hdd0/tmp/dbg.txt
+// nor to /dev_hdd0/dbg.txt, where v0.11 and v0.12 wrote it. (That line was only ever changed on the build
+// machine, so v0.13, built from a clean checkout, fell back to mohasi's path. It lives here now.)
+//  - /dev_hdd0/dbg.txt: not every console lets an app create a file directly in /dev_hdd0 (drwxr-xr-x) - the
+//    same refusal that sends the data folder from /dev_hdd0/yo-player to a fallback (app-paths.h). On such a
+//    console the first v0.13.1 build left no log at all.
+//  - /dev_hdd0/tmp/dbg.txt: other ps3-dev homebrew writes that file too, and whichever created it first may have
+//    left it writable for itself only (-rw-------). Then nothing can be appended - which is how v0.13 left no
+//    log on the same console.
+// /dev_hdd0/tmp is open to every app (drwxrwxrwx), and a folder of our own there belongs to nobody else. The
+// console clears /dev_hdd0/tmp now and then and openFs never creates a missing parent, so logEmit makes the
+// folder when an open fails and tries once more.
+#define DBG_DIR "/dev_hdd0/tmp/TEE_Vanced"
+#define DBG_LOG DBG_DIR "/dbg.txt"
 
 // Optional live-log callback. If set, every logInfo/Warn/Error call hands
 // the fully-formatted line (timestamp + level + body) to the callback
@@ -72,7 +80,7 @@ static inline int dbgFormatTimestamp(char *out)
    return o;  // == 15
 }
 
-// Append one timestamped, level-prefixed line to DBG_LOG (/dev_hdd0/dbg.txt in TEE Vanced).
+// Append one timestamped, level-prefixed line to DBG_LOG (/dev_hdd0/tmp/TEE_Vanced/dbg.txt in TEE Vanced).
 // Variadic: plain string ("hello\n") or printf-style ("rc=0x%x\n", rc).
 // Full C99 printf minus floats (see common/printf.h).
 //
@@ -108,8 +116,14 @@ static inline void logEmit(const char *level, const char *fmt, va_list ap)
 
    // O_APPEND so the kernel positions+writes atomically per call: concurrent
    // loggers from different threads/PRXs can't interleave halves of a line.
+   // The very first line - or the first after the console cleared /dev_hdd0/tmp - finds no DBG_DIR: make it
+   // (makeDir: one level, 0 if created or already there) and try once more. The VFS layer never logs, so
+   // this cannot recurse.
    VfsFile f;
-   if (openFs(DBG_LOG, VFS_O_WRONLY | VFS_O_CREAT | VFS_O_APPEND, &f) == 0)
+   int opened = openFs(DBG_LOG, VFS_O_WRONLY | VFS_O_CREAT | VFS_O_APPEND, &f) == 0;
+   if (!opened && makeDir(DBG_DIR) == 0)
+      opened = openFs(DBG_LOG, VFS_O_WRONLY | VFS_O_CREAT | VFS_O_APPEND, &f) == 0;
+   if (opened)
    {
       writeFs(&f, line, (uint64_t)(o + n));
       closeFs(&f);

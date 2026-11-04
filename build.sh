@@ -90,7 +90,7 @@ while IFS= read -r marker; do
       exit 1
    fi
 done <<'MARKERS'
-/dev_hdd0/dbg.txt
+/dev_hdd0/tmp/TEE_Vanced/dbg.txt
 catch-up skip enabled
 MARKERS
 echo "   $ELF: built with this fork's library changes"

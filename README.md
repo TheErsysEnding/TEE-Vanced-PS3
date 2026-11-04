@@ -127,8 +127,8 @@ ppu-lv2-strings yo-player.ppu.elf | grep "V0.13 Beta"
 Install the `.pkg` from the console's package manager. It writes its data to a
 directory it picks at runtime — `/dev_hdd0/yo-player` cannot be created on every
 console, so it falls back through a list and logs which one it chose to
-`/dev_hdd0/dbg.txt`. Your subscriptions, history and settings live there and
-survive uninstalling the app.
+`/dev_hdd0/tmp/TEE_Vanced/dbg.txt`. Your subscriptions, history and settings
+live there and survive uninstalling the app.
 
 A VPN on the console makes YouTube answer `LOGIN_REQUIRED`. Turn it off.
 
@@ -145,7 +145,8 @@ anything else.
 
 If it survives a power cycle, check the console's date and time as well: the
 certificate check uses the console's own clock, so a wrong date makes every
-secure connection fail at once. `/dev_hdd0/dbg.txt` names the reason.
+secure connection fail at once. `/dev_hdd0/tmp/TEE_Vanced/dbg.txt` names the
+reason.
 
 ---
 

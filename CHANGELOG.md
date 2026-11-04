@@ -16,9 +16,12 @@ Not yet installed on a console.
   sources were recovered from the session they were written in, and they match
   the v0.12 binary. They now live in `libs/`, laid over mohasi's tree at every
   build:
-  - **The log.** `/dev_hdd0/dbg.txt` again (`dbg.h`). v0.13 logged to
-    `/dev_hdd0/tmp/dbg.txt`, the console's scratch folder, and no log arrived
-    anywhere.
+  - **The log** (`dbg.h`), now in `/dev_hdd0/tmp/TEE_Vanced/dbg.txt`. v0.13
+    wrote to `/dev_hdd0/tmp/dbg.txt`, which other homebrew uses as well and
+    may have left writable for itself only, so no log arrived anywhere. v0.11
+    and v0.12 used `/dev_hdd0/dbg.txt`, but not every console lets an app
+    create a file directly in `/dev_hdd0`. The app now writes into a folder of
+    its own in `/dev_hdd0/tmp` and creates it whenever it is missing.
   - **60 fps catch-up** (`video-player.c`, `decode-h264.c/.h`). On a stream
     above 30 fps the decoder may drop non-reference B pictures while the
     picture is more than 250 ms behind the clock, until it is back within
