@@ -3,6 +3,20 @@
 Every release listed here was installed and used on a real PS3 (EVILNAT 4.92 DEX)
 before it was tagged. Anything that had not been is said so plainly.
 
+## Unreleased
+
+Not yet installed on a console.
+
+### Fixed
+
+- **v0.13 wrote no log at all.** v0.11 and v0.12 logged to `/dev_hdd0/dbg.txt`
+  because the library's log path had been changed on the build machine, and that
+  change was never committed. v0.13 was built from a clean checkout, logged to
+  `/dev_hdd0/tmp/dbg.txt` instead - the console's scratch folder, which it clears
+  away - and nothing arrived anywhere. The changed `dbg.h` is now part of the
+  repository (`libs/simple-lib-core/include/dbg.h`), so every build logs to
+  `/dev_hdd0/dbg.txt` again, as the README and the v0.13 release notes say.
+
 ## v0.13 beta — 2026-11-04
 
 ### Fixed
