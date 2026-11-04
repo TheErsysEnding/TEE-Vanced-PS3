@@ -8,6 +8,12 @@ so MSBuild cannot resolve Platform=PS3. The compiler is the same either way
 compile/link commands directly - no VS, no make.
 
 Emits build-ps3.bat: static libs first, then the app, then the .elf.
+
+    build-ps3.bat [stamp]
+
+The stamp (<commit count>-<commit>[-dirty]) ends up in the binary as BUILD_STAMP. build.sh works it
+out from this repository's git and passes it in, since a VM fed by scp has no git of its own; run with no
+argument, the batch falls back to asking git on the VM about C:\\ps3-dev, and to 0-unknown without one.
 """
 
 import re
@@ -190,10 +196,12 @@ def emit_project(out, p, is_app):
 def main():
     out = ["@echo off", "setlocal enabledelayedexpansion",
            'set "PATH=%PATH%;C:\\Program Files\\Git\\cmd"',
+           # a stamp handed in by the caller (build.sh) wins over asking git on the VM
+           'set "STAMP=%~1"', 'if not "%STAMP%"=="" goto :stamped',
            'for /f %%i in (\'git -C C:\\ps3-dev rev-list --count HEAD 2^>nul\') do set "CNT=%%i"',
            'for /f %%i in (\'git -C C:\\ps3-dev rev-parse --short HEAD 2^>nul\') do set "SHA=%%i"',
            'if "%CNT%"=="" set "CNT=0"', 'if "%SHA%"=="" set "SHA=unknown"',
-           'set "STAMP=%CNT%-%SHA%"', 'echo build stamp: %STAMP%', ""]
+           'set "STAMP=%CNT%-%SHA%"', ":stamped", 'echo build stamp: %STAMP%', ""]
     for lib in LIBS:
         emit_project(out, load(f"libs/{lib}", lib), is_app=False)
     emit_project(out, load(f"apps/{APP}", APP), is_app=True)

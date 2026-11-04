@@ -167,6 +167,145 @@ static int extractVideoId(const char *input, char *out, int cap)
    return length == 11;
 }
 
+// a bounded strstr: the first needle that starts inside [from, end), or NULL. jsonString/jsonInt run on to the
+// end of the response when a key is missing; the audio-track fields below are optional, so each probe stays
+// inside its own format object instead of scanning a megabyte for every stream that lacks them.
+static const char *findIn(const char *from, const char *end, const char *needle)
+{
+   int length = (int)strlen(needle);
+   for (const char *p = from; p + length <= end; p++)
+      if (*p == *needle && memcmp(p, needle, length) == 0) return p;
+   return NULL;
+}
+
+// case-insensitive substring test; word must be given in lower case
+static int containsWord(const char *text, const char *word)
+{
+   int length = (int)strlen(word);
+   for (const char *p = text; *p; p++) {
+      int i = 0;
+      while (i < length && p[i] && toLowerChar(p[i]) == word[i]) i++;
+      if (i == length) return 1;
+   }
+   return 0;
+}
+
+// one key of the url's xtags parameter. An audio stream of a video with several tracks carries them as
+// "xtags=acont%3Ddubbed-auto%3Alang%3Dde-DE": acont says what the track is (original, dubbed, dubbed-auto,
+// descriptive), lang its language. 1 if found.
+static int xtagValue(const char *url, const char *key, char *out, int cap)
+{
+   out[0] = 0;
+   const char *x = strstr(url, "xtags=");
+   if (!x) return 0;
+   x += 6;
+   char encoded[192], tags[192];
+   int i = 0;
+   while (x[i] && x[i] != '&' && i < (int)sizeof encoded - 1) { encoded[i] = x[i]; i++; }
+   encoded[i] = 0;
+   if (urlDecode(encoded, tags, sizeof tags) < 0) return 0;
+
+   int keyLength = (int)strlen(key);
+   for (const char *p = tags; *p; ) {   // "acont=dubbed-auto:lang=de-DE"
+      if (strncmp(p, key, keyLength) == 0 && p[keyLength] == '=') {
+         p += keyLength + 1;
+         for (i = 0; *p && *p != ':' && i < cap - 1; i++) out[i] = *p++;
+         out[i] = 0;
+         return 1;
+      }
+      const char *colon = strchr(p, ':');
+      if (!colon) break;
+      p = colon + 1;
+   }
+   return 0;
+}
+
+// how good one AAC stream of a track is: itag 140 (AAC-LC, 128k) over the others (139 is 48k HE-AAC), and
+// YouTube's normal mix over the dynamic-range-compressed copy it serves beside it
+static int audioStreamScore(int itag, int isDrc)
+{
+   return (itag == 140 ? 2 : 0) + (isDrc ? 0 : 1);
+}
+
+// An AAC audio stream that belongs to one of several audio tracks goes into out->audioTracks rather than
+// out->formats: one entry per track, holding that track's best stream. The track is named by the reply's
+// audioTrack object (id, displayName, audioIsDefault) where it has one, and by the url's xtags otherwise -
+// whichever the client returns, the same video can be told apart from its dubs. Returns 1 when the stream
+// was such a track stream (taken, or dropped as unplayable), 0 for an ordinary single-track audio stream.
+static int collectAudioTrack(const char *object, const char *objectEnd, const StreamFormat *format, StreamInfo *out)
+{
+   char id[24] = "", name[64] = "", acont[24], lang[16];
+   int isDefault = 0;
+   const char *block = findIn(object, objectEnd, "\"audioTrack\":{");
+   if (block) {
+      const char *blockEnd = findIn(block, objectEnd, "}");
+      if (!blockEnd) blockEnd = objectEnd;
+      if (findIn(block, blockEnd, "\"id\":\""))          jsonString(block, blockEnd, "id", id, sizeof id);
+      if (findIn(block, blockEnd, "\"displayName\":\"")) jsonString(block, blockEnd, "displayName", name, sizeof name);
+      isDefault = findIn(block, blockEnd, "\"audioIsDefault\":true") != NULL;
+   }
+   xtagValue(format->url, "acont", acont, sizeof acont);
+   xtagValue(format->url, "lang", lang, sizeof lang);
+   if (!id[0]) {
+      if (!lang[0] && !acont[0]) return 0;   // nothing marks it as one of several: an ordinary audio stream
+      snprintf(id, sizeof id, "%.11s.%.11s", lang, acont);
+   }
+   if (!name[0]) snprintf(name, sizeof name, "%s%s%s", lang[0] ? lang : "Audio", acont[0] ? " " : "", acont);
+
+   // displayName is in the request's language (hl=en): "English (United States) original",
+   // "German (auto-dubbed)", "English descriptive". acont says the same without depending on hl.
+   int rank;
+   if (containsWord(name, "descriptive") || strcmp(acont, "descriptive") == 0)    rank = AUDIO_RANK_DESCRIPTIVE;
+   else if (containsWord(name, "original") || strcmp(acont, "original") == 0)     rank = AUDIO_RANK_ORIGINAL;
+   else if (containsWord(name, "dubbed") || strncmp(acont, "dubbed", 6) == 0)     rank = AUDIO_RANK_DUBBED;
+   else if (isDefault)                                                           rank = AUDIO_RANK_DEFAULT;
+   else                                                                          rank = AUDIO_RANK_OTHER;
+
+   if (format->needsCipher || !format->url[0]) return 1;   // one of the tracks' streams, but not playable
+
+   AudioTrack *track = NULL;
+   for (int i = 0; i < out->audioTrackCount; i++)
+      if (strcmp(out->audioTracks[i].id, id) == 0) { track = &out->audioTracks[i]; break; }
+   if (!track) {
+      if (out->audioTrackCount >= MAX_AUDIO_TRACKS) return 1;
+      track = &out->audioTracks[out->audioTrackCount++];
+      memset(track, 0, sizeof *track);
+      strCopy(track->id, sizeof track->id, id);
+      strCopy(track->name, sizeof track->name, name);
+      track->rank = rank;
+   }
+   if (!track->itag || audioStreamScore(format->itag, format->isDrc) > audioStreamScore(track->itag, track->isDrc)) {
+      track->itag = format->itag;
+      track->isDrc = format->isDrc;
+      strCopy(track->url, sizeof track->url, format->url);
+   }
+   return 1;
+}
+
+// Several audio tracks: sort them best first - stable, so equal ranks keep YouTube's order - and put the best
+// one's stream into formats[], where pickBestAudio finds it as the only audio stream on offer.
+static void finishAudioTracks(StreamInfo *out)
+{
+   for (int i = 1; i < out->audioTrackCount; i++) {
+      if (out->audioTracks[i - 1].rank >= out->audioTracks[i].rank) continue;   // already in place
+      AudioTrack moving = out->audioTracks[i];   // ~2 KB of stack; the resolve workers have 64 KB
+      int j = i;
+      while (j > 0 && out->audioTracks[j - 1].rank < moving.rank) { out->audioTracks[j] = out->audioTracks[j - 1]; j--; }
+      out->audioTracks[j] = moving;
+   }
+   if (out->audioTrackCount == 0) return;
+   if (out->formatCount >= MAX_STREAM_FORMATS) { logError("[yt] no room for the audio stream\n"); return; }
+
+   const AudioTrack *best = &out->audioTracks[0];
+   StreamFormat *format = &out->formats[out->formatCount++];
+   memset(format, 0, sizeof *format);
+   format->itag = best->itag;
+   format->hasAudio = 1;
+   format->isDrc = best->isDrc;
+   strCopy(format->container, sizeof format->container, "mp4");
+   strCopy(format->url, sizeof format->url, best->url);
+}
+
 // parse one formats array (region [arrayStart, regionEnd)) into out->formats.
 // progressive entries are muxed (video+audio); adaptive entries are video-only
 // or audio-only, classified from the mimeType.
@@ -200,9 +339,19 @@ static void parseFormatArray(const char *arrayStart, const char *regionEnd, int 
       else if (strncmp(mimeType, "audio/", 6) == 0) format->hasAudio = isAac;
       else                                          format->hasVideo = isAvc;
 
+      // an audio stream of a video with several audio tracks (other languages, AI dubs) is filed by track
+      // instead - see collectAudioTrack; the chosen track's stream joins formats[] once the array is read
+      int tracked = 0;
+      if (format->hasAudio && !format->hasVideo) {
+         char drc[4];
+         format->isDrc = findIn(object, objectEnd, "\"isDrc\":true") != NULL ||
+                         (xtagValue(format->url, "drc", drc, sizeof drc) && drc[0] == '1');
+         tracked = collectAudioTrack(object, objectEnd, format, out);
+      }
+
       // keep only formats we can decode (H.264 video / AAC audio). dropping VP9/AV1/Opus frees array slots
       // so the AAC audio - which youtube lists AFTER all the video formats - isn't pushed past the cap.
-      if (format->hasVideo || format->hasAudio) out->formatCount++;
+      if ((format->hasVideo || format->hasAudio) && !tracked) out->formatCount++;
       scan = objectEnd;
    }
 }
@@ -251,6 +400,7 @@ static void parseFormats(const char *resp, const char *end, StreamInfo *out)
       parseFormatArray(progressive, (adaptive && adaptive > progressive) ? adaptive : end, 1, out);
    if (adaptive)
       parseFormatArray(adaptive, end, 0, out);
+   finishAudioTracks(out);
 }
 
 // The anonymous visitor session. Without it a logged-out player request gets LOGIN_REQUIRED. Minting
@@ -485,9 +635,14 @@ static int extract(const char *input, StreamInfo *out)
    // at all, or whether the 1080p60 was simply the only 1080p on offer.
    for (int i = 0; i < out->formatCount; i++) {
       const StreamFormat *f = &out->formats[i];
-      logInfo("[yt] fmt itag=%d %dx%d %dfps %s vid=%d aud=%d cipher=%d url=%d\n",
+      logInfo("[yt] fmt itag=%d %dx%d %dfps %s vid=%d aud=%d cipher=%d url=%d drc=%d\n",
               f->itag, f->width, f->height, f->fps, f->container,
-              f->hasVideo, f->hasAudio, f->needsCipher, f->url[0] ? 1 : 0);
+              f->hasVideo, f->hasAudio, f->needsCipher, f->url[0] ? 1 : 0, f->isDrc);
+   }
+   // and every audio track, best first: the first one is what plays
+   for (int i = 0; i < out->audioTrackCount; i++) {
+      const AudioTrack *t = &out->audioTracks[i];
+      logInfo("[yt] audio track %d: %s [%s] rank=%d itag=%d%s\n", i, t->name, t->id, t->rank, t->itag, t->isDrc ? " drc" : "");
    }
 
    // a currently-live stream (isLive:true) is a rolling DVR window, so the init/moov at byte 0 may have

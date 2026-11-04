@@ -3,6 +3,59 @@
 Every release listed here was installed and used on a real PS3 (EVILNAT 4.92 DEX)
 before it was tagged. Anything that had not been is said so plainly.
 
+## v0.13 beta — 2026-11-04
+
+### Fixed
+
+- **Videos played an AI-dubbed audio track instead of the original.** YouTube
+  serves many videos with extra audio tracks: the uploader's own other languages,
+  and AI auto-dubs. They are separate streams with the same itag, and the player
+  took the last itag 140 on offer, so whichever language YouTube listed last.
+  With many dubs there was a second fault: at two or three AAC streams per
+  track, the 24-entry format list could fill up before the original was
+  reached, and then a dub played at 48 kbit/s (itag 139). Each track is now recognised
+  from the reply (`audioTrack`, and the url's `xtags` where that is missing),
+  only the best stream of each track is kept, and the original plays (else
+  YouTube's default track, else any track that is not a dub). Reported on
+  psx-place: "Yo! Player plays AI generated audio on random videos". Downloads
+  pick the same track.
+- Where YouTube serves a dynamic-range-compressed copy of the audio beside the
+  normal one, the normal mix is now preferred; the old rule could land on
+  either.
+
+### Added
+
+- **Square switches the audio track** on a video that has more than one. The
+  player reopens on the next track at the same position and names it. As such
+  a video starts, a notice says which track is playing and how many there are.
+  On every other video Square still toggles autoplay, which is also in the
+  settings.
+
+### Build
+
+Changes to how the app is built, so it can be built from a Mac. None of them
+changes what the app does.
+
+- **Building from macOS.** Every script on the building side now runs on the
+  bash 3.2 and Python 3.9 macOS ships, and `docs/BUILD-MACOS.md` sets up the
+  Windows VM that the Cell SDK needs, in UTM on the Mac.
+- **`build.sh`** does the whole build in one run and refuses to package an ELF
+  that does not contain this run's version string and build stamp.
+- **`tools/setup-build-vm.sh`** checks a build VM from ssh to an actual compile
+  and link, and gives a fresh one its source tree.
+- **Upstream is pinned** to eb4be76, the head of mohasi's tree when this fork
+  was built. The README used to say `git clone` his tree as it is today, which
+  has since replaced `pad.c` and added to the libraries this fork builds on.
+- **`sync-work.sh` works from a plain checkout.** It needed a `work/` directory
+  that only ever existed on the original build machine, and it never uploaded
+  this fork's `pad.c` to the VM.
+- **`PARAM.SFO` is built from `PARAM.SFO.xml`** instead of being patched into
+  one extracted from mohasi's released package. The result is the same file as
+  in v0.12 except for one field: TITLE's used length, which the in-place patch
+  left at 11 bytes, the length of "Yo! Player".
+- The repository's `patch-param-title.py` ignored the title it was given and
+  always wrote an old placeholder one. It now uses the title it is given.
+
 ## v0.12 beta — 2026-09-06
 
 ### Added

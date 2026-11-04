@@ -30,3 +30,6 @@ prefs.txt
 
 # Local build machine settings
 build.env
+
+# Packages, the fetched .elf and the build log (build.sh, build-pkg-fromsource.sh)
+pkg/out/

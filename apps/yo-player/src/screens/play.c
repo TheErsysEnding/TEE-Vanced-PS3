@@ -118,6 +118,22 @@ static struct {
    int              chapterPanelWidth;
    int              vidItag, vidW, vidH, vidFps, audItag;   // picked formats (worker sets, UI reads)
    int              isLive;           // a live stream: no duration, no resume/save, no seek
+
+   // audio tracks (Square): a video YouTube serves in several languages - the uploader's own, or its AI
+   // auto-dubs - keeps every track's url from the resolve, so Square can reopen the player on another one at
+   // the current position without resolving again. The extractor sorts the original first, and that is the
+   // track that starts playing.
+   AudioTrack       audioTracks[MAX_AUDIO_TRACKS];   // copied from the resolve (worker sets)
+   int              audioTrackCount;   // 0 unless there are at least two to choose between
+   int              audioTrackPick;    // index of the track playing now
+   char             videoUrl[MAX_STREAM_URL];   // the video-only stream every track pairs with
+   int              switchTarget;      // switchWorker input: the track it is building
+   int              switchPending;     // an audio switch is building (the old player is already freed)
+   int              switchReverting;   // this build is the fallback to the track we came from
+   int              switchWasPaused;   // carry the paused state across the rebuild
+   float            switchStartSec;    // position to resume the rebuilt player at
+   char             audioNotice[96];   // "Audio 2/5: German (auto-dubbed)", shown once the picture is back
+   int              audioNoticePending;
    const uint8_t   *lastFrame;        // fps measure: a changed pointer means a newly presented frame
    int              framesThisSecond, measuredFps;
    uint64_t         fpsTickUs;
@@ -196,7 +212,7 @@ static int isRenderableSubtitleLanguage(const char *code)
 static void worker(uint64_t arg)
 {
    (void)arg;
-   StreamInfo *info = malloc(sizeof *info);   // ~50 KB, too big for the stack
+   StreamInfo *info = malloc(sizeof *info);   // ~140 KB, too big for the stack
    const Extractor *extractor = findExtractor(requestedInput);
    if (!info || !extractor) { fail("unrecognised link or id"); goto done; }
 
@@ -219,6 +235,21 @@ static void worker(uint64_t arg)
    state.vidItag = video->itag; state.vidW = video->width; state.vidH = video->height; state.vidFps = video->fps;
    state.audItag = audio ? audio->itag : (video->hasAudio ? video->itag : 0);
    state.isLive = video->isLiveSegmented;
+
+   // several audio tracks: keep them for Square. Only behind a video-only stream - a muxed one (itag 18)
+   // carries its own sound - and not live, whose rolling segment window a rebuild would have to rejoin.
+   if (audio && !video->hasAudio && !state.isLive && info->audioTrackCount > 1) {
+      int playing = -1;
+      for (int i = 0; i < info->audioTrackCount; i++)
+         if (strcmp(info->audioTracks[i].url, audio->url) == 0) { playing = i; break; }
+      if (playing >= 0) {
+         memcpy(state.audioTracks, info->audioTracks, info->audioTrackCount * sizeof *info->audioTracks);
+         strCopy(state.videoUrl, sizeof state.videoUrl, video->url);
+         state.audioTrackPick = playing;
+         state.audioTrackCount = info->audioTrackCount;
+         logInfo("[yt] %d audio tracks, playing %s\n", state.audioTrackCount, state.audioTracks[playing].name);
+      }
+   }
 
    // open the decoder: both streams ride the http module by range request. an audio open
    // failure inside the player just means silent playback. NULL if it can't be demuxed/decoded.
@@ -328,7 +359,7 @@ static void initPlay(void)
       initLabel(&statLabels[i], &font, 0, 0, 600, AUTO, 22, activeTheme->textPrimary, TEXT_NOWRAP, "");
    initLabel(&timeLeftLabel,  &font, 0, 0, 200, AUTO, 22, activeTheme->textPrimary, TEXT_NOWRAP, "");
    initLabel(&timeRightLabel, &font, 0, 0, 200, AUTO, 22, activeTheme->textPrimary, TEXT_NOWRAP, "");
-   initLabelRaw(&toastLabel, &font, 0, 0, 400, AUTO, 22, activeTheme->textPrimary, TEXT_NOWRAP, "");   // raw: shows track names
+   initLabelRaw(&toastLabel, &font, 0, 0, 700, AUTO, 22, activeTheme->textPrimary, TEXT_NOWRAP, "");   // raw: shows track names
    initLabel(&skipPromptLabel, &font, 0, 0, AUTO, AUTO, SKIP_PROMPT_TEXT, activeTheme->textPrimary, TEXT_NOWRAP, "");
    initLabelRaw(&titleLabel, &font, 0, 0, 1100, AUTO, 22, activeTheme->textPrimary, TEXT_NOWRAP_ELLIPSIS, "");
    initLabelRaw(&subtitleLabel, &font, 0, 0, 1600, AUTO, SUBTITLE_TEXT_SIZE, activeTheme->textPrimary, TEXT_WRAP, "");
@@ -395,6 +426,57 @@ static void cycleSubtitles(void)
    else snprintf(hud, sizeof hud, "Subtitles: %s", state.captionTracks[state.subtitlePick].name);
    setLabelText(&subsHudLabel, hud);
    showControls();
+}
+
+// build the player for the switchTarget audio track at switchStartSec. Runs on a worker thread because
+// createVideoPlayerSplit blocks on network i/o; the old player is already gone (cycleAudioTrack frees it
+// before spawning this), so two sets of video frame buffers never have to fit at once.
+static void switchWorker(uint64_t arg)
+{
+   (void)arg;
+   VideoPlayer *player = createVideoPlayerSplit(state.videoUrl, state.audioTracks[state.switchTarget].url,
+                                                allocGfxVideoBuffer, freeGfxVideoBuffer);
+   if (player && state.switchStartSec > 1.0f) seekVideoPlayer(player, state.switchStartSec);
+   state.pendingPlayer = player;
+   __sync_synchronize();
+   state.workerDone = 1;
+   exitThread();
+}
+
+static void startSwitchWorker(void)
+{
+   state.workerDone = 0;
+   state.threadActive = (spawnJoinableThread(&state.workerTid, switchWorker, 0,
+                         THREAD_PRIORITY_DEFAULT, THREAD_STACK_SIZE_64KB, "yt-audio") == 0);
+   if (!state.threadActive) { state.switchPending = 0; fail("couldn't switch audio track"); }
+}
+
+// Square, on a video with several audio tracks: the next track, from where the video is now. The player
+// cannot swap its audio stream in place, so this is mohasi's resolution switch (upstream, b263bf9) applied to
+// audio: the current player is torn down, a worker builds the new one and seeks it to the same position,
+// and the screen says "Loading..." meanwhile. updatePlay adopts it - or, when the track will not open,
+// rebuilds the one we came from, so a bad track costs a second's reload rather than the video.
+static void cycleAudioTrack(void)
+{
+   if (state.stage != STAGE_PLAYING || !state.player || state.threadActive) return;   // still opening one
+
+   state.switchTarget = (state.audioTrackPick + 1) % state.audioTrackCount;
+   state.switchPending = 1;
+   state.switchReverting = 0;
+   state.switchWasPaused = isVideoPaused(state.player);
+   state.switchStartSec = state.seeking ? state.seekTarget : getVideoPositionSeconds(state.player);
+   state.seeking = 0;   // the rebuilt player starts at the scrub target; there is nothing left to apply
+
+   // save the position now, under termPlay's rule (a frame has played, not live): leaving during the
+   // rebuild, or a rebuild that fails, would otherwise lose it - termPlay only saves with a player up
+   if (state.firstFrameSeen && !state.isLive) setWatchedPosition(requestedInput, (int)state.switchStartSec);
+
+   finishGfx();   // the RSX may still be sampling the current frame buffer
+   destroyVideoPlayer(state.player);
+   state.player = NULL;
+   state.firstFrameSeen = 0;
+   state.stage = STAGE_LOADING;
+   startSwitchWorker();
 }
 
 // accumulates a scrub target while left/right is held; the engine seek fires once input goes quiet
@@ -631,9 +713,14 @@ static void updatePlay(void)
    else {
       if (isPadButtonPressed(PAD_BTN_CIRCLE)) { popScreen(); return; }   // back to the results list
       if (isPadButtonPressed(PAD_BTN_R3)) state.showStats = !state.showStats;
+      // Square picks the audio track on a video that has several - its original language and YouTube's AI
+      // dubs of it, say. Everywhere else it keeps toggling autoplay, which the settings screen also has.
       if (isPadButtonPressed(PAD_BTN_SQUARE)) {
-         setAutoplay(!getAutoplay());
-         showToast(getAutoplay() ? "Autoplay on" : "Autoplay off");
+         if (state.audioTrackCount > 1) cycleAudioTrack();
+         else {
+            setAutoplay(!getAutoplay());
+            showToast(getAutoplay() ? "Autoplay on" : "Autoplay off");
+         }
       }
       if (isPadButtonPressed(PAD_BTN_SELECT) && state.stage == STAGE_PLAYING && state.player) openDescription();
       if (isPadButtonPressed(PAD_BTN_START) && state.stage == STAGE_PLAYING && state.player) openChapters();
@@ -652,7 +739,41 @@ static void updatePlay(void)
          setAudioPcmFeedVolume(getVolumeMeterFraction(&volumeMeter));
          setLabelText(&titleLabel, state.title);   // rasterise once, off the draw path
          state.stage = STAGE_PLAYING;
+         if (state.switchPending) {   // an audio switch landed: keep the paused state, and name the track
+            setVideoPaused(state.player, state.switchWasPaused);
+            if (state.switchReverting)
+               snprintf(state.audioNotice, sizeof state.audioNotice, "Track unavailable - %s",
+                        state.audioTracks[state.switchTarget].name);
+            else
+               snprintf(state.audioNotice, sizeof state.audioNotice, "Audio %d/%d: %s", state.switchTarget + 1,
+                        state.audioTrackCount, state.audioTracks[state.switchTarget].name);
+            state.audioTrackPick = state.switchTarget;
+            state.audItag = state.audioTracks[state.audioTrackPick].itag;
+            state.switchPending = 0;
+            state.audioNoticePending = 1;
+         } else if (state.audioTrackCount > 1) {
+            // say once, as the video starts, that it has other tracks and which button reaches them - the
+            // complaint this answers was exactly that there was no way to know or to change it
+            snprintf(state.audioNotice, sizeof state.audioNotice, "Audio: %s  -  Square: %d tracks",
+                     state.audioTracks[state.audioTrackPick].name, state.audioTrackCount);
+            state.audioNoticePending = 1;
+         }
+      } else if (state.switchPending && !state.switchReverting) {
+         // the new track would not open, and the old player is gone: rebuild the track we came from, once
+         logError("[yt] audio track %s did not open, going back\n", state.audioTracks[state.switchTarget].name);
+         state.switchReverting = 1;
+         state.switchTarget = state.audioTrackPick;
+         startSwitchWorker();
+      } else if (state.switchPending) {
+         state.switchPending = 0;
+         fail("couldn't reopen the video");
       }
+   }
+
+   // the audio notice waits for the picture: a rebuild's seek reload can outlast the toast otherwise
+   if (state.audioNoticePending && state.firstFrameSeen && state.stage == STAGE_PLAYING) {
+      showToast(state.audioNotice);
+      state.audioNoticePending = 0;
    }
 
    // reap the sponsorblock fetch; its segments are safe to read once joined

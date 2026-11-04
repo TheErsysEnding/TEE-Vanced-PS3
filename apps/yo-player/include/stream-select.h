@@ -10,5 +10,7 @@
 // one. NULL if none is usable.
 const StreamFormat *pickBestVideo(const StreamInfo *info);
 
-// the AAC/mp4 audio-only stream to pair with a video-only pick, preferring itag 140. NULL if none.
+// the AAC/mp4 audio-only stream to pair with a video-only pick, preferring itag 140 and not its
+// dynamic-range-compressed copy. On a video with several audio tracks the extractor has already narrowed
+// formats[] to the original track's stream. NULL if none.
 const StreamFormat *pickBestAudio(const StreamInfo *info);

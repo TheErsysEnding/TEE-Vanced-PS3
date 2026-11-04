@@ -5,7 +5,7 @@ hardware. A fork of **[mohasi's Yo! Player](https://github.com/mohasi/ps3-dev)**
 (Apache-2.0) — see [NOTICE](NOTICE); the application, its decoder and its
 libraries are his work.
 
-**Status: v0.12 beta.** Every version here has been installed and used on a real
+**Status: v0.13 beta.** Every version here has been installed and used on a real
 console before being called done. See [CHANGELOG.md](CHANGELOG.md).
 
 ---
@@ -46,6 +46,13 @@ you open it first.
 paged rather than endlessly scrolled; the app keeps its own search history
 because the PS3 keyboard keeps none.
 
+**The original audio, and Square for the others.** YouTube serves more and more
+videos with AI auto-dubbed audio tracks in other languages, and the player used
+to take whichever track came last, so a video could start in a machine voice in
+a language nobody asked for. It now plays the original. When a video has
+several tracks, the player says so as it starts, and Square steps through them
+from where you are.
+
 **Its own look.** Orange on warm black, matching the icon.
 
 **Your own playlists.** Not YouTube's — there are none to read without a signed-in
@@ -62,34 +69,55 @@ You need mohasi's tree and the Cell SDK. This repository holds only the files
 this fork changes — vendoring 300 MB of someone else's project would be worse
 for everyone.
 
+The Cell SDK is Windows software, so the compiler runs on a Windows machine with
+the SDK at `C:\usr\local\cell` and an ssh server; everything else runs on the
+machine you work on, macOS or Linux. **On a Mac, follow
+[docs/BUILD-MACOS.md](docs/BUILD-MACOS.md)**: it sets up that Windows VM step by
+step. There is no SDK manager or macOS port of the SDK to install.
+
 ```sh
-git clone https://github.com/mohasi/ps3-dev
-cp -r apps libs ps3-dev/            # drop this fork's files over it
-python3 genbuild.py                 # generate build-ps3.bat from the .vcxproj files
+cp build.env.example build.env      # which Windows VM builds, and with which ssh key
+./tools/setup-build-vm.sh           # check the VM end to end; gives a fresh one its source tree
+./build.sh                          # build on the VM, check the result, package it
 ```
+
+The package lands in `pkg/out/`, named after `APP_VERSION` in
+`apps/yo-player/include/app-paths.h`.
+
+`build.sh` runs these steps, and each one also works on its own:
+
+```sh
+./tools/fetch-upstream.sh           # clone mohasi's tree into ps3-dev/, at the commit this fork is built on
+./tools/sync-work.sh --local        # drop this fork's apps/ and libs/ over it
+python3 genbuild.py                 # generate build-ps3.bat from the .vcxproj files
+./tools/sync-work.sh                # mirror sources onto the build machine
+ssh <vm> "cd /d C:\ps3-dev && build-ps3.bat"
+./build-pkg-fromsource.sh TEE-Vanced-PS3-v0.13-beta "TEE Vanced PS3 V0.13 Beta"
+```
+
+Upstream is pinned (`UPSTREAM_REV` in `tools/build-env.sh`). mohasi's tree has
+moved on since this fork was written, and laying these files over a newer
+checkout would mix two versions of his libraries, so a plain
+`git clone https://github.com/mohasi/ps3-dev` is no longer the starting point.
 
 `genbuild.py` exists because upstream builds with MSBuild and the SN Systems
 toolset, which needs Visual Studio; it reads the project files and emits direct
 `ppu-lv2-gcc` calls instead, so the Cell SDK alone is enough.
 
-Then build and package:
-
-```sh
-./tools/sync-work.sh                # mirror sources onto the build machine
-./build-pkg-fromsource.sh TEE-Vanced-PS3-v0.12-beta "TEE Vanced PS3 V0.12 Beta"
-```
-
-`build-pkg-fromsource.sh` signs the ELF with `make_fself_npdrm` and packages it
+`build-pkg-fromsource.sh` builds `PARAM.SFO` from `apps/yo-player/PARAM.SFO.xml`
+(`pkg/make-param-sfo.py`), signs the ELF with `make_fself_npdrm` and packages it
 with `make_package_npdrm`, both from the SDK. The artwork in `branding/` is
 regenerated with `tools/make-branding.py` (Pillow).
 
 **Verify what you built.** The build script stops on the first compile error and
 wipes its object directory first — an earlier version did neither, linked a
 stale object file and reported success, and shipped a package that silently did
-not contain the change. After building, check the change is really in the binary:
+not contain the change. `build.sh` now checks this itself: it fetches the ELF to
+`pkg/out/` and refuses to package it unless it contains both the version string
+and that run's build stamp. By hand, on the build machine:
 
 ```sh
-ppu-lv2-strings yo-player.ppu.elf | grep "V0.12 Beta"
+ppu-lv2-strings yo-player.ppu.elf | grep "V0.13 Beta"
 ```
 
 ---
