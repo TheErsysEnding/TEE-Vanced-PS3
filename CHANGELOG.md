@@ -3,19 +3,34 @@
 Every release listed here was installed and used on a real PS3 (EVILNAT 4.92 DEX)
 before it was tagged. Anything that had not been is said so plainly.
 
-## Unreleased
+## v0.13.1 beta — not released yet
 
 Not yet installed on a console.
 
 ### Fixed
 
-- **v0.13 wrote no log at all.** v0.11 and v0.12 logged to `/dev_hdd0/dbg.txt`
-  because the library's log path had been changed on the build machine, and that
-  change was never committed. v0.13 was built from a clean checkout, logged to
-  `/dev_hdd0/tmp/dbg.txt` instead - the console's scratch folder, which it clears
-  away - and nothing arrived anywhere. The changed `dbg.h` is now part of the
-  repository (`libs/simple-lib-core/include/dbg.h`), so every build logs to
-  `/dev_hdd0/dbg.txt` again, as the README and the v0.13 release notes say.
+- **v0.13 lost every change this fork had made to mohasi's libraries.** They
+  were made on the build machine on 2026-09-01 and never committed, so v0.13 -
+  the first release built from a clean checkout - shipped without them. Found
+  by comparing the released v0.12 and v0.13 binaries function by function; the
+  sources were recovered from the session they were written in, and they match
+  the v0.12 binary. They now live in `libs/`, laid over mohasi's tree at every
+  build:
+  - **The log.** `/dev_hdd0/dbg.txt` again (`dbg.h`). v0.13 logged to
+    `/dev_hdd0/tmp/dbg.txt`, the console's scratch folder, and no log arrived
+    anywhere.
+  - **60 fps catch-up** (`video-player.c`, `decode-h264.c/.h`). On a stream
+    above 30 fps the decoder may drop non-reference B pictures while the
+    picture is more than 250 ms behind the clock, until it is back within
+    60 ms. Confirmed on 720p60 with v0.12; v0.13 played such videos without it.
+  - **Live streams** (`live-source.c`). The live fallback in `youtube.c` hands
+    over a segment address ending in `=`, which needs the number appended
+    directly; v0.13 built a wrong address from it.
+  - **The L3 button icon** (`console-glyphs.c/.h`). The home and search hints
+    use it, so the repository did not even compile without it; v0.13's build
+    machine had a stand-in of its own.
+- `build.sh` now refuses a binary that lacks the log path or the catch-up
+  message, so a build without `libs/` cannot slip through again.
 
 ## v0.13 beta — 2026-11-04
 

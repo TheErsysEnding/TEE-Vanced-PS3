@@ -80,6 +80,21 @@ for needle in "$VERSION" "$STAMP"; do
 done
 echo "   $ELF: contains \"$VERSION\" and \"$STAMP\""
 
+# Strings only this fork's changes to mohasi's libraries (libs/) put into the binary. A build against a plain
+# upstream library tree - which is how v0.13 came to be built - compiles and runs, and quietly has no log and
+# no 60 fps catch-up; it is refused here instead of being found out on the console.
+while IFS= read -r marker; do
+   [ -n "$marker" ] || continue
+   if ! LC_ALL=C grep -q -a -F -- "$marker" "$ELF"; then
+      echo "the .elf does not contain \"$marker\" - it was built without this fork's library changes (libs/)" >&2
+      exit 1
+   fi
+done <<'MARKERS'
+/dev_hdd0/dbg.txt
+catch-up skip enabled
+MARKERS
+echo "   $ELF: built with this fork's library changes"
+
 [ "$make_pkg" = 1 ] || exit 0
 
 echo "==> packaging"
