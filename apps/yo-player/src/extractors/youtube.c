@@ -406,25 +406,38 @@ static void parseFormats(const char *resp, const char *end, StreamInfo *out)
 // The anonymous visitor session. Without it a logged-out player request gets LOGIN_REQUIRED. Minting
 // a fresh one every launch is itself a bot signal that re-triggers the wall, so it persists to disk:
 // we reuse a saved session and only mint (and save) when there's none, or a saved one goes stale.
-#define VISITOR_CACHE_PATH YO_DATA_DIR "/visitor.txt"
+//
+// The file lives in the directory migrateAppData settled on (see app-paths.h). It used to be built from
+// YO_DATA_DIR, which pointed it at /dev_hdd0/yo-player even on a console that refuses that folder: there
+// nothing was ever saved, and every launch minted a fresh session - the very thing this cache exists to avoid.
+static void visitorCachePath(char *out, int cap)
+{
+   snprintf(out, cap, "%s/visitor.txt", getAppDataDir());
+}
 
 static char visitorData[192];
 static int  visitorFromDisk;   // the current session was loaded from the cache (vs minted this launch)
 
 static int loadVisitorData(void)
 {
-   return readFile(VISITOR_CACHE_PATH, visitorData, sizeof visitorData) > 0 && visitorData[0] != 0;
+   char path[128];
+   visitorCachePath(path, sizeof path);
+   return readFile(path, visitorData, sizeof visitorData) > 0 && visitorData[0] != 0;
 }
 
 static void saveVisitorData(void)
 {
-   writeFile(VISITOR_CACHE_PATH, visitorData, strlen(visitorData));
+   char path[128];
+   visitorCachePath(path, sizeof path);
+   writeFile(path, visitorData, strlen(visitorData));
 }
 
 // a saved session that hit LOGIN_REQUIRED is stale: forget it so the next play mints a fresh one once.
 static void dropVisitorData(void)
 {
-   deleteFile(VISITOR_CACHE_PATH);
+   char path[128];
+   visitorCachePath(path, sizeof path);
+   deleteFile(path);
    visitorData[0] = 0;
    visitorFromDisk = 0;
 }

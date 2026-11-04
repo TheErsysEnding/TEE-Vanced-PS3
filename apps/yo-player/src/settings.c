@@ -5,8 +5,7 @@
 #include "app-paths.h"
 #include "settings-file.h"
 #include "dbg.h"
-
-#define SETTINGS_PATH YO_DATA_DIR "/settings.txt"
+#include <stdio.h>              // snprintf: the runtime path
 
 // the file written on first launch: each setting at its default, with a comment explaining the values.
 static const char *DEFAULT_SETTINGS =
@@ -24,9 +23,16 @@ static SponsorblockMode sponsorblockMode = SPONSORBLOCK_ADS;
 
 void loadSettings(void)
 {
+   // the directory migrateAppData settled on (see app-paths.h; main runs it first). Built from YO_DATA_DIR
+   // the path was /dev_hdd0/yo-player even on a console that refuses that folder: the file was never created
+   // there, every launch ran on the defaults, and theme.c read its theme= line from the data directory's
+   // settings.txt - a different file from the one this function looked for.
+   char path[128];
+   snprintf(path, sizeof path, "%s/settings.txt", getAppDataDir());
+
    char text[2048];
-   if (loadSettingsFile(SETTINGS_PATH, DEFAULT_SETTINGS, text, sizeof text) == 1)
-      logInfo("[settings] created %s with defaults\n", SETTINGS_PATH);
+   if (loadSettingsFile(path, DEFAULT_SETTINGS, text, sizeof text) == 1)
+      logInfo("[settings] created %s with defaults\n", path);
 
    const char *mode = findSettingValue(text, "sponsorblock-mode");
    if (mode) {

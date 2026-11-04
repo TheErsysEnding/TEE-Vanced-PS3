@@ -34,6 +34,14 @@ Not yet installed on a console.
     machine had a stand-in of its own.
 - `build.sh` now refuses a binary that lacks the log path or the catch-up
   message, so a build without `libs/` cannot slip through again.
+- **The YouTube session was never saved where `/dev_hdd0/yo-player` is
+  refused.** `visitor.txt` and `settings.txt` were still built from that fixed
+  path rather than from the data directory the app picks at runtime, so on
+  such a console neither file was ever written. Every launch began a new
+  anonymous YouTube session, although the cache exists because a new one each
+  time looks like a bot, and `settings.txt` was never created, so there was
+  nothing to edit over FTP. Both now live in the data directory with
+  everything else, as `themes.txt` already did. Present since v0.11.
 
 ## v0.13 beta — 2026-11-04
 
