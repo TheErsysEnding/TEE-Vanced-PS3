@@ -5,8 +5,9 @@ before it was tagged. Anything that had not been is said so plainly.
 
 ## v0.13 beta — not released yet
 
-Not yet installed on a console: everything below is built and tested off the
-console only, and will be called done once it has played on hardware.
+Built with the Cell SDK and installed on a tester's console: the video that had
+been playing a Spanish dub now plays its original audio. Square switching and
+the start-up notice have not been confirmed on hardware yet.
 
 ### Fixed
 
