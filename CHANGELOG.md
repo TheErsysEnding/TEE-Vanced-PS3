@@ -3,11 +3,7 @@
 Every release listed here was installed and used on a real PS3 (EVILNAT 4.92 DEX)
 before it was tagged. Anything that had not been is said so plainly.
 
-## v0.13 beta — not released yet
-
-Built with the Cell SDK and installed on a tester's console: the video that had
-been playing a Spanish dub now plays its original audio. Square switching and
-the start-up notice have not been confirmed on hardware yet.
+## v0.13 beta — 2026-11-04
 
 ### Fixed
 

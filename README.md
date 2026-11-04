@@ -5,7 +5,7 @@ hardware. A fork of **[mohasi's Yo! Player](https://github.com/mohasi/ps3-dev)**
 (Apache-2.0) — see [NOTICE](NOTICE); the application, its decoder and its
 libraries are his work.
 
-**Status: v0.12 beta.** Every version here has been installed and used on a real
+**Status: v0.13 beta.** Every version here has been installed and used on a real
 console before being called done. See [CHANGELOG.md](CHANGELOG.md).
 
 ---
