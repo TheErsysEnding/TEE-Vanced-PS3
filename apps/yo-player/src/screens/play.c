@@ -142,6 +142,7 @@ static struct {
    // the input goes quiet (each apply costs a decoder flush + fragment reload)
    int              seeking;
    float            seekTarget;
+   float            seekFrom;          // the playhead when this scrub began: a target past it is a step forward
    uint64_t         lastSeekInputUs;
    uint64_t         controlsShownUs;   // last activity, for the bar/time auto-hide
 
@@ -482,7 +483,10 @@ static void cycleAudioTrack(void)
 // accumulates a scrub target while left/right is held; the engine seek fires once input goes quiet
 static void nudgeSeek(float deltaSeconds, uint64_t nowUs)
 {
-   if (!state.seeking) { state.seeking = 1; state.seekTarget = getVideoPositionSeconds(state.player); }
+   if (!state.seeking) {
+      state.seeking = 1;
+      state.seekFrom = state.seekTarget = getVideoPositionSeconds(state.player);
+   }
    state.seekTarget += deltaSeconds;
    float duration = getVideoDurationSeconds(state.player);
    if (state.seekTarget < 0.0f) state.seekTarget = 0.0f;
@@ -559,7 +563,13 @@ static void handlePlaybackInput(void)
    else if (isRepeatDue(&fastSeekRepeat, getPadButtonState(PAD_BTN_L2))) nudgeSeek(-FAST_SEEK_STEP_SECONDS, nowUs);
 
    if (state.seeking && nowUs - state.lastSeekInputUs >= SEEK_APPLY_IDLE_US) {
-      seekVideoPlayer(state.player, state.seekTarget);
+      // A step forward lands on the first keyframe at or after the target, a step back on the one before it.
+      // Rounding forward steps down as well left RIGHT (+5 s) stuck wherever a fragment ran longer than the
+      // step: every press landed on the keyframe the playhead had just come from, some a second behind it
+      // (seen on a 1080p30 video whose fragment ran from 174 s past 180 s). The DASH streams the player
+      // normally gets honour this; a plain mp4 or mkv still lands at or before the target.
+      if (state.seekTarget > state.seekFrom) seekVideoPlayerPast(state.player, state.seekTarget);
+      else                                   seekVideoPlayer(state.player, state.seekTarget);
       state.seeking = 0;
    }
 }

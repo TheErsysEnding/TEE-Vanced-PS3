@@ -42,6 +42,13 @@ Not yet installed on a console.
   time looks like a bot, and `settings.txt` was never created, so there was
   nothing to edit over FTP. Both now live in the data directory with
   everything else, as `themes.txt` already did. Present since v0.11.
+- **RIGHT could get stuck.** Every seek went to the last keyframe before its
+  target, steps forward included, so where two keyframes were more than
+  RIGHT's 5 seconds apart, each press landed back on the first of them -
+  sometimes a second behind where the video had been. A step forward now
+  lands on the first keyframe at or after its target. That holds for the DASH
+  streams YouTube normally serves; a plain mp4 still rounds down. Present
+  since v0.11.
 
 ## v0.13 beta — 2026-11-04
 
