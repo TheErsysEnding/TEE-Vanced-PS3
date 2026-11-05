@@ -1,6 +1,12 @@
 // search screen - a VideoGrid in one of two modes: a text search or a channel's videos (see search.h).
 // Pushed on top of home. Triangle drills into a channel in place, Circle backs out (channel -> search
 // results -> pop to home), SELECT cycles the sort, Start re-searches, X plays.
+//
+// The page is Bild 5 (Ember): the collapsed rail at the left edge, drawn passive (Circle is Back on this
+// pushed screen, so the rail only says where you are); the query - or the channel's name - in the search
+// field's look, read-only, since Start opens the real field (search-input.c); the page count where Bild 5
+// has its result count; the sort as a segment under the field, a running download's chip at that row's left
+// end; then the results, three rows to a page.
 
 #include "screens/search.h"
 #include "screens/search-input.h"
@@ -9,10 +15,12 @@
 #include "video-grid.h"
 #include "storage.h"
 #include "downloads.h"
+#include "sidebar.h"            // the rail, drawn passive
 #include "ui-hints.h"           // the Ember hint row
-#include "ui-draw.h"            // safe area, rounded panel, focus ring, uiDrawLabelAt
+#include "ui-draw.h"            // safe area, rounded fills, focus ring, fixed-width digits, uiDrawLabelAt
 #include "ui-fonts.h"           // the shared fonts, the type scale, label helpers and text placement
 #include "ui/console-glyphs.h"
+#include "ui/icon-font.h"       // the field's magnifier
 
 #include "gfx.h"
 #include "theme.h"
@@ -25,31 +33,68 @@
 #include <string.h>
 #include <stdio.h>
 
-// The list starts 9 px in from the safe area's left edge: that is how far the focus ring reaches outside a
-// thumbnail (UI_RING_THUMB), so the ring stays inside the safe area too. The title lines up with the list.
-#define CONTENT_X         (UI_SAFE_X + 9)
-// The header is one line: the title on the left, the sort mode and the page count right-aligned, all three
-// with their capitals centred on the band of a top-right hint row (UI_HINTS_TOP_Y, centre y 71) - the line
-// home.c puts its title on, so the heading stays where it was when a search opens over Home.
-#define HEADER_Y          UI_HINTS_TOP_Y
-#define HEADER_H          UI_HINT_GLYPH_H
-#define HEADER_GAP        32        // between the title, the sort mode and the page count
-#define SORT_SIZE         UI_META_SIZE
-#define SORT_WEIGHT       UI_WEIGHT_BOLD      // the sort in force is a value: 20/700 in text-1, as in Bild 5
+// Content runs from beside the collapsed rail (112 px wide) to the safe area's right edge - x 176..1824,
+// the column every Ember page uses.
+#define CONTENT_X         SIDEBAR_CONTENT_X
+#define CONTENT_RIGHT     UI_SAFE_RIGHT
+#define CONTENT_W         (CONTENT_RIGHT - CONTENT_X)
+// The search field as Bild 5 draws it, here showing what the results are for: 88 tall at the top of the
+// page, radius 26 with a 2-px inner border; the magnifier's 34-px box 30 in from the left, the text 88 in
+// (30 + 34 + 22 + the input's 2), and the page count ending 30 in from the right.
+#define FIELD_Y           58
+#define FIELD_H           88
+#define FIELD_RADIUS      26
+#define FIELD_BORDER      2       // its inner border: hairline over the field colour
+#define FIELD_PAD         30
+#define FIELD_ICON_BOX    34
+#define FIELD_ICON_SIZE   28      // the icon font's magnifier at 28 px is about 28 px of ink, as drawn in Bild 5
+#define FIELD_TEXT_X      (CONTENT_X + 88)
+#define FIELD_TEXT        34
+#define FIELD_WEIGHT      UI_WEIGHT_BOLD
+#define FIELD_TEXT_GAP    24      // the query's end ("...") -> the page count
+// The page count takes the field's right end, where Bild 5 shows "24 results" in 20/600 text-3: a feed never
+// states its total, so that number is not known, but the page count is.
 #define PAGE_SIZE         UI_META_SIZE
 #define PAGE_WEIGHT       UI_META_WEIGHT
-#define GRID_TOP          140       // clear of the title's descenders and of the focus ring 9 px above a row
-#define GRID_BOTTOM       (UI_HINTS_BOTTOM_Y - 16)   // the list's rectangle ends above the hint row; until v0.13
+// The sort, under the field and right-aligned as in Bild 5: a surface-1 group (padding 5, gap 4, radius 16)
+// of options 45 tall (radius 12, 20 px either side of 20/700 text). It only shows the sort - SELECT changes
+// it - so the one in force is simply the solid accent with onAccent text, the others textSecondary. It sits
+// 20 under the field where Bild 5 has 26: the 6 px go to the three result rows below.
+#define SEGMENT_Y         (FIELD_Y + FIELD_H + 20)
+#define SEGMENT_H         55
+#define SEGMENT_PAD       5
+#define SEGMENT_GAP       4
+#define SEGMENT_RADIUS    16
+#define OPTION_H          (SEGMENT_H - 2 * SEGMENT_PAD)
+#define OPTION_RADIUS     12
+#define OPTION_PAD_X      20
+#define OPTION_SIZE       20
+#define OPTION_WEIGHT     UI_WEIGHT_BOLD
+// A running download's chip (downloads.c) sits at the left end of the segment's row, centred on it - where
+// Bild 5 has its recent-search chips, which this screen does without. Its default spot above the hint row
+// lies across the third row and its focus ring (down to y 962): the rows run to just above the hint row.
+// Here it keeps 22 px from the first row's ring and always fits beside the segment: downloads.c ends its
+// text in "..." at 560 px, which makes the chip at most about 750 px wide, and the row has over 1300 px left
+// of the widest segment (Latest / Popular / Oldest, 342 px).
+#define DOWNLOAD_CHIP_Y   (SEGMENT_Y + (SEGMENT_H - DOWNLOAD_OVERLAY_H) / 2)
+// The list's rectangle: from just under the segment to just above the hint row, x 176..1824, 731 px tall -
+// the list view lays three rows of about 230 into it. A focused row's ring stands 8 px out of its plate:
+// above the first row it stays 16 px clear of the segment, below the last 14 px clear of the hint glyphs.
+#define GRID_TOP          (SEGMENT_Y + SEGMENT_H + 24)
+#define GRID_BOTTOM       (UI_HINTS_BOTTOM_Y - 22)   // the list's rectangle ends above the hint row; until v0.13
                                                      // it ran to the bottom edge, under the hints
-#define STATUS_BASELINE   (GRID_TOP + 30)
+#define STATUS_SIZE       24
+#define STATUS_WEIGHT     UI_WEIGHT_BOLD
+#define STATUS_BASELINE   (GRID_TOP + 40)
 #define NOTICE_PAD_X      44        // modal confirmation box: inner padding left and right
 #define NOTICE_PAD_TOP    40        //   panel top -> the first capitals of the message
-#define NOTICE_PAD_BOTTOM 30        //   the "Press X" line -> panel bottom
-#define NOTICE_GAP        24        //   the message -> the "Press X" line
+#define NOTICE_PAD_BOTTOM 30        //   the hint line -> panel bottom
+#define NOTICE_GAP        24        //   the message -> the hint line
 #define NOTICE_TEXT       24
-#define NOTICE_HINT_H     UI_HINT_GLYPH_H   // the "Press X" line is centred in a band as tall as a hint row
+#define NOTICE_HINT_H     UI_HINT_GLYPH_H   // the hint line is a one-hint row: as tall as its glyph
 #define NOTICE_RADIUS     26        // the search rows' radius - the one the row ring (UI_RING_ROW) is made for
 #define TRIANGLE_HINT     3         // Triangle's slot in the hint row (see initSearch): retitled per mode
+#define SORT_OPTIONS_MAX  (CHANNEL_SORT_COUNT > SORT_COUNT ? CHANNEL_SORT_COUNT : SORT_COUNT)
 
 static const char *SortNames[SORT_COUNT]                = { "Relevance", "Views" };
 static const char *ChannelSortNames[CHANNEL_SORT_COUNT] = { "Latest", "Popular", "Oldest" };
@@ -67,14 +112,18 @@ static struct {
    char      channelSortToken[MAX_SORT_TOKEN];   // first-page token for the chosen channel sort ("" = Latest)
    int       channelSort;
    int       sort;
+   int       sortCount;          // options in the segment: the current mode's sorts
    int       screenW, screenH;
    int       noticeVisible;      // a modal confirmation is up and owns the pad
    int       noticePanelW;
 } search;
 
-static Label   titleLabel, sortLabel, statusLabel, pageLabel;
-static Label   noticeLabel, noticeHintLabel;
-static UiHints hints;
+static Label    fieldLabel, statusLabel, pageWordLabel, pagePlusLabel;
+static Label    sortLabels[SORT_OPTIONS_MAX];
+static Label    noticeLabel;
+static UiDigits pageDigits;
+static Icon     fieldIcon;
+static UiHints  hints, noticeHints;
 
 static int searchFetch(const char *token, SearchResults *out, void *user)
 {
@@ -95,14 +144,15 @@ static void showNotice(const char *text)
    search.noticeVisible = 1;
 }
 
-// The hint row has to fit between the safe edges, and much of its width is the console's own glyph art, whose
-// size is only known at run time. Should the art come out wider than expected, the gaps narrow instead of the
-// row running off the left edge; at the expected size the full gap fits with room to spare.
+// The hint row has to fit between the content's left edge (beside the rail) and the safe right edge, and
+// much of its width is the console's own glyph art, whose size is only known at run time - RPCS3's is far
+// wider than the console's (SELECT alone 111 px against 34). Should the art come out wider still, the gaps
+// narrow instead of the row running into the rail; at both known sizes the full gap fits.
 static void fitHintRow(UiHints *row)
 {
    int gap = UI_HINT_GAP;
    uiSetHintsGap(row, gap);
-   while (uiGetHintsWidth(row) > UI_SAFE_RIGHT - UI_SAFE_X && gap > UI_HINT_GAP / 2) {
+   while (uiGetHintsWidth(row) > CONTENT_RIGHT - CONTENT_X && gap > UI_HINT_GAP / 2) {
       gap -= 2;
       uiSetHintsGap(row, gap);
    }
@@ -117,14 +167,70 @@ static void updateTriangleHint(void)
    fitHintRow(&hints);   // the row's width follows its captions
 }
 
-// title (left) shows the mode; sortLabel (right) shows the current ordering.
+// New text and colour for a label of fixed text with at most one rasterisation, and none when neither
+// changed: emptied first, the colour is only stored, and setting the text then renders it once, in that colour.
+static void setFixedLabel(Label *l, const char *text, uint32_t color)
+{
+   if (l->color == color && strncmp(l->text, text, LABEL_MAX_TEXT) == 0) return;
+   freeLabel(l);
+   setLabelColor(l, color);
+   setLabelText(l, text);
+}
+
+// How much of text[0..length) is whole characters: a cut in the middle of a character's UTF-8 bytes leaves
+// a lead byte whose sequence runs past the end, and that character is dropped.
+static int wholeCharsLength(const char *text, int length)
+{
+   int start = length;
+   while (start > 0 && ((unsigned char)text[start - 1] & 0xC0) == 0x80) start--;   // back over continuation bytes
+   if (start == 0) return length;                                                 // no lead byte at all: leave it
+   unsigned char lead = (unsigned char)text[start - 1];
+   int need = lead >= 0xF0 ? 4 : lead >= 0xE0 ? 3 : lead >= 0xC0 ? 2 : 1;
+   return start - 1 + need <= length ? length : start - 1;
+}
+
+// The extractor copies a name into a fixed buffer and stops one byte short of its end, so a name that fills
+// its buffer of textCap bytes was cut there - "The Colin Cowherd Podcast and The Herd with Col" - and shown
+// as it is it reads as complete. Such a name ends in "..." (three periods: there is no ellipsis glyph),
+// after its last whole character and without the space the cut may have left before it.
+static void copyMarkingCut(char *out, int cap, const char *text, int textCap)
+{
+   int length = (int)strlen(text);
+   if (length < textCap - 1 || cap < 4) { strCopy(out, cap, text); return; }
+   if (length > cap - 4) length = cap - 4;   // room for "..." and the terminator
+   length = wholeCharsLength(text, length);
+   while (length > 0 && text[length - 1] == ' ') length--;
+   memcpy(out, text, length);
+   memcpy(out + length, "...", 4);
+}
+
+// The segment shows the current mode's sorts, the one in force in onAccent (it sits on the accent) and the
+// others in textSecondary. SELECT reaches every one of them - a channel's too, whether or not its feed
+// handed over a token for it (cycleChannelSort) - so none is drawn as out of reach. A label renders only
+// when its text or colour changes.
+static void setSortLabels(void)
+{
+   int channel = search.channelId[0] != 0;
+   const char **names = channel ? ChannelSortNames : SortNames;
+   int current = channel ? search.channelSort : search.sort;
+
+   search.sortCount = channel ? CHANNEL_SORT_COUNT : SORT_COUNT;
+   for (int i = 0; i < search.sortCount; i++)
+      setFixedLabel(&sortLabels[i], names[i], i == current ? activeTheme->onAccent : activeTheme->textSecondary);
+}
+
+// The field shows what the results are for: the query, or the channel's name; the segment the mode's sorts
+// with the one in force; the Triangle hint what Triangle does in this mode. Every change of mode or sort
+// comes through here (reload).
 static void setHeading(void)
 {
-   char heading[192];
-   if (search.channelId[0]) { snprintf(heading, sizeof heading, "%s", search.channelName); setLabelText(&sortLabel, ChannelSortNames[search.channelSort]); }
-   else                     { snprintf(heading, sizeof heading, "Search: %s", search.query); setLabelText(&sortLabel, SortNames[search.sort]); }
+   // the channel's name comes from a result's author field, as large as channelName; the query is shown as
+   // it is, being exactly what was searched for
+   char channel[sizeof search.channelName + 3];
+   copyMarkingCut(channel, sizeof channel, search.channelName, (int)sizeof search.channelName);
    // a channel name or a query: drawn raw, and all of it in FONT_POP when Manrope lacks one of its characters
-   uiSetTextLabel(&titleLabel, UI_PAGE_TITLE_WEIGHT, heading);
+   uiSetTextLabel(&fieldLabel, FIELD_WEIGHT, search.channelId[0] ? channel : search.query);
+   setSortLabels();
    updateTriangleHint();
 }
 
@@ -180,6 +286,10 @@ static void enterChannel(const SearchResult *item)
    reload();
 }
 
+// SELECT in channel mode: nothing until the feed has handed over the sort chips (the Latest chip's token is
+// the sign), then always the next of Latest -> Popular -> Oldest. A sort's first page is the token its chip
+// carries (SearchResults.sortTokens); a sort the feed gave none for loads the plain first page (searchFetch),
+// which is the newest uploads.
 static void cycleChannelSort(void)
 {
    const SearchResults *results = gridResults(&search.grid);
@@ -199,49 +309,12 @@ static void onQueryEntered(const char *text)
    reload();
 }
 
-// How wide a label of fixed text will come out: the renderer makes the texture exactly as wide as the
-// advances add up to, so measuring them in the label's font and size predicts it - with a few px to spare.
-static int measureTextWidth(UiWeight weight, int size, const char *text)
+// The widest the page count can get, so the field's text can end in "..." short of it. There are at most
+// 500 results, so never more than three digits a number, and the digits are drawn fixed-width (UiDigits):
+// every three-digit number is as wide as "888".
+static int pageCountReserve(void)
 {
-   float width = measureFontText(uiGetFont(weight), size, text);   // 0 when no font opened at all
-   if (width <= 0.0f) width = (float)strlen(text) * (float)size * 0.6f;
-   return (int)width + 4;
-}
-
-// The widest the page count can get. There are at most 500 results, so never more than three digits, and
-// Manrope's digits are proportional - "Page 111" is narrower than "Page 888" - so the sample uses its widest.
-static int measurePageReserve(void)
-{
-   Font *font = uiGetFont(PAGE_WEIGHT);
-   char widest = '0';
-   float best = 0.0f;
-   if (font->open) {   // measureFontChar does not check that itself
-      for (char c = '0'; c <= '9'; c++) {
-         float advance = measureFontChar(font, PAGE_SIZE, (uint32_t)(unsigned char)c);
-         if (advance > best) { best = advance; widest = c; }
-      }
-   }
-   char sample[32];
-   snprintf(sample, sizeof sample, "Page %c%c%c / %c%c%c+", widest, widest, widest, widest, widest, widest);
-   return measureTextWidth(PAGE_WEIGHT, PAGE_SIZE, sample);
-}
-
-// A label's width is fixed when it is made, and the title's has to leave room for the sort mode and page
-// count right of it, which change as you go. It used to be a flat screen width minus 300, so a long query
-// ran on underneath them; sized against the widest both can ever be, it now ends in "..." short of them.
-static int measureTitleWidth(void)
-{
-   int sortW = 0;
-   for (int i = 0; i < SORT_COUNT; i++) {
-      int width = measureTextWidth(SORT_WEIGHT, SORT_SIZE, SortNames[i]);
-      if (width > sortW) sortW = width;
-   }
-   for (int i = 0; i < CHANNEL_SORT_COUNT; i++) {
-      int width = measureTextWidth(SORT_WEIGHT, SORT_SIZE, ChannelSortNames[i]);
-      if (width > sortW) sortW = width;
-   }
-   int titleW = UI_SAFE_RIGHT - measurePageReserve() - HEADER_GAP - sortW - HEADER_GAP - CONTENT_X;
-   return titleW > 400 ? titleW : 400;
+   return pageWordLabel.tt.tex.w + uiGetDigitsWidth(&pageDigits, " 888 / 888") + pagePlusLabel.tt.tex.w;
 }
 
 static void initSearch(void)
@@ -262,15 +335,24 @@ static void initSearch(void)
    }
 
    // The fonts are the shared ones (ui-fonts.h) - nothing here opens or closes one. Labels are positioned
-   // when they are drawn, by their measured capitals, since the title may come out in FONT_POP.
-   uiInitTextLabel(&titleLabel, UI_PAGE_TITLE_WEIGHT, CONTENT_X, 0, measureTitleWidth(), UI_PAGE_TITLE_SIZE, activeTheme->textPrimary, TEXT_NOWRAP_ELLIPSIS, "");
-   uiInitLabel(&sortLabel,   SORT_WEIGHT,   0, 0, AUTO, SORT_SIZE, activeTheme->textPrimary,   TEXT_NOWRAP, "");
-   uiInitLabel(&statusLabel, UI_BODY_WEIGHT, CONTENT_X, 0, UI_SAFE_RIGHT - CONTENT_X, UI_BODY_SIZE, activeTheme->textSecondary, TEXT_NOWRAP, "Loading...");
-   uiInitLabel(&pageLabel,   PAGE_WEIGHT,   0, 0, AUTO, PAGE_SIZE, activeTheme->textSecondary, TEXT_NOWRAP, "");
+   // when they are drawn, by their measured capitals, since the field's text may come out in FONT_POP.
+   // "Page" and the "+" are labels, the numbers between them fixed-width digits: a count that grows as
+   // pages arrive would otherwise shift the whole readout sideways with every digit that changes width.
+   uiInitLabel(&pageWordLabel, PAGE_WEIGHT, 0, 0, AUTO, PAGE_SIZE, activeTheme->textTertiary, TEXT_NOWRAP, "Page");
+   uiInitLabel(&pagePlusLabel, PAGE_WEIGHT, 0, 0, AUTO, PAGE_SIZE, activeTheme->textTertiary, TEXT_NOWRAP, "+");
+   uiInitDigits(&pageDigits, PAGE_WEIGHT, PAGE_SIZE);
+   int fieldTextW = CONTENT_RIGHT - FIELD_PAD - pageCountReserve() - FIELD_TEXT_GAP - FIELD_TEXT_X;
+   uiInitTextLabel(&fieldLabel, FIELD_WEIGHT, 0, 0, fieldTextW, FIELD_TEXT, activeTheme->textPrimary, TEXT_NOWRAP_ELLIPSIS, "");
+   for (int i = 0; i < SORT_OPTIONS_MAX; i++)
+      uiInitLabel(&sortLabels[i], OPTION_WEIGHT, 0, 0, AUTO, OPTION_SIZE, activeTheme->textSecondary, TEXT_NOWRAP, NULL);
+   uiInitLabel(&statusLabel, STATUS_WEIGHT, 0, 0, AUTO, STATUS_SIZE, activeTheme->textSecondary, TEXT_NOWRAP, "Loading...");
+   initIcon(&fieldIcon, ICON_SEARCH, FIELD_ICON_SIZE);
    search.noticeVisible = 0;
    search.noticePanelW  = search.screenW * 2 / 3;
    uiInitTextLabel(&noticeLabel, UI_BODY_WEIGHT, 0, 0, search.noticePanelW - 2 * NOTICE_PAD_X, NOTICE_TEXT, activeTheme->textPrimary, TEXT_WRAP, "");
-   uiInitLabel(&noticeHintLabel, UI_HINT_WEIGHT, 0, 0, AUTO, UI_HINT_SIZE, activeTheme->textSecondary, TEXT_NOWRAP, "Press X to close");
+   // the box's own line: the console's cross, where the old text spelled "Press X to close"
+   uiInitHints(&noticeHints);
+   uiAddHint(&noticeHints, GLYPH_CROSS, "Close");
 
    uiInitHints(&hints);
    uiAddHint(&hints, GLYPH_CROSS,    "Play");
@@ -285,8 +367,8 @@ static void initSearch(void)
    uiAddHint(&hints, GLYPH_R2,       "Page");
 
    initVideoGrid(&search.grid, uiGetFont(UI_CARD_TITLE_WEIGHT), CONTENT_X, GRID_TOP,
-                 UI_SAFE_RIGHT - CONTENT_X, GRID_BOTTOM - GRID_TOP);
-   setGridView(&search.grid, GRID_VIEW_LIST);   // the list is the only layout now
+                 CONTENT_W, GRID_BOTTOM - GRID_TOP);
+   setGridView(&search.grid, GRID_VIEW_LIST);   // results are rows (Bild 5), three to a page
    setGridWatchedPredicate(&search.grid, isWatched);
    setGridWatchLaterPredicate(&search.grid, isWatchLater);
    setGridProgressSource(&search.grid, getWatchedPosition);
@@ -355,21 +437,76 @@ static void updateSearch(void)
    }
 }
 
-// title left, then - right-aligned - the sort mode and, once results are in, the page count
+// The field as Bild 5 draws it: surface-2 with a 2-px inner border. The border is the hairline laid over the
+// whole field and the field colour drawn again 2 px in, which leaves exactly the lightened edge of the CSS
+// inset border.
+static void fillField(int x, int y, int w, int h)
+{
+   uiFillRounded(x, y, w, h, FIELD_RADIUS, activeTheme->surface);
+   uiFillRounded(x, y, w, h, FIELD_RADIUS, activeTheme->hairline);
+   uiFillRounded(x + FIELD_BORDER, y + FIELD_BORDER, w - 2 * FIELD_BORDER, h - 2 * FIELD_BORDER,
+                 FIELD_RADIUS - FIELD_BORDER, activeTheme->surface);
+}
+
+// An icon with its ink centred in a box. The glyph does not fill its em box, so centring the em box would
+// leave the ink off centre by the glyph's own bearings.
+static void drawIconInBox(Icon *icon, int boxX, int boxY, int boxW, int boxH, uint32_t color)
+{
+   if (!icon->tex || icon->tex->w <= 0 || icon->tex->h <= 0) return;
+   drawIcon(icon, boxX + (boxW - icon->tex->w) / 2 - icon->offsetX, boxY + (boxH - icon->tex->h) / 2 - icon->offsetY, color);
+}
+
+// "Page 3 / 12+" right-aligned in the field's right end, its capitals centred in the field like the query's.
+// Only once results are in; the "+" while the feed can still grow.
+static void drawPageCount(void)
+{
+   char numbers[32];
+   snprintf(numbers, sizeof numbers, " %d / %d", gridPageIndex(&search.grid) + 1, gridPageCount(&search.grid));
+   int more    = gridHasMorePages(&search.grid);
+   int digitsW = uiGetDigitsWidth(&pageDigits, numbers);
+   int x = CONTENT_RIGHT - FIELD_PAD - pageWordLabel.tt.tex.w - digitsW - (more ? pagePlusLabel.tt.tex.w : 0);
+   uiDrawLabelAt(&pageWordLabel, x, uiLabelYForCenter(&pageWordLabel, FIELD_Y, FIELD_H));
+   x += pageWordLabel.tt.tex.w;
+   uiDrawDigits(&pageDigits, x, uiTextYForCenter(pageDigits.font, pageDigits.size, FIELD_Y, FIELD_H), numbers,
+                activeTheme->textTertiary);
+   x += digitsW;
+   if (more) uiDrawLabelAt(&pagePlusLabel, x, uiLabelYForCenter(&pagePlusLabel, FIELD_Y, FIELD_H));
+}
+
+static int sortSegmentWidth(void)
+{
+   int width = 2 * SEGMENT_PAD + (search.sortCount - 1) * SEGMENT_GAP;
+   for (int i = 0; i < search.sortCount; i++) width += sortLabels[i].tt.tex.w + 2 * OPTION_PAD_X;
+   return width;
+}
+
+// the current mode's sorts in a row, right-aligned under the field, the one in force on the accent
+static void drawSortSegment(void)
+{
+   int current = search.channelId[0] ? search.channelSort : search.sort;
+   int width = sortSegmentWidth();
+   int x = CONTENT_RIGHT - width, optionY = SEGMENT_Y + SEGMENT_PAD;
+   uiFillRounded(x, SEGMENT_Y, width, SEGMENT_H, SEGMENT_RADIUS, activeTheme->surface1);
+   x += SEGMENT_PAD;
+   for (int i = 0; i < search.sortCount; i++) {
+      int optionW = sortLabels[i].tt.tex.w + 2 * OPTION_PAD_X;
+      if (i == current) uiFillRounded(x, optionY, optionW, OPTION_H, OPTION_RADIUS, activeTheme->accent);
+      uiDrawLabelAt(&sortLabels[i], x + OPTION_PAD_X, uiLabelYForCenter(&sortLabels[i], optionY, OPTION_H));
+      x += optionW + SEGMENT_GAP;
+   }
+}
+
+// Bild 5's header: the field with what the results are for and the page count, the sort segment under it
+// and, at the other end of the segment's row, a running download's chip. Drawn after the list, as the
+// focused row's glow reaches 81 px up into it.
 static void drawHeader(void)
 {
-   int rightEdge = UI_SAFE_RIGHT;
-   if (gridStage(&search.grid) == GRID_READY) {
-      char page[40];
-      formatGridPage(&search.grid, page, sizeof page);
-      setLabelText(&pageLabel, page);   // only rasterises when the text actually changes
-      rightEdge -= pageLabel.tt.tex.w;
-      uiDrawLabelAt(&pageLabel, rightEdge, uiLabelYForCenter(&pageLabel, HEADER_Y, HEADER_H));
-      rightEdge -= HEADER_GAP;
-   }
-   // right-aligned, left of the page count
-   uiDrawLabelAt(&sortLabel, rightEdge - sortLabel.tt.tex.w, uiLabelYForCenter(&sortLabel, HEADER_Y, HEADER_H));
-   uiDrawLabelAt(&titleLabel, CONTENT_X, uiLabelYForCenter(&titleLabel, HEADER_Y, HEADER_H));
+   fillField(CONTENT_X, FIELD_Y, CONTENT_W, FIELD_H);
+   drawIconInBox(&fieldIcon, CONTENT_X + FIELD_PAD, FIELD_Y, FIELD_ICON_BOX, FIELD_H, activeTheme->textSecondary);
+   uiDrawLabelAt(&fieldLabel, FIELD_TEXT_X, uiLabelYForCenter(&fieldLabel, FIELD_Y, FIELD_H));
+   if (gridStage(&search.grid) == GRID_READY) drawPageCount();
+   drawSortSegment();
+   drawDownloadOverlayAt(CONTENT_X, DOWNLOAD_CHIP_Y, UI_ALIGN_LEFT);   // nothing while no download runs
 }
 
 // The modal box: the scrim dims everything under it, then a rounded panel with the focus ring round it - the
@@ -387,16 +524,15 @@ static void drawNotice(void)
    uiFillRounded(x, y, panelW, panelH, NOTICE_RADIUS, activeTheme->surface);
    uiDrawFocusRing(x, y, panelW, panelH, UI_RING_ROW, activeTheme->focusBorder);
    uiDrawLabelAt(&noticeLabel, x + NOTICE_PAD_X, y + textTop);
-   int hintY = y + textTop + noticeLabel.tt.tex.h + NOTICE_GAP;
-   uiDrawLabelAt(&noticeHintLabel, x + NOTICE_PAD_X, uiLabelYForCenter(&noticeHintLabel, hintY, NOTICE_HINT_H));
+   uiDrawHints(&noticeHints, x + NOTICE_PAD_X, y + textTop + noticeLabel.tt.tex.h + NOTICE_GAP, UI_ALIGN_LEFT);
 }
 
 static void drawSearch(void)
 {
    fillGfxRectangle(0, 0, search.screenW, search.screenH, activeTheme->appBg);
 
-   // The list goes down first and the heading over it: the focused row's glow reaches 81 px out from its
-   // thumbnail, up into the header, and text drawn before it would come out tinted orange.
+   // The list goes down first and the header over it: the focused row's glow reaches 81 px out from its
+   // plate, up into the header, and text drawn before it would come out tinted orange.
    if (gridStage(&search.grid) == GRID_READY) {
       drawVideoGrid(&search.grid);
    } else {
@@ -405,8 +541,8 @@ static void drawSearch(void)
    }
    drawHeader();
 
+   drawSidebarPassive(search.screenH, SIDE_SEARCH);
    uiDrawHints(&hints, UI_SAFE_RIGHT, UI_HINTS_BOTTOM_Y, UI_ALIGN_RIGHT);
-   drawDownloadOverlay(search.screenW);
 
    if (search.noticeVisible) drawNotice();
 }
@@ -415,12 +551,15 @@ static void termSearch(void)
 {
    termVideoGrid(&search.grid);
    uiTermHints(&hints);
-   freeLabel(&titleLabel);
-   freeLabel(&sortLabel);
+   uiTermHints(&noticeHints);
+   freeLabel(&fieldLabel);
    freeLabel(&statusLabel);
-   freeLabel(&pageLabel);
+   freeLabel(&pageWordLabel);
+   freeLabel(&pagePlusLabel);
+   for (int i = 0; i < SORT_OPTIONS_MAX; i++) freeLabel(&sortLabels[i]);
    freeLabel(&noticeLabel);
-   freeLabel(&noticeHintLabel);
+   uiFreeDigits(&pageDigits);
+   freeIcon(&fieldIcon);   // the texture belongs to the icon font's shared cache; this only lets go of it
    // no closeFont: the fonts are shared, and closing one would blank every label on every screen
 }
 
@@ -434,7 +573,7 @@ void openSearchQuery(const char *query)
 void openChannelFor(const SearchResult *item)
 {
    // without an id there is no channel to browse; pushing anyway lands on a screen that is in neither mode
-   // (headed "Search: " with no query) and whose Triangle hint lies about what the button does.
+   // (an empty field and no channel) and whose Triangle hint lies about what the button does.
    if (!item->channelId[0]) return;
    pendingChannel = *item;
    pendingIsChannel = 1;
