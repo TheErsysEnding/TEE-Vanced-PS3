@@ -389,10 +389,13 @@ static int categoryForItem(SidebarItem item)
 }
 
 // cache the current category (only when it's fully loaded) so returning to it is instant. Live is never
-// cached: it has no slot, and what it lists is stale within minutes.
+// cached: it has no slot, and what it lists is stale within minutes. Nor is a feed waiting for its reload
+// (pendingReload): resumeHome has just dropped its cache as stale - after a new region, say - and a pick made in
+// the rail of another screen leaves the page before updateHome reloads it. Cached then, the old region's
+// Trending list came back on the next visit.
 static void cacheCurrent(void)
 {
-   if (isLiveCategory(home.category)) return;
+   if (isLiveCategory(home.category) || home.pendingReload) return;
    if (gridStage(&home.grid) != GRID_READY || gridBusy(&home.grid)) return;   // don't copy mid-append
    categoryCache[home.category] = *gridResults(&home.grid);
    categoryCached[home.category] = 1;
@@ -645,7 +648,9 @@ int updateRailOverScreen(SidebarItem own)
    int picked = updateSidebar();
    if (picked < 0) return RAIL_OPEN;   // still open, or O just closed it: either way the frame was the rail's
    setSidebarFocused(0);
-   if (picked == (int)own) return RAIL_PICKED_OWN;
+   // RIGHT on the screen's own entry - where the rail opens - is the way back to where you were, as O is: the
+   // screen's focus is left as it was. X on it is the entry's own action, for the screen to decide.
+   if (picked == (int)own) return isPadButtonPressed(PAD_BTN_CROSS) ? RAIL_PICKED_OWN : RAIL_OPEN;
 
    // Every screen above Home goes, top first, each with its own term and the next one's resume, exactly as O
    // would take them down one by one. Home is the root of the stack, so the loop stops there; the bound only

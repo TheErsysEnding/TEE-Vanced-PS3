@@ -45,7 +45,8 @@ live streams.
   over the page with the names and dims the rest. Search, the search field,
   the settings and the playlists (opened from the menu) show it too, and LEFT
   opens it there as on the home screen; picking another page there goes back
-  to the home screen and opens that page.
+  to the home screen and opens that page. RIGHT on the page you are on closes
+  the menu, as O does, and leaves you where you were.
 - **Search**: the field and the search history as rows; the results three to
   a page, with the sort shown as a switch (SELECT changes it as before) and
   the page count in the field. UP on the first result moves to the field, and
