@@ -7,12 +7,40 @@ before it was tagged. Anything that had not been is said so plainly.
 
 Not yet installed on a console.
 
-The first step of the new look, "Ember": colours, type and the button hints
-change; the layouts stay as they are, apart from what the larger text and the
-TV's safe area need. Every button still does what it did.
+The new look, "Ember": a warm dark ground with TEE orange, the Manrope
+typeface, thumbnails that carry the pages, a focus that can be seen from the
+sofa, and the console's own button symbols. Every button still does what it
+did, apart from LEFT on the home screen (below).
 
 ### Changed
 
+- **The home screen is a grid** of four cards a row and two rows a page, under
+  the page title, the Trending categories as chips, the page count and a clock
+  (12 or 24 hours, as the XMB is set). A card shows its duration or LIVE, how
+  far you got and the Watch Later tag. A finished video is dimmed and marked
+  WATCHED; one you stopped part way shows only its progress bar - before,
+  every started video was dimmed. Subscriptions are channel cards in the same
+  style.
+- **LEFT moves along the row** now that there are four columns. Only from the
+  first column does it open the menu; O still opens it from anywhere. RIGHT
+  stops at the last column instead of running on into the next row, so LEFT
+  always undoes it, and DOWN onto a shorter last row lands on its last card.
+- **The menu** is a narrow strip of icons under the TEE tile. Opened, it lies
+  over the page with the names and dims the rest. Search, the search field,
+  the settings and the playlists (opened from the menu) show it too, inactive.
+- **Search**: the field and the search history as rows; the results three to
+  a page, with the sort shown as a switch (SELECT changes it as before) and
+  the page count in the field. On the field screen the hints say what X and
+  Square do on the row you are on.
+- **The settings are one list** - Playback, then SponsorBlock with Skip, Ask
+  and Keep for each category - beside the About card with the QR code.
+- **The player**: title, channel and views at the top left; quality, audio
+  track and subtitles as chips at the top right; the chapter and the time over
+  a new timeline with gaps between chapters, the SponsorBlock segments in
+  their colours and a legend for the ones the video has; the button hints
+  along the bottom. The volume is a bar with the percent on the left, and the
+  offer to skip a segment a panel that counts down the time left.
+- **Playlists** and the download badge in the same style.
 - **A new palette** from the Ember design: the same TEE orange on a warm dark
   ground with cream text, and a red of its own for the LIVE badge. A
   `themes.txt` written by an older version still holds the old colours, and its
@@ -28,19 +56,20 @@ TV's safe area need. Every button still does what it did.
 - **No text below 20 px** except badges and key captions, which are 18 px in
   extra bold.
 - **New button hints**: the console's own button symbols, larger and inside
-  the TV's safe area, at the bottom right - in the settings at the bottom left,
-  under the options, as in the design. On the home screen Play, Watch Later and
-  Channel moved to the top right; the other hints stay at the bottom.
+  the TV's safe area. On the home screen Play, Watch Later and Channel sit at
+  the top right and the others at the bottom right; in the settings they are
+  at the bottom left, and the player has a row of its own along the bottom.
 - **SponsorBlock categories** go by their full names everywhere, in the
   settings and in the player's "Skip ..." and "Skipped ..." messages:
   Self-promotion, Interaction reminder, Outro and end cards, Filler and
   tangents. Their colours follow the new design, and Off-topic music turned
   pink - its orange was all but invisible on the orange played part of the
   seek bar.
-- The download progress badge moved into the safe area.
-- In the player the times are drawn digit by digit at a fixed width, with a
-  dark outline: they keep their place as they count and stay readable on a
-  bright picture.
+- The download badge sits inside the safe area, clear of the hints and the
+  cards.
+- In the player the times are drawn digit by digit at a fixed width, on the
+  new shade at the bottom of the picture: they keep their place as they count
+  and stay readable on a bright picture.
 - **The video description** is set in Manrope as well, up to about 70 lines.
   Manrope's lines are taller, so a longer description stays in the console
   font, which fits more of them, and nothing that showed before is cut.
@@ -57,6 +86,8 @@ TV's safe area need. Every button still does what it did.
 - **A description too long for the text renderer left the description
   empty.** The renderer refuses a text taller than its 16 MB limit; such a
   description is now shortened from the end until it fits, and ends in "...".
+- R3's statistics gave a long video's time in minutes (192:50); they now use
+  the hours the timeline shows (3:12:50).
 
 ## v0.13.1 beta — not released yet
 
