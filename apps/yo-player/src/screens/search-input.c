@@ -7,7 +7,8 @@
 
 #include "screens/search-input.h"
 #include "storage.h"
-#include "sidebar.h"            // the rail, drawn passive
+#include "sidebar.h"            // the rail: collapsed, or open over the screen while it has the focus
+#include "screens/home.h"       // updateRailOverScreen: LEFT opens the rail here as on Home
 #include "ui-hints.h"           // the Ember hint row
 #include "ui-draw.h"            // safe area, rounded fills, focus glow and ring, uiDrawLabelAt
 #include "ui-fonts.h"           // the shared fonts, the type scale, label helpers and text placement
@@ -25,6 +26,7 @@
 #include "string-utilities.h"   // strCopy
 #include <string.h>
 #include <stdio.h>
+#include <sys/sys_time.h>       // sys_time_get_system_time: the move timer, restarted as the rail closes
 
 // Content runs from beside the collapsed rail (112 px wide) to the safe area's right edge - x 176..1824,
 // the column every Ember page uses. The field and the rows span all of it, so their right ends line up with
@@ -173,6 +175,7 @@ static void initSearchInput(void)
    uiAddHint(&hints, GLYPH_CIRCLE, "Back");
    uiAddHint(&hints, GLYPH_SQUARE, "Delete");   // SQUARE_HINT: only on a remembered query (updateRowHints)
    uiAddHint(&hints, GLYPH_START,  "Type");
+   uiAddHint(&hints, GLYPH_DPAD_LEFT, "Menu");   // the rail opens here as on Home
 
    setFieldText(pendingInitial);
    reloadHistory();
@@ -182,6 +185,15 @@ static void initSearchInput(void)
 static void updateSearchInput(void)
 {
    if (oskInputActive()) return;
+
+   // The rail: LEFT opens it here as on Home (home.h). Search picked in it is this screen: the rail just closes.
+   // A direction still held as it closes waits out the normal delay instead of moving at once.
+   int rail = updateRailOverScreen(SIDE_SEARCH);
+   if (rail == RAIL_GONE) return;   // Home is back on top: this screen is gone, touch nothing of it
+   if (rail != RAIL_NOT_OPEN) {
+      if (!isSidebarFocused()) { navigateRepeat.timer = sys_time_get_system_time(); navigateRepeat.repeats = 0; }
+      return;
+   }
 
    if (isPadButtonPressed(PAD_BTN_CIRCLE)) { popScreen(); return; }
    if (isPadButtonPressed(PAD_BTN_START))  { oskInputBegin("Search YouTube", state.query, onTyped); return; }
@@ -295,9 +307,10 @@ static void drawSearchInput(void)
    uiDrawLabelAt(&recentLabel, CONTENT_X, uiLabelYForBaseline(&recentLabel, RECENT_BASELINE));
    if (state.historyCount == 0) uiDrawLabelAt(&emptyLabel, CONTENT_X, uiLabelYForCenter(&emptyLabel, LIST_TOP, ROW_PLATE_H));
 
-   drawSidebarPassive(state.screenH, SIDE_SEARCH);
+   if (!isSidebarFocused()) drawSidebarPassive(state.screenH, SIDE_SEARCH);
    updateRowHints();    // here, after this frame's update: a deletion can hand the focus back to the field
    uiDrawHints(&hints, UI_SAFE_RIGHT, UI_HINTS_BOTTOM_Y, UI_ALIGN_RIGHT);
+   if (isSidebarFocused()) drawSidebar(state.screenH);   // open: over everything, the hints dimmed with the rest
 }
 
 static void termSearchInput(void)

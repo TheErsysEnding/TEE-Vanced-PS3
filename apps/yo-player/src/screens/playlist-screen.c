@@ -5,7 +5,8 @@
 
 #include "screens/playlist-screen.h"
 #include "storage.h"
-#include "sidebar.h"            // drawSidebarPassive: the rail, when the screen was opened from it
+#include "sidebar.h"            // the rail, when the screen was opened from it: collapsed, or open over it
+#include "screens/home.h"       // updateRailOverScreen: LEFT opens the rail here as on Home
 #include "ui-hints.h"           // UiHints; brings ui-draw.h (UI_SAFE_*) and ui-fonts.h (uiInitLabel, metrics)
 #include "ui/console-glyphs.h"
 
@@ -22,6 +23,7 @@
 #include "string-utilities.h"   // strCopy
 #include <string.h>
 #include <stdio.h>
+#include <sys/sys_time.h>       // sys_time_get_system_time: the move timer, restarted as the rail closes
 
 // Everything sits inside the safe area of the 1920x1080 canvas. The content starts beside the collapsed rail
 // (112 px), at x 176 like every Ember page - also when the screen opens as the chooser, which draws no rail:
@@ -209,6 +211,7 @@ static void initPlaylistScreen(void)
    if (mode == MODE_BROWSE) {
       uiAddHint(&hints, GLYPH_START,  "New");
       uiAddHint(&hints, GLYPH_SQUARE, "Delete");
+      uiAddHint(&hints, GLYPH_DPAD_LEFT, "Menu");   // opened from the rail, the rail opens here as on Home
    }
 
    memset(&navigateRepeat, 0, sizeof navigateRepeat);
@@ -232,6 +235,18 @@ static void updatePlaylistScreen(void)
       }
       if (isPadButtonPressed(PAD_BTN_CIRCLE)) { state.noticeVisible = 0; state.confirmDelete = 0; }
       return;
+   }
+
+   // Opened from the rail, LEFT opens the rail here as on Home (home.h); Playlists picked in it is this screen,
+   // so it just closes, and a direction still held then waits out the normal delay. The "add to playlist"
+   // chooser is a step inside another page and has no rail: LEFT does nothing there, as before.
+   if (mode == MODE_BROWSE) {
+      int rail = updateRailOverScreen(SIDE_PLAYLISTS);
+      if (rail == RAIL_GONE) return;   // Home is back on top: this screen is gone, touch nothing of it
+      if (rail != RAIL_NOT_OPEN) {
+         if (!isSidebarFocused()) { navigateRepeat.timer = sys_time_get_system_time(); navigateRepeat.repeats = 0; }
+         return;
+      }
    }
 
    if (isPadButtonPressed(PAD_BTN_CIRCLE)) { popScreen(); return; }
@@ -338,7 +353,7 @@ static void drawPlaylistScreen(void)
    fillGfxRectangle(0, 0, state.screenW, state.screenH, activeTheme->appBg);
    // From the rail the screen is one of its pages, and the rail says so. As the chooser (L3 on a video) it is
    // a step inside the page it came from, which the rail cannot mark.
-   if (mode == MODE_BROWSE) drawSidebarPassive(state.screenH, SIDE_PLAYLISTS);
+   if (mode == MODE_BROWSE && !isSidebarFocused()) drawSidebarPassive(state.screenH, SIDE_PLAYLISTS);
 
    int rows = rowCount();
    if (rows > 0) drawFocusPlate(LIST_TOP + state.selected * ROW_H);
@@ -355,6 +370,8 @@ static void drawPlaylistScreen(void)
    drawLabel(&titleLabel);
 
    uiDrawHints(&hints, UI_SAFE_RIGHT, UI_HINTS_BOTTOM_Y, UI_ALIGN_RIGHT);
+   // the rail, open, over everything - the hints included, dimmed by its scrim with the rest
+   if (mode == MODE_BROWSE && isSidebarFocused()) drawSidebar(state.screenH);
 
    if (state.noticeVisible) drawNotice();
 }

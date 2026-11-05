@@ -730,6 +730,11 @@ void setGridInputSuppressed(VideoGrid *grid, int suppressed)
    if (!suppressed) resetGridRepeat(grid);   // nothing held over from the overlay may fire on return
 }
 
+void setGridFocusHidden(VideoGrid *grid, int hidden) { grid->focusHidden = hidden ? 1 : 0; }
+
+// item i drawn as the focused one: the selection, unless the focus is elsewhere on the screen
+static int showsFocus(const VideoGrid *grid, int i) { return i == grid->selected && !grid->focusHidden; }
+
 GridView gridView(const VideoGrid *grid) { return grid->view; }
 
 void setGridView(VideoGrid *grid, GridView view)
@@ -947,7 +952,7 @@ static void drawCard(VideoGrid *grid, int i, float grow)
    int x, y, w, h, tx, ty;
    cardBox(grid, i, grow, &x, &y, &w, &h);
    itemPosition(grid, i, &tx, &ty);
-   int selected = (i == grid->selected);
+   int selected = showsFocus(grid, i);
    TileState state = tileState(grid, i);
 
    drawImage(grid, i, x, y, w, h, UI_RADIUS_THUMB, cornerColor(grow), state);
@@ -980,7 +985,7 @@ static void drawRow(VideoGrid *grid, int i)
 {
    int rx, ry;
    itemPosition(grid, i, &rx, &ry);
-   int selected = (i == grid->selected);
+   int selected = showsFocus(grid, i);
    TileState state = tileState(grid, i);
 
    if (selected) uiFillRounded(rx, ry, grid->width, grid->rowH, LIST_RADIUS, activeTheme->surface1);
@@ -1018,7 +1023,7 @@ void drawVideoGrid(VideoGrid *grid)
    // The selection's glow goes down before ANY tile: it spreads 81 px, further than the gap to the
    // neighbours, so drawn with its own tile it would lie over the tiles before it and under those after it.
    if (grid->view == GRID_VIEW_LIST) {
-      if (grid->selected >= first && grid->selected < end) {
+      if (!grid->focusHidden && grid->selected >= first && grid->selected < end) {
          int rx, ry;
          itemPosition(grid, grid->selected, &rx, &ry);
          uiDrawFocusGlow(rx, ry, grid->width, grid->rowH, activeTheme->focusGlow);
@@ -1027,10 +1032,11 @@ void drawVideoGrid(VideoGrid *grid)
       return;
    }
 
-   drawCardGlow(grid, grid->focusFrom, 1.0f - focus, first, end);
+   if (grid->focusHidden) focus = 0.0f;   // the focus is elsewhere: no card grows or glows
+   drawCardGlow(grid, grid->focusFrom, grid->focusHidden ? 0.0f : 1.0f - focus, first, end);
    drawCardGlow(grid, grid->selected, focus, first, end);
    for (int i = first; i < end; i++) {
-      float grow = i == grid->selected ? focus : i == grid->focusFrom ? 1.0f - focus : 0.0f;
+      float grow = grid->focusHidden ? 0.0f : i == grid->selected ? focus : i == grid->focusFrom ? 1.0f - focus : 0.0f;
       drawCard(grid, i, grow);
    }
 }

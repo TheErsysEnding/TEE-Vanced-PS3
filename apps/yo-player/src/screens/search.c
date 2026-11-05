@@ -12,10 +12,11 @@
 #include "screens/search-input.h"
 #include "screens/playlist-screen.h"
 #include "screens/play.h"
+#include "screens/home.h"       // the rail over this screen (updateRailOverScreen)
 #include "video-grid.h"
 #include "storage.h"
 #include "downloads.h"
-#include "sidebar.h"            // the rail, drawn passive
+#include "sidebar.h"            // the rail: collapsed, or open over the screen while it has the focus
 #include "ui-hints.h"           // the Ember hint row
 #include "ui-draw.h"            // safe area, rounded fills, focus ring, fixed-width digits, uiDrawLabelAt
 #include "ui-fonts.h"           // the shared fonts, the type scale, label helpers and text placement
@@ -93,7 +94,15 @@
 #define NOTICE_TEXT       24
 #define NOTICE_HINT_H     UI_HINT_GLYPH_H   // the hint line is a one-hint row: as tall as its glyph
 #define NOTICE_RADIUS     26        // the search rows' radius - the one the row ring (UI_RING_ROW) is made for
-#define TRIANGLE_HINT     3         // Triangle's slot in the hint row (see initSearch): retitled per mode
+// The hint row's slots (see initSearch). X is retitled while the field has the focus, and the hints of the
+// buttons that act on a result are hidden then; Triangle is also retitled per mode.
+#define CROSS_HINT        0
+#define SQUARE_HINT       2
+#define TRIANGLE_HINT     3
+#define R3_HINT           5
+#define L3_HINT           6
+#define L2_HINT           8
+#define R2_HINT           9
 #define SORT_OPTIONS_MAX  (CHANNEL_SORT_COUNT > SORT_COUNT ? CHANNEL_SORT_COUNT : SORT_COUNT)
 
 static const char *SortNames[SORT_COUNT]                = { "Relevance", "Views" };
@@ -116,6 +125,7 @@ static struct {
    int       screenW, screenH;
    int       noticeVisible;      // a modal confirmation is up and owns the pad
    int       noticePanelW;
+   int       fieldFocused;       // the field at the top has the focus, not the list (UP on the first result)
 } search;
 
 static Label    fieldLabel, statusLabel, pageWordLabel, pagePlusLabel;
@@ -299,14 +309,42 @@ static void cycleChannelSort(void)
    reload();
 }
 
+// The field at the top takes the focus from the list (UP on the first result) and gives it back (DOWN, or a new
+// search). While it has it, the list's own focus is not drawn and the pad does not reach the list, and the hints
+// of the buttons that act on a result are hidden - they would do nothing.
+static void setFieldFocused(int focused)
+{
+   search.fieldFocused = focused;
+   setGridInputSuppressed(&search.grid, focused || isSidebarFocused());
+   setGridFocusHidden(&search.grid, focused);
+   uiSetHintCaption(&hints, CROSS_HINT, focused ? "Type" : "Play");
+   uiSetHintShown(&hints, SQUARE_HINT, !focused);
+   uiSetHintShown(&hints, TRIANGLE_HINT, !focused);
+   uiSetHintShown(&hints, R3_HINT, !focused);
+   uiSetHintShown(&hints, L3_HINT, !focused);
+   uiSetHintShown(&hints, L2_HINT, !focused);
+   uiSetHintShown(&hints, R2_HINT, !focused);
+   fitHintRow(&hints);
+}
+
 static void onQueryEntered(const char *text)
 {
    if (!text || !text[0]) return;
+   if (search.fieldFocused) setFieldFocused(0);   // the new results get the focus
    if (strstr(text, "youtu")) { stopVideoGrid(&search.grid); playVideo(text); return; }
    search.channelId[0] = 0;   // a search exits channel mode
    strCopy(search.query, sizeof search.query, text);
    search.sort = SORT_RELEVANCE;
    reload();
+}
+
+// The keyboard opened from the field (X while it has the focus): a confirmed query goes into the history, as one
+// typed on the search field screen does, and runs here in place. Cancelled, nothing changes.
+static void onFieldTyped(const char *text)
+{
+   if (!text || !text[0]) return;
+   addSearchHistory(text);
+   onQueryEntered(text);
 }
 
 // The widest the page count can get, so the field's text can end in "..." short of it. There are at most
@@ -348,6 +386,7 @@ static void initSearch(void)
    uiInitLabel(&statusLabel, STATUS_WEIGHT, 0, 0, AUTO, STATUS_SIZE, activeTheme->textSecondary, TEXT_NOWRAP, "Loading...");
    initIcon(&fieldIcon, ICON_SEARCH, FIELD_ICON_SIZE);
    search.noticeVisible = 0;
+   search.fieldFocused  = 0;
    search.noticePanelW  = search.screenW * 2 / 3;
    uiInitTextLabel(&noticeLabel, UI_BODY_WEIGHT, 0, 0, search.noticePanelW - 2 * NOTICE_PAD_X, NOTICE_TEXT, activeTheme->textPrimary, TEXT_WRAP, "");
    // the box's own line: the console's cross, where the old text spelled "Press X to close"
@@ -365,6 +404,8 @@ static void initSearch(void)
    uiAddHint(&hints, GLYPH_START,    "Search");
    uiAddHint(&hints, GLYPH_L2,       "");
    uiAddHint(&hints, GLYPH_R2,       "Page");
+   uiAddHint(&hints, GLYPH_DPAD_LEFT, "Menu");   // the rail opens here as on Home
+   fitHintRow(&hints);
 
    initVideoGrid(&search.grid, uiGetFont(UI_CARD_TITLE_WEIGHT), CONTENT_X, GRID_TOP,
                  CONTENT_W, GRID_BOTTOM - GRID_TOP);
@@ -396,6 +437,18 @@ static void updateSearch(void)
       return;
    }
 
+   // The rail: LEFT opens it here as on Home (home.h), and while it is open the list only keeps loading and
+   // decoding. Search picked in it means a new search, as START does here.
+   int rail = updateRailOverScreen(SIDE_SEARCH);
+   if (rail == RAIL_GONE) return;   // Home is back on top: this screen is gone, touch nothing of it
+   if (rail != RAIL_NOT_OPEN) {
+      setGridInputSuppressed(&search.grid, 1);
+      updateVideoGrid(&search.grid);
+      if (!isSidebarFocused()) setGridInputSuppressed(&search.grid, search.fieldFocused);
+      if (rail == RAIL_PICKED_OWN) openSearchInput(search.query, onQueryEntered);
+      return;
+   }
+
    // START opens the app's own search field, prefilled with the current query
    if (isPadButtonPressed(PAD_BTN_START)) { openSearchInput(search.query, onQueryEntered); return; }
 
@@ -411,6 +464,24 @@ static void updateSearch(void)
       return;
    }
 
+   // The field has the focus: X opens the keyboard at once - on the query to edit it, or empty in a channel,
+   // which has no query - and DOWN hands the focus back to the list. The list keeps loading meanwhile.
+   if (search.fieldFocused) {
+      updateVideoGrid(&search.grid);
+      if (isPadButtonPressed(PAD_BTN_DOWN)) { setFieldFocused(0); return; }
+      if (isPadButtonPressed(PAD_BTN_CROSS))
+         oskInputBegin("Search YouTube", search.channelId[0] ? "" : search.query, onFieldTyped);
+      return;
+   }
+
+   // UP on the first result - or with no list to move in - goes up into the field, the way back to typing
+   // without START. Only a press: a held UP that scrolls the list to its top stops there.
+   if (isPadButtonPressed(PAD_BTN_UP) &&
+       (gridStage(&search.grid) != GRID_READY || gridSelectedIndex(&search.grid) == 0)) {
+      setFieldFocused(1);
+      updateVideoGrid(&search.grid);
+      return;
+   }
 
    // In channel mode Triangle subscribes, and that is about the CHANNEL, not about its videos - so it has to
    // work whatever the feed is doing. Below the GRID_READY gate it was dead while the feed loaded, and dead
@@ -501,10 +572,15 @@ static void drawSortSegment(void)
 // focused row's glow reaches 81 px up into it.
 static void drawHeader(void)
 {
+   // with the focus on the field it looks as on the search field screen: the glow first, under the field, the
+   // magnifier orange, the ring over it all
+   if (search.fieldFocused) uiDrawFocusGlow(CONTENT_X, FIELD_Y, CONTENT_W, FIELD_H, activeTheme->focusGlow);
    fillField(CONTENT_X, FIELD_Y, CONTENT_W, FIELD_H);
-   drawIconInBox(&fieldIcon, CONTENT_X + FIELD_PAD, FIELD_Y, FIELD_ICON_BOX, FIELD_H, activeTheme->textSecondary);
+   drawIconInBox(&fieldIcon, CONTENT_X + FIELD_PAD, FIELD_Y, FIELD_ICON_BOX, FIELD_H,
+                 search.fieldFocused ? activeTheme->accent : activeTheme->textSecondary);
    uiDrawLabelAt(&fieldLabel, FIELD_TEXT_X, uiLabelYForCenter(&fieldLabel, FIELD_Y, FIELD_H));
    if (gridStage(&search.grid) == GRID_READY) drawPageCount();
+   if (search.fieldFocused) uiDrawFocusRing(CONTENT_X, FIELD_Y, CONTENT_W, FIELD_H, UI_RING_ROW, activeTheme->focusBorder);
    drawSortSegment();
    drawDownloadOverlayAt(CONTENT_X, DOWNLOAD_CHIP_Y, UI_ALIGN_LEFT);   // nothing while no download runs
 }
@@ -541,8 +617,11 @@ static void drawSearch(void)
    }
    drawHeader();
 
-   drawSidebarPassive(search.screenH, SIDE_SEARCH);
+   if (!isSidebarFocused()) drawSidebarPassive(search.screenH, SIDE_SEARCH);
    uiDrawHints(&hints, UI_SAFE_RIGHT, UI_HINTS_BOTTOM_Y, UI_ALIGN_RIGHT);
+   // The rail, open, goes over everything - the hints included: with eleven of them the row reaches in under the
+   // open panel, and drawn over it they would run into its names. Its scrim dims them with the rest.
+   if (isSidebarFocused()) drawSidebar(search.screenH);
 
    if (search.noticeVisible) drawNotice();
 }

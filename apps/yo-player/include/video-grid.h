@@ -105,6 +105,7 @@ typedef struct {
    int              (*isWatchLater)(const char *videoId);  // watch-later badge predicate (NULL = no badge)
    int              (*watchedPosition)(const char *videoId);   // seconds watched, for the progress line (NULL = none)
    int              inputSuppressed;                           // pad ignored, but the grid keeps working
+   int              focusHidden;                               // the selection drawn like any other item
 } VideoGrid;
 
 // font is no longer used for drawing (see the header comment); pass uiGetFont(...) or NULL.
@@ -127,6 +128,11 @@ void setGridProgressSource(VideoGrid *grid, int (*watchedPosition)(const char *v
 // loading - so an overlay suppresses input and keeps calling it. Re-enabling also clears the auto-repeat
 // timers, or a direction still held from the overlay would fire the moment focus came back.
 void setGridInputSuppressed(VideoGrid *grid, int suppressed);
+
+// While something else on the screen has the focus (Search's field), the selection is drawn like any other item -
+// no plate, ring or glow - so only one thing on screen looks focused. The selection itself is kept for when the
+// focus comes back.
+void setGridFocusHidden(VideoGrid *grid, int hidden);
 
 // Stamps the three auto-repeat timers with "now", so a direction that is already held when this is called
 // waits the normal hold delay before it moves anything, while a fresh press still acts at once. For a screen

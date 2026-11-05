@@ -615,8 +615,54 @@ static int leftOpensRail(void)
    return gridSelectedIndex(&home.grid) % home.grid.cols == 0;
 }
 
+// What a pick in the rail does - from Home's own rail, or handed over by a screen that was over Home
+// (updateRailOverScreen). Returns 1 when it loaded another category.
+static int actOnRailPick(int picked)
+{
+   if      (picked == SIDE_SEARCH)    openSearchInput(NULL, onQueryEntered);
+   else if (picked == SIDE_PLAYLISTS) openPlaylists(onPlaylistOpened);
+   else if (picked == SIDE_SETTINGS)  openSettingsScreen();
+   else {
+      int category = categoryForItem(picked);
+      if (category >= 0 && category != home.category) { cacheCurrent(); home.category = category; loadCategory(); return 1; }
+   }
+   return 0;
+}
+
+// A pick made in the rail of a screen that was over Home, for Home's next update to act on. Not acted on during
+// the pop that brings Home back: Home's resume runs inside popScreen, and a screen pushed from there would leave
+// the stack in an order the pop loop below does not expect.
+static int pendingRailPick = -1;
+
+int updateRailOverScreen(SidebarItem own)
+{
+   setSidebarCurrent(own);
+   if (!isSidebarFocused()) {
+      if (!isPadButtonPressed(PAD_BTN_LEFT)) return RAIL_NOT_OPEN;
+      setSidebarFocused(1);   // parks the highlight on the screen's own entry
+      return RAIL_OPEN;
+   }
+   int picked = updateSidebar();
+   if (picked < 0) return RAIL_OPEN;   // still open, or O just closed it: either way the frame was the rail's
+   setSidebarFocused(0);
+   if (picked == (int)own) return RAIL_PICKED_OWN;
+
+   // Every screen above Home goes, top first, each with its own term and the next one's resume, exactly as O
+   // would take them down one by one. Home is the root of the stack, so the loop stops there; the bound only
+   // keeps a stack without Home from spinning.
+   pendingRailPick = picked;
+   for (int i = 0; i < 16 && homeScreen.status != SCREEN_ACTIVE; i++) popScreen();
+   return RAIL_GONE;
+}
+
 static void updateHome(void)
 {
+   if (pendingRailPick >= 0) {   // a pick from the rail of a screen that was over Home (updateRailOverScreen)
+      int picked = pendingRailPick;
+      pendingRailPick = -1;
+      if (actOnRailPick(picked)) home.pendingReload = 0;   // it loaded the new category: nothing stale is left
+      return;
+   }
    if (home.pendingReload) { home.pendingReload = 0; loadCategory(); }
 
    updateDownloadOverlay();
@@ -644,20 +690,8 @@ static void updateHome(void)
       setGridInputSuppressed(&home.grid, 1);
       updateVideoGrid(&home.grid);
       if (picked >= 0) {
-         if (picked == SIDE_SEARCH) {
-            setSidebarFocused(0);
-            openSearchInput(NULL, onQueryEntered);
-         } else if (picked == SIDE_PLAYLISTS) {
-            setSidebarFocused(0);
-            openPlaylists(onPlaylistOpened);
-         } else if (picked == SIDE_SETTINGS) {
-            setSidebarFocused(0);
-            openSettingsScreen();
-         } else {
-            int category = categoryForItem(picked);
-            setSidebarFocused(0);
-            if (category >= 0 && category != home.category) { cacheCurrent(); home.category = category; loadCategory(); }
-         }
+         setSidebarFocused(0);
+         actOnRailPick(picked);
       }
       if (!isSidebarFocused()) setGridInputSuppressed(&home.grid, 0);
       return;

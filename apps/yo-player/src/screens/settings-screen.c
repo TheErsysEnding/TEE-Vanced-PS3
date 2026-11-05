@@ -15,7 +15,8 @@
 #include "settings.h"            // the content region: its name for the Region row
 #include "app-paths.h"      // APP_VERSION
 #include "sponsorblock.h"        // SponsorCategory + getSponsorCategoryName/Color
-#include "sidebar.h"             // drawSidebarPassive: the rail, collapsed and never focusable
+#include "sidebar.h"             // the rail: collapsed, or open over the screen while it has the focus
+#include "screens/home.h"        // updateRailOverScreen: LEFT opens the rail here as on Home
 #include "ui-clock.h"            // the time of day at the top right, as on the list pages
 #include "ui-hints.h"            // UiHints; brings ui-draw.h (UI_SAFE_*) and ui-fonts.h (uiInitLabel, metrics)
 #include "ui/console-glyphs.h"
@@ -313,6 +314,7 @@ static void initSettings(void)
    uiInitHints(&hints);
    uiAddHint(&hints, GLYPH_CROSS,  "Change");
    uiAddHint(&hints, GLYPH_CIRCLE, "Back");
+   uiAddHint(&hints, GLYPH_DPAD_LEFT, "Menu");   // the rail opens here as on Home
 
    memset(&navigateRepeat, 0, sizeof navigateRepeat);
    layOut();
@@ -328,6 +330,15 @@ static void resumeSettings(void)
 
 static void updateSettings(void)
 {
+   // The rail: LEFT opens it here as on Home (home.h). Settings picked in it is this screen: the rail just
+   // closes, and a direction still held then waits out the normal delay, as after the picker.
+   int rail = updateRailOverScreen(SIDE_SETTINGS);
+   if (rail == RAIL_GONE) return;   // Home is back on top: this screen is gone, touch nothing of it
+   if (rail != RAIL_NOT_OPEN) {
+      if (!isSidebarFocused()) resumeSettings();
+      return;
+   }
+
    if (isPadButtonPressed(PAD_BTN_CIRCLE)) { popScreen(); return; }
 
    if      (isRepeatDue(&navigateRepeat, getPadButtonState(PAD_BTN_DOWN))) state.selected++;
@@ -471,7 +482,7 @@ static void drawPanel(void)
 static void drawSettings(void)
 {
    fillGfxRectangle(0, 0, state.screenW, state.screenH, activeTheme->appBg);
-   drawSidebarPassive(state.screenH, SIDE_SETTINGS);
+   if (!isSidebarFocused()) drawSidebarPassive(state.screenH, SIDE_SETTINGS);   // open, it is drawn last (below)
 
    uiDrawLabelAt(&titleLabel, CONTENT_X, state.titleY);
    uiDrawLabelAt(&versionLabel, CONTENT_X, uiLabelYForBaseline(&versionLabel, state.versionBaseline));
@@ -481,6 +492,9 @@ static void drawSettings(void)
    drawPanel();
    // bottom left, under the About card, where the Ember settings design (Bild 3) puts this screen's hints
    uiDrawHints(&hints, CONTENT_X, UI_HINTS_BOTTOM_Y, UI_ALIGN_LEFT);
+   // The rail, open, goes over everything - the hints included: they start at x 176, inside the open panel,
+   // and drawn over it they would run into its names. Its scrim dims them with the rest of the page.
+   if (isSidebarFocused()) drawSidebar(state.screenH);
 }
 
 static void termSettings(void)
