@@ -102,7 +102,8 @@ static int hex4(const char *p)
 
 // copy the json string value of "key" found within [from,end), unescaping the
 // usual escapes plus \uXXXX (ascii only - urls and titles are ascii; higher
-// code points are dropped). returns 1 if the key was found.
+// code points are dropped). returns 0 if the key was not found, 1 if it was, and 2 if its value did not fit
+// `cap` and was cut (readField marks such a text with "...").
 static int jsonString(const char *from, const char *end, const char *key, char *out, int cap)
 {
    char pat[48];
@@ -135,12 +136,24 @@ static int jsonString(const char *from, const char *end, const char *key, char *
    // The cap cut the value short: never end on half a UTF-8 character. A Cyrillic, Greek or Japanese title is
    // 2-3 bytes a character, and a cut one sends the whole label to FONT_POP with a stray letter at its end.
    // Escapes only ever add ASCII, so they cannot leave a lead byte behind.
-   if (i == cap - 1 && p < end && ((unsigned char)*p & 0xC0) == 0x80) {
+   int cut = i == cap - 1 && p < end && *p && *p != '"';
+   if (cut && ((unsigned char)*p & 0xC0) == 0x80) {
       while (i > 0 && ((unsigned char)out[i - 1] & 0xC0) == 0x80) i--;   // the cut character's continuation bytes
       if (i > 0 && (unsigned char)out[i - 1] >= 0xC0) i--;               // and its lead byte
    }
    out[i] = 0;
-   return 1;
+   return cut ? 2 : 1;
+}
+
+// A text the viewer reads that its field's size cut short ends in "..." - "The Colin Cowherd Podcast and The Herd
+// with Col" read as if the channel were called that. The dots replace the end, at a whole character.
+static void markCut(char *out, int cap)
+{
+   if (cap < 4) return;
+   int i = (int)strlen(out);
+   if (i > cap - 4) i = cap - 4;                                     // room for "..." and the terminator
+   while (i > 0 && ((unsigned char)out[i] & 0xC0) == 0x80) i--;      // never inside a character
+   memcpy(out + i, "...", 4);
 }
 
 // read the (possibly quoted) integer value of "key" within [from,end). 1 if found.
@@ -728,7 +741,8 @@ static void jsonEscape(const char *src, char *out, int cap)
 static void readField(const char *block, const char *end, const char *container, const char *key, char *out, int cap)
 {
    const char *pos = strstr(block, container);
-   if (pos && pos < end) jsonString(pos, end, key, out, cap);
+   // every field read here is text on screen (title, channel, duration, date): a cut one says so
+   if (pos && pos < end && jsonString(pos, end, key, out, cap) == 2) markCut(out, cap);
 }
 
 // the next feed item at or after `from`. search uses "videoRenderer", trending shelves "gridVideoRenderer",
@@ -831,6 +845,19 @@ static int parseRendererItem(const char *block, const char *end, SearchResult *i
    if (!item->title[0])   // gridVideoRenderer (trending) uses a plain simpleText title
       readField(block, end, "\"title\"", "simpleText", item->title, sizeof item->title);
    readField(block, end, "\"lengthText\"",        "simpleText", item->duration,  sizeof item->duration);
+   // A trending item (gridVideoRenderer) has no lengthText: its duration is only the thumbnail's time overlay, so
+   // the Trending cards showed none. It is taken from there when the overlay is a plain duration ("style":
+   // "DEFAULT"), never from a LIVE or UPCOMING one, whose text is a word rather than a time.
+   if (!item->duration[0]) {
+      static const char OVERLAY[] = "\"thumbnailOverlayTimeStatusRenderer\":{";
+      const char *overlay = findIn(block, end, OVERLAY);
+      if (overlay) {
+         const char *open  = overlay + sizeof OVERLAY - 2;   // its '{'
+         const char *close = objectEnd(open, end);
+         if (findIn(open, close, "\"style\":\"DEFAULT\""))
+            jsonString(open, close, "simpleText", item->duration, sizeof item->duration);
+      }
+   }
    readField(block, end, "\"ownerText\"",         "text",       item->author,    sizeof item->author);
    if (!item->author[0])   // trending items carry the channel in shortBylineText instead
       readField(block, end, "\"shortBylineText\"", "text", item->author, sizeof item->author);
@@ -902,13 +929,25 @@ static void parseVideoResults(const char *resp, int respLen, SearchResults *out)
    const char *channelMeta = strstr(resp, "\"channelMetadataRenderer\":{");
    if (channelMeta && channelMeta < end) jsonString(channelMeta, end, "title", out->channelName, sizeof out->channelName);
 
-   // channel Videos feeds carry Latest/Popular/Oldest sort chips; each chipViewModel holds a continuation
-   // token the screen re-browses with to re-sort. absent in search/trending responses (left empty).
+   // channel Videos feeds sort by Latest, Popular or Oldest, each with a continuation token the screen re-browses
+   // with. YouTube used to send them as three chips (chipViewModel with the text, the token after it); it now sends
+   // ONE drop-down chip, "Latest", whose sheet lists the three as listItemViewModel entries, each with its token -
+   // so only Latest was found, and Popular and Oldest loaded the plain first page: the Latest list again (seen in
+   // RPCS3, Nov 2026; the sheet's tokens answer with their own order, no session needed). The sheet is read first,
+   // from the drop-down chip on, and the old chips stay as the fallback. Absent in search/trending (left empty).
    static const char *SORT_CHIP_LABELS[3] = { "Latest", "Popular", "Oldest" };
+   const char *sheet = strstr(resp, "\"CHIP_VIEW_MODEL_DISPLAY_TYPE_DROP_DOWN\"");
    for (int chip = 0; chip < 3; chip++) {
-      char pat[48];
-      snprintf(pat, sizeof pat, "\"chipViewModel\":{\"text\":\"%s\"", SORT_CHIP_LABELS[chip]);
-      const char *found = strstr(resp, pat);
+      char pat[64];
+      const char *found = NULL;
+      if (sheet && sheet < end) {
+         snprintf(pat, sizeof pat, "\"listItemViewModel\":{\"title\":{\"content\":\"%s\"", SORT_CHIP_LABELS[chip]);
+         found = strstr(sheet, pat);
+      }
+      if (!found || found >= end) {
+         snprintf(pat, sizeof pat, "\"chipViewModel\":{\"text\":\"%s\"", SORT_CHIP_LABELS[chip]);
+         found = strstr(resp, pat);
+      }
       if (found && found < end) jsonString(found, end, "token", out->sortTokens[chip], MAX_SORT_TOKEN);
    }
 }
