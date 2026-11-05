@@ -541,13 +541,13 @@ static void drawHome(void)
 {
    fillGfxRectangle(0, 0, home.screenW, home.screenH, activeTheme->appBg);
 
-   // Order matters. The grid goes down first, then the rail OVER it (expanded, it covers the first column
-   // rather than pushing it aside), and only then the heading and, after it, the page counter or the status
-   // line - the heading starts at the grid's left edge, which is INSIDE the expanded panel, and "Loading..."
-   // is the only feedback there is while a feed is on its way. Covering it with the menu would leave a blank
-   // screen. The heading also has to come after the grid because the selection's glow reaches up under it.
+   // Order matters. The grid goes down first, then the heading and, after it, the page counter or the status
+   // line (the heading after the grid, because the selection's glow reaches up under it), and only then the
+   // rail. Expanded, the rail lies OVER the content - heading included, as the design has it - rather than
+   // pushing it aside. The heading starts at the grid's left edge, inside the expanded panel, so drawn after
+   // the rail the 46-px title ran straight across the open menu. A short heading's "Loading..." can end up
+   // under the panel while the menu is open; the menu has the focus then, and the line is back once it closes.
    if (gridStage(&home.grid) == GRID_READY) drawVideoGrid(&home.grid);
-   drawSidebar(home.screenH);
 
    // the title's capitals on the line of the top-right hint row; the counter on the title's baseline
    int titleY = uiLabelYForCenter(&titleLabel, UI_HINTS_TOP_Y, UI_HINT_GLYPH_H);
@@ -566,6 +566,8 @@ static void drawHome(void)
    }
    uiPlaceLabelBaseline(state, afterTitle, baseline);
    drawLabel(state);
+
+   drawSidebar(home.screenH);
 
    uiDrawHints(&hintsTop,    UI_SAFE_RIGHT, UI_HINTS_TOP_Y,    UI_ALIGN_RIGHT);
    uiDrawHints(&hintsBottom, UI_SAFE_RIGHT, UI_HINTS_BOTTOM_Y, UI_ALIGN_RIGHT);

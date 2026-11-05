@@ -14,8 +14,7 @@
 
 // The first entry is level with the first row of home's list. It used to sit at 96, just under a 26-px
 // heading at the top of the screen; home's Ember heading is 46 px, on the line of the top-right hint row,
-// and drawn OVER the expanded panel (so "Loading..." stays visible) - at 96 the first entry's highlight and
-// name would run into its lower half.
+// and its list starts lower to match. The expanded panel is drawn over that heading (home.c, drawHome).
 #define ITEM_TOP     140
 #define ITEM_STEP    88
 #define ICON_SIZE    32
