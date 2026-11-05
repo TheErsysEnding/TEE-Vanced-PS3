@@ -312,7 +312,10 @@ static struct {
    AudioTrack       audioTracks[MAX_AUDIO_TRACKS];   // copied from the resolve (worker sets)
    int              audioTrackCount;   // 0 unless there are at least two to choose between
    int              audioTrackPick;    // index of the track playing now
-   char             videoUrl[MAX_STREAM_URL];   // the video-only stream every track pairs with
+   char             videoUrl[MAX_STREAM_URL];   // the video stream (every track pairs with it); kept for a reopen too
+   char             audioUrl[MAX_STREAM_URL];   // the separate audio stream it opened with ("" = muxed)
+   int              reopenPending;     // the player is being rebuilt after the end (reopenAt)
+   float            reopenAtSec;       // where the rebuilt player starts
    int              switchTarget;      // switchWorker input: the track it is building
    int              switchPending;     // an audio switch is building (the old player is already freed)
    int              switchReverting;   // this build is the fallback to the track we came from
@@ -481,6 +484,10 @@ static void worker(uint64_t arg)
          logInfo("[yt] %d audio tracks, playing %s\n", state.audioTrackCount, state.audioTracks[playing].name);
       }
    }
+
+   // the streams, kept: a video played to its end is reopened from them (reopenAt), not resolved again
+   strCopy(state.videoUrl, sizeof state.videoUrl, video->url);
+   strCopy(state.audioUrl, sizeof state.audioUrl, audio ? audio->url : "");
 
    // open the decoder: both streams ride the http module by range request. an audio open
    // failure inside the player just means silent playback. NULL if it can't be demuxed/decoded.
@@ -788,6 +795,54 @@ static void cycleAudioTrack(void)
    startSwitchWorker();
 }
 
+// Rebuilds the player from the streams it was opened with and starts it at reopenAtSec - the same rebuild an
+// audio-track switch does, on whatever track is playing. Runs on a worker: createVideoPlayerSplit blocks on the
+// network.
+static void reopenWorker(uint64_t arg)
+{
+   (void)arg;
+   const char *audio = state.audioTrackCount > 1 ? state.audioTracks[state.audioTrackPick].url
+                                                 : (state.audioUrl[0] ? state.audioUrl : NULL);
+   VideoPlayer *player = createVideoPlayerSplit(state.videoUrl, audio, allocGfxVideoBuffer, freeGfxVideoBuffer);
+   if (player && state.reopenAtSec > 1.0f) seekVideoPlayer(player, state.reopenAtSec);
+   state.pendingPlayer = player;
+   __sync_synchronize();
+   state.workerDone = 1;
+   exitThread();
+}
+
+// A video that has played to its end has spent its streams: a seek on them only starves - "reader starved"
+// every 3 s and the HUD frozen on 0:00, found in RPCS3 on X (Replay) at the end, after which O froze the app.
+// So once the video has ended, Replay and every later seek rebuild the player instead, at the target, and the
+// screen shows "Loading..." meanwhile, as for an audio switch.
+static void reopenAt(float seconds)
+{
+   if (state.threadActive || !state.videoUrl[0]) return;   // a worker is still busy; or nothing to reopen from
+   state.reopenAtSec = seconds;
+   state.reopenPending = 1;
+   state.seeking = 0;   // the rebuilt player starts at the target; there is nothing left to apply
+
+   finishGfx();   // the RSX may still be sampling the current frame buffer
+   destroyVideoPlayer(state.player);
+   state.player = NULL;
+   state.firstFrameSeen = 0;
+   state.stage = STAGE_LOADING;
+   state.workerDone = 0;
+   state.threadActive = (spawnJoinableThread(&state.workerTid, reopenWorker, 0,
+                         THREAD_PRIORITY_DEFAULT, THREAD_STACK_SIZE_64KB, "yt-reopen") == 0);
+   if (!state.threadActive) { state.reopenPending = 0; fail("couldn't reopen the video"); }
+}
+
+// Every seek the viewer asks for goes through here. atOrAfter lands on the first keyframe at or after the target
+// (forward steps, chapter starts), otherwise on the last one before it. After the end it is a reopen (above).
+static void seekTo(float seconds, int atOrAfter)
+{
+   if (!state.player) return;
+   if (isVideoEnded(state.player) && !state.isLive) { reopenAt(seconds); return; }
+   if (atOrAfter) seekVideoPlayerPast(state.player, seconds);
+   else           seekVideoPlayer(state.player, seconds);
+}
+
 // accumulates a scrub target while left/right is held; the engine seek fires once input goes quiet
 static void nudgeSeek(float deltaSeconds, uint64_t nowUs)
 {
@@ -836,7 +891,9 @@ static void jumpChapter(int direction)
    if (target >= state.chapters.count) target = state.chapters.count - 1;
 
    state.seeking = 0;   // a pending scrub must not overwrite the jump
-   seekVideoPlayer(state.player, state.chapters.chapters[target].start);
+   // on the first keyframe at or after the chapter's start: the one before it lies in the previous chapter, so
+   // R1 used to land up to a few seconds early, with the previous chapter's name on screen
+   seekTo(state.chapters.chapters[target].start, 1);
    showControls();
 
    char notice[96];
@@ -853,9 +910,10 @@ static void handlePlaybackInput(void)
    uint64_t nowUs = sys_time_get_system_time();
 
    if (isPadButtonPressed(PAD_BTN_CROSS)) {
-      if (isVideoEnded(state.player)) seekVideoPlayer(state.player, 0.0f);
-      else setVideoPaused(state.player, !isVideoPaused(state.player));
       showControls();
+      // Replay rebuilds the player (seekTo): there is no player left for the rest of this frame's input
+      if (isVideoEnded(state.player)) { seekTo(0.0f, 0); return; }
+      setVideoPaused(state.player, !isVideoPaused(state.player));
    }
 
    // Triangle belongs to the skip offer while that panel is up (see findSkipOffer); subtitles get it back
@@ -889,8 +947,7 @@ static void handlePlaybackInput(void)
       // step: every press landed on the keyframe the playhead had just come from, some a second behind it
       // (seen on a 1080p30 video whose fragment ran from 174 s past 180 s). The DASH streams the player
       // normally gets honour this; a plain mp4 or mkv still lands at or before the target.
-      if (state.seekTarget > state.seekFrom) seekVideoPlayerPast(state.player, state.seekTarget);
-      else                                   seekVideoPlayer(state.player, state.seekTarget);
+      seekTo(state.seekTarget, state.seekTarget > state.seekFrom);
       state.seeking = 0;
    }
 }
@@ -1091,7 +1148,7 @@ static void handleChaptersInput(void)
    if (isPadButtonPressed(PAD_BTN_CROSS)) {
       state.chaptersVisible = 0;
       state.seeking = 0;   // a pending scrub must not overwrite the jump
-      seekVideoPlayer(state.player, state.chapters.chapters[state.chapterSelected].start);
+      seekTo(state.chapters.chapters[state.chapterSelected].start, 1);   // in the chapter, as L1/R1 (jumpChapter)
       showControls();
       return;
    }
@@ -1361,6 +1418,8 @@ static void updatePlay(void)
             state.audItag = state.audioTracks[state.audioTrackPick].itag;
             state.switchPending = 0;
             state.audioNoticePending = 1;
+         } else if (state.reopenPending) {   // the rebuild after the end (reopenAt): it just plays on, no notice
+            state.reopenPending = 0;
          } else if (state.audioTrackCount > 1) {
             // say once, as the video starts, that it has other tracks and which button reaches them - the
             // complaint this answers was exactly that there was no way to know or to change it
@@ -1374,6 +1433,9 @@ static void updatePlay(void)
          setAudioChip();
          if (subsHudLabel.text[0] == '\0' && state.captionCount > 0 && !state.isLive)
             uiSetTextLabel(&subsHudLabel, CHIP_TEXT_WEIGHT, "Subtitles off");
+      } else if (state.reopenPending) {
+         state.reopenPending = 0;
+         fail("couldn't reopen the video");
       } else if (state.switchPending && !state.switchReverting) {
          // the new track would not open, and the old player is gone: rebuild the track we came from, once
          logError("[yt] audio track %s did not open, going back\n", state.audioTracks[state.switchTarget].name);
