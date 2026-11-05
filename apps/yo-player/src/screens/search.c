@@ -217,6 +217,17 @@ static void initSearch(void)
    reload();
 }
 
+// Back on the results from the player, the search field or the playlist chooser. A direction or L2/R2 still
+// held from there - the player's UP/DOWN volume, say - must not move the list the moment it reappears, but
+// the grid's repeat timers still hold the time of its last move, so isRepeatDue took the hold for an overdue
+// repeat: it fired on the first frame and then raced on at up to 50 steps a second. Stamped with the current
+// time, a held button waits out the normal delay before its first repeat, exactly as if it had just been
+// pressed here; a fresh press still acts at once.
+static void resumeSearch(void)
+{
+   resetGridRepeat(&search.grid);
+}
+
 static void updateSearch(void)
 {
    updateDownloadOverlay();
@@ -335,4 +346,4 @@ void openChannelFor(const SearchResult *item)
    pushScreen(&searchScreen);
 }
 
-Screen searchScreen = { initSearch, NULL, updateSearch, drawSearch, NULL, termSearch, SCREEN_TERMINATED };
+Screen searchScreen = { initSearch, resumeSearch, updateSearch, drawSearch, NULL, termSearch, SCREEN_TERMINATED };

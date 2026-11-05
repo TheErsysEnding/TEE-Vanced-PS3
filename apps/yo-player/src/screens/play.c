@@ -739,6 +739,16 @@ static void updatePlay(void)
       if (isPadButtonPressed(PAD_BTN_L3) && pressPsButton() != 0) showToast("PS button not available");
    }
 
+   // An overlay that closed this frame hands UP/DOWN back to the volume, whose repeat timer still dates from
+   // the meter's last step (or from never). isRepeatDue fires a HELD button at once on a stale timer, so a
+   // direction still held from scrolling the description or walking the chapter list ran the volume down - or
+   // up - the moment the overlay was gone. Stamped now, a direction held across the close waits out the
+   // normal first-repeat delay as though it had just been pressed; a fresh press still steps at once.
+   if (overlayHadPad && !state.descriptionVisible && !state.chaptersVisible) {
+      volumeMeter.repeat.timer   = sys_time_get_system_time();
+      volumeMeter.repeat.repeats = 0;
+   }
+
    // reap the worker once it's done; adopt the player it built
    if (state.workerDone && state.threadActive) {
       joinThread(state.workerTid);

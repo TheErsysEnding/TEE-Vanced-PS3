@@ -459,22 +459,25 @@ void setGridWatchedPredicate(VideoGrid *grid, int (*isWatched)(const char *video
 void setGridWatchLaterPredicate(VideoGrid *grid, int (*isWatchLater)(const char *videoId)) { grid->isWatchLater = isWatchLater; }
 void setGridProgressSource(VideoGrid *grid, int (*watchedPosition)(const char *videoId)) { grid->watchedPosition = watchedPosition; }
 
+// A held direction must not carry over from whatever had focus - but ZEROING the timers achieves the
+// opposite. isRepeatDue compares `now - timer` against the hold delay, and `now` is microseconds since boot,
+// so timer == 0 reads as "last fired an eternity ago" and the very next frame fires immediately and then
+// auto-repeats; a timer left from before another screen came up is just as overdue. Stamping them with the
+// current time restores the full initial delay, which is what "just arrived here" should mean.
+void resetGridRepeat(VideoGrid *grid)
+{
+   uint64_t now = sys_time_get_system_time();
+   grid->horizontalRepeat.timer = now; grid->horizontalRepeat.repeats = 0;
+   grid->verticalRepeat.timer   = now; grid->verticalRepeat.repeats   = 0;
+   grid->pageRepeat.timer       = now; grid->pageRepeat.repeats       = 0;
+}
+
 void setGridInputSuppressed(VideoGrid *grid, int suppressed)
 {
    suppressed = suppressed ? 1 : 0;
    if (suppressed == grid->inputSuppressed) return;
    grid->inputSuppressed = suppressed;
-   if (!suppressed) {
-      // A held direction must not carry over from whatever had focus - but ZEROING the timers achieves the
-      // opposite. isRepeatDue compares `now - timer` against the hold delay, and `now` is microseconds since
-      // boot, so timer == 0 reads as "last fired an eternity ago" and the very next frame fires immediately
-      // and then auto-repeats. Stamping them with the current time restores the full initial delay, which is
-      // what "just arrived here" should mean.
-      uint64_t now = sys_time_get_system_time();
-      grid->horizontalRepeat.timer = now; grid->horizontalRepeat.repeats = 0;
-      grid->verticalRepeat.timer   = now; grid->verticalRepeat.repeats   = 0;
-      grid->pageRepeat.timer       = now; grid->pageRepeat.repeats       = 0;
-   }
+   if (!suppressed) resetGridRepeat(grid);   // nothing held over from the overlay may fire on return
 }
 
 GridView gridView(const VideoGrid *grid) { return grid->view; }

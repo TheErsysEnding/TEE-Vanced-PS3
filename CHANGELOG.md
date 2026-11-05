@@ -3,6 +3,20 @@
 Every release listed here was installed and used on a real PS3 (EVILNAT 4.92 DEX)
 before it was tagged. Anything that had not been is said so plainly.
 
+## v0.14 beta — not released yet
+
+Not yet installed on a console.
+
+### Fixed
+
+- **Closing the description or the chapter list while Up or Down was still
+  held changed the volume at once.** A direction held across the close now
+  does nothing until it is released or its normal repeat delay has passed.
+- **Leaving the player with a direction still held made the home or search
+  list jump** straight away, and keep jumping. A direction held across the
+  return now waits for the usual repeat delay; a fresh press still moves the
+  list at once.
+
 ## v0.13.1 beta — not released yet
 
 Not yet installed on a console.

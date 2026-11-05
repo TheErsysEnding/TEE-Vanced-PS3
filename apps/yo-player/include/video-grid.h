@@ -104,6 +104,13 @@ void setGridProgressSource(VideoGrid *grid, int (*watchedPosition)(const char *v
 // timers, or a direction still held from the overlay would fire the moment focus came back.
 void setGridInputSuppressed(VideoGrid *grid, int suppressed);
 
+// Stamps the three auto-repeat timers with "now", so a direction that is already held when this is called
+// waits the normal hold delay before it moves anything, while a fresh press still acts at once. For a screen
+// coming back to the front (its resume): a button held through the screen that just closed - the player's
+// UP/DOWN volume, say - would otherwise read as long overdue and drive the list on the very first frame.
+// setGridInputSuppressed does the same when input comes back.
+void resetGridRepeat(VideoGrid *grid);
+
 // switch presentation, keeping the results, the thumbnails already fetched and the selection. Re-lays out the
 // labels for the new column width, so it is not free - drive it from a button, not per frame.
 void setGridView(VideoGrid *grid, GridView view);

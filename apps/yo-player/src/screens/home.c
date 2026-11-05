@@ -512,6 +512,12 @@ static void suspendHome(void) { stopVideoGrid(&home.grid); }   // free the http 
 // already-loaded grid is kept as-is (instant, thumbnails intact).
 static void resumeHome(void)
 {
+   // A direction still held from the screen that just closed must not drive the list now: the player's UP/DOWN
+   // (volume) or LEFT/RIGHT (seek), held through the O that left it, found the grid's repeat timers stale from
+   // before the push - long overdue, so the selection moved on the first frame back and then raced through
+   // the pages. Fresh timers make a held button wait the normal hold delay; a new press still acts at once.
+   resetGridRepeat(&home.grid);
+
    // a subscribe/unsubscribe or watch-later change while we were away makes that cached feed stale.
    //
    // Both are checked before anything reloads: returning early out of the subscriptions branch used to skip
