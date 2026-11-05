@@ -12,7 +12,7 @@ extern Screen playScreen;
 // top of the current one. Nothing follows it - use playVideoFromList to keep playing afterwards.
 void playVideo(const char *input);
 
-// play results->items[index] and, when it ends, carry on with the entries after it (autoplay). Only the
-// video ids are kept, so the queue costs a few kB rather than a copy of the whole result set. Autoplay is a
-// user setting (getAutoplay); when it is off the queue is simply never advanced.
+// play results->items[index] and, when it ends, carry on with the entries after it (autoplay). The whole
+// entries are kept (play.c says why): history needs them, and the player shows the entry's channel and views
+// above the title. Autoplay is a user setting (getAutoplay); when it is off the queue is simply never advanced.
 void playVideoFromList(const SearchResults *results, int index);
