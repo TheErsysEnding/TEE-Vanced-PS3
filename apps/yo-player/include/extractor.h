@@ -127,6 +127,10 @@ typedef enum {
    TREND_COUNT
 } TrendingCategory;
 
+// the Live page's chips, in chip order: live streams only. keep LiveNames (home.c) and LIVE_FEEDS (youtube.c)
+// in sync with this order.
+typedef enum { LIVE_POPULAR, LIVE_GAMING, LIVE_SPORTS, LIVE_PODCASTS, LIVE_NEWS, LIVE_MUSIC, LIVE_COUNT } LiveCategory;
+
 // search result ordering. YouTube's newer WEB API only offers these two sorts (its "Prioritize" menu
 // dropped date-sort); the UI cycles them with SELECT. keep SortNames in the search screen in sync.
 typedef enum {
@@ -153,6 +157,11 @@ typedef struct Extractor {
    int (*getTrending)(TrendingCategory category, const char *continuation, SearchResults *out);
    // a channel's Videos feed. token NULL = first page (Latest); else a sort-chip or next-page token.
    int (*getChannel)(const char *channelId, const char *token, SearchResults *out);
+   // live streams only (the Live page). continuation NULL = page 1, else a prior page's token passed back exactly
+   // as it came: a live token can carry the session its feed belongs to. stopped may be NULL; when it returns
+   // non-zero the call gives up before a second request. Last on purpose: youtube.c fills this struct
+   // positionally, so a member in the middle would shift every pointer after it.
+   int (*getLive)(LiveCategory category, const char *continuation, SearchResults *out, int (*stopped)(void));
 } Extractor;
 
 // picks the first registered extractor that claims input, or NULL.
@@ -163,6 +172,11 @@ int searchVideos(const char *query, SortOrder sort, const char *continuation, Se
 
 // a trending category feed (the launch/home screen). continuation as above. 0 ok, negative on error.
 int getTrending(TrendingCategory category, const char *continuation, SearchResults *out);
+
+// a Live page feed: live streams only, from the content region (settings.h). continuation NULL = page 1, else
+// a prior result's token, passed back untouched. stopped (may be NULL) is asked before a second request, so a
+// page switched away from does not wait for it. 0 ok (also with no items), negative on a transport/HTTP error.
+int getLiveFeed(LiveCategory category, const char *continuation, SearchResults *out, int (*stopped)(void));
 
 // a channel's Videos feed. token NULL = first page; else a sort-chip token (SearchResults.sortTokens) or a
 // next-page continuation. the first page also fills out->sortTokens. 0 ok, negative on error.

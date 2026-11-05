@@ -823,6 +823,9 @@ static void drawTinted(const Label *label, int x, int y, uint32_t color)
 // at full strength (Bild 4). One you finished - the player stores 0 for it - or opened without getting
 // anywhere is WATCHED: dimmed, with the badge. The app has always stored the position to resume playback; it
 // was simply never shown, so a half-watched video used to look exactly like an untouched one.
+//
+// A live stream is neither, on every page: it cannot be finished, having watched it yesterday says nothing
+// about what it broadcasts now, and a channel that is on air around the clock would stay dimmed for good.
 typedef struct {
    float progress;   // share of the video watched, 0 = no line to draw
    int   watched;
@@ -837,7 +840,7 @@ static TileState tileState(const VideoGrid *grid, int i)
    int total    = durationToSeconds(item->duration);
    int position = (grid->watchedPosition && !item->isLive) ? grid->watchedPosition(item->videoId) : 0;
    if (total > 0 && position > 0) state.progress = position >= total ? 1.0f : (float)position / (float)total;
-   else                           state.watched  = grid->isWatched && grid->isWatched(item->videoId);
+   else                           state.watched  = !item->isLive && grid->isWatched && grid->isWatched(item->videoId);
    return state;
 }
 

@@ -22,10 +22,11 @@
 #define SIDEBAR_CONTENT_X  176   // where a page's content starts next to the collapsed rail (UEBERGABE 3.4)
 
 // Order is top-to-bottom on screen. Search first because it is the one you reach for cold; Settings last
-// because it is the one you reach for rarely.
+// because it is the one you reach for rarely. Live sits with Trending: both are lists YouTube picks for you.
 typedef enum {
    SIDE_SEARCH,
    SIDE_TRENDING,
+   SIDE_LIVE,
    SIDE_SUBS,
    SIDE_CONTINUE,
    SIDE_PLAYLISTS,

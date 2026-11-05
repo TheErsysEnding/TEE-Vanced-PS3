@@ -113,7 +113,7 @@ void termVideoGrid(VideoGrid *grid);
 
 // A tile counts as watched - dimmed, with the WATCHED badge - when isWatched says so and it shows no progress
 // line: a video you stopped half way is "started" (Bild 4), with its progress line and its picture at full
-// strength.
+// strength. A live tile (isLive) is never watched, whatever isWatched says: a stream cannot be finished.
 void setGridWatchedPredicate(VideoGrid *grid, int (*isWatched)(const char *videoId));
 void setGridWatchLaterPredicate(VideoGrid *grid, int (*isWatchLater)(const char *videoId));
 

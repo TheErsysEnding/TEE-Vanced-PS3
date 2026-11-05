@@ -940,16 +940,56 @@ static void logRegionEcho(const char *resp, const char *end, const char *sent, i
    else              logInfo("[yt] region: sent %s, YouTube used %s\n", sent, used);
 }
 
-// POST a WEB innertube endpoint with a prebuilt json body, then parse videoRenderers from the response.
-// pageOneGl: the region a page-1 body was built with, whose reply is checked against it (logRegionEcho); NULL
-// for a continuation.
-static int postAndParse(const char *url, const char *body, int bodyLen, const char *pageOneGl, SearchResults *out)
+// a character of a session as YouTube hands it out: base64, url-safe or not
+static int isSessionChar(char c)
 {
-   memset(out, 0, sizeof *out);
+   return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') ||
+          c == '-' || c == '_' || c == '+' || c == '/' || c == '=';
+}
+
+// A whole session, and nothing else. It goes out again as a header line, so a malformed reply must never be able
+// to smuggle a CR or LF into the next request.
+static int isSessionToken(const char *text)
+{
+   int length = 0;
+   while (isSessionChar(text[length])) length++;
+   return length > 0 && text[length] == 0;
+}
+
+// The reply's own session: its first "visitorData", which is responseContext's (it leads every reply), percent-
+// decoded as ensureVisitorData does. "" when there is none, or nothing that passes for one whole.
+static void captureSession(const char *resp, const char *end, char *out, int cap)
+{
+   char raw[128];
+   out[0] = 0;
+   if (!jsonString(resp, end, "visitorData", raw, sizeof raw) || (int)strlen(raw) >= (int)sizeof raw - 1) return;
+   // as it comes, percent-encoded ("%3D"): nothing but session characters and '%', so that urlDecode - which stops
+   // at a blank, '?' or CR - reads it whole instead of leaving a cut-off start that would pass the check below
+   for (const char *c = raw; *c; c++) if (!isSessionChar(*c) && *c != '%') return;
+   if (urlDecode(raw, out, cap) < 0 || (int)strlen(out) >= cap - 1 || !isSessionToken(out)) out[0] = 0;
+}
+
+// What a WEB list request needs beyond its body. Search, Trending and channel pages use none of it (postAndParse);
+// the Live page uses the session parts and the append.
+typedef struct {
+   const char *pageOneGl;      // the region a page-1 body was built with, checked against the reply (logRegionEcho);
+                               // NULL for a continuation, whose reply names no country
+   const char *visitorId;      // sent as X-Goog-Visitor-Id when set: a session that passed isSessionToken
+   char       *replyVisitor;   // receives the reply's own session (captureSession); NULL = not wanted
+   int         replyVisitorCap;
+   int         append;         // add the reply's items to out's (deduped by videoId) instead of starting afresh. out
+                               // is then left alone unless an answer comes, whose next-page token replaces out's
+} WebRequest;
+
+// POST a WEB innertube endpoint with a prebuilt json body, then parse videoRenderers from the response.
+static int postAndParseWith(const char *url, const char *body, int bodyLen, const WebRequest *request, SearchResults *out)
+{
+   if (!request->append) memset(out, 0, sizeof *out);
+   if (request->replyVisitor) request->replyVisitor[0] = 0;
    char *resp = malloc(RESP_CAP);
    if (!resp) return -1;
 
-   HttpHeader headers[] = {   // WEB_UA is a pointer, so these can't be a file-scope const array
+   HttpHeader headers[7] = {   // WEB_UA is a pointer, so these can't be a file-scope const array
       { "Content-Type", "application/json" },
       { "User-Agent", WEB_UA },
       { "X-YouTube-Client-Name", "1" },
@@ -957,17 +997,32 @@ static int postAndParse(const char *url, const char *body, int bodyLen, const ch
       { "Origin", "https://www.youtube.com" },
       { "Accept-Encoding", "identity" },
    };
-   int headerCount = sizeof headers / sizeof headers[0];
+   int headerCount = 6;
+   if (request->visitorId && request->visitorId[0]) {   // last, as it was sent when the echo was probed
+      headers[6].name = "X-Goog-Visitor-Id";
+      headers[6].value = request->visitorId;
+      headerCount = 7;
+   }
 
    int respLen = 0, status = 0;
    int rc = fetchHttp("POST", url, headers, headerCount, body, bodyLen, resp, RESP_CAP, &respLen, &status);
    if (rc < 0)        { free(resp); return rc; }
    if (status != 200) { free(resp); return -status; }
 
+   int before = out->count;
+   if (request->append) out->continuation[0] = 0;   // the next page is the one this reply names, or none
    parseVideoResults(resp, respLen, out);
-   if (pageOneGl) logRegionEcho(resp, resp + respLen, pageOneGl, out->count);
+   if (request->pageOneGl) logRegionEcho(resp, resp + respLen, request->pageOneGl, out->count - before);
+   if (request->replyVisitor) captureSession(resp, resp + respLen, request->replyVisitor, request->replyVisitorCap);
    free(resp);
    return 0;
+}
+
+// pageOneGl as in WebRequest.
+static int postAndParse(const char *url, const char *body, int bodyLen, const char *pageOneGl, SearchResults *out)
+{
+   WebRequest request = { pageOneGl, NULL, NULL, 0, 0 };
+   return postAndParseWith(url, body, bodyLen, &request, out);
 }
 
 // snprintf answers with the length it WOULD have written, and the body is sent bodyLen bytes long: one that did
@@ -1028,4 +1083,208 @@ static int getChannel(const char *channelId, const char *token, SearchResults *o
    return postAndParse(BROWSE_URL, body, bodyLen, token ? NULL : gl, out);
 }
 
-const Extractor youtubeExtractor = { "youtube", matches, extract, search, fetchTrending, getChannel };
+// ---- the Live page ----
+
+#define LIVE_BROWSE_ID     "UC4R8DWoMoI7CAwX8_LjQHig"   // YouTube's own Live destination, what youtube.com/live shows
+#define LIVE_SEARCH_PARAMS "EgJAAQ=="                    // the search filter "Live" (protobuf 12 02 40 01)
+#define LIVE_SESSION_CAP   96                            // a session is 44 characters
+
+typedef enum { LIVE_KIND_BROWSE, LIVE_KIND_SEARCH } LiveKind;
+
+// The chips' sources, in LiveCategory order (keep in sync). Popular, Gaming, Sports and News are shelves of the Live
+// destination - "Live Now", "Live Now - Gaming" and so on; params = "livetab" plus the shelf's number - whose next
+// pages come only with page 1's session echoed back. Podcasts and Music are live searches, which page without one.
+// A shelf whose page 1 has fewer live streams than fallbackBelow is topped up by a live search: Popular, Gaming and
+// Sports only if their shelf ever comes back empty (YouTube can retire a shelf, as it retired FEtrending); News
+// whenever it is thin - it is empty or holds a few streams in many regions - and with the region's own word for
+// news (fallbackQuery NULL, see newsWord).
+static const struct {
+   LiveKind    kind;
+   const char *name;            // for the log
+   const char *idOrQuery;       // the browseId, or the search query
+   const char *params;
+   const char *fallbackQuery;
+   int         fallbackBelow;
+} LIVE_FEEDS[LIVE_COUNT] = {
+   { LIVE_KIND_BROWSE, "popular",  LIVE_BROWSE_ID, "EgdsaXZldGFikgEDCKEK", "live",   1 },   // LIVE_POPULAR: shelf 1313
+   { LIVE_KIND_BROWSE, "gaming",   LIVE_BROWSE_ID, "EgdsaXZldGFikgEDCJ8K", "gaming", 1 },   // LIVE_GAMING: 1311
+   { LIVE_KIND_BROWSE, "sports",   LIVE_BROWSE_ID, "EgdsaXZldGFikgEDCKAK", "sports", 1 },   // LIVE_SPORTS: 1312
+   { LIVE_KIND_SEARCH, "podcasts", "podcast",      LIVE_SEARCH_PARAMS,     NULL,     0 },   // LIVE_PODCASTS
+   { LIVE_KIND_BROWSE, "news",     LIVE_BROWSE_ID, "EgdsaXZldGFikgEDCKUK", NULL,     6 },   // LIVE_NEWS: 1317
+   { LIVE_KIND_SEARCH, "music",    "music",        LIVE_SEARCH_PARAMS,     NULL,     0 },   // LIVE_MUSIC
+};
+
+// The word a viewer in each region would search news with, for the News chip's fallback: an English "news" search
+// finds NBC, CBS and Times Now from anywhere (probed: RU "новости" gave 13 Russian streams of 20, DE "nachrichten"
+// put WELT first). UTF-8, written as escapes so this file stays ASCII; a literal is split where the next letter
+// would read as part of a hex escape. jsonEscape passes the bytes through as they are, which JSON allows. Codes
+// not listed search "news"; a code the region table no longer has never gets here.
+static const struct { const char *codes, *word; } NEWS_WORDS[] = {
+   { "DE AT CH", "nachrichten" },
+   { "FR",       "actualit\xc3\xa9" "s" },                                               // actualités
+   { "IT",       "notizie" },
+   { "ES MX",    "noticias" },
+   { "PT BR",    "not\xc3\xad" "cias" },                                                 // notícias
+   { "NL BE",    "nieuws" },
+   { "PL",       "wiadomo\xc5\x9b" "ci" },                                               // wiadomości
+   { "CZ",       "zpr\xc3\xa1" "vy" },                                                   // zprávy
+   { "TR",       "haber" },
+   { "RU",       "\xd0\xbd\xd0\xbe\xd0\xb2\xd0\xbe\xd1\x81\xd1\x82\xd0\xb8" },           // новости
+   { "UA BG",    "\xd0\xbd\xd0\xbe\xd0\xb2\xd0\xb8\xd0\xbd\xd0\xb8" },                   // новини
+   { "RS",       "\xd0\xb2\xd0\xb5\xd1\x81\xd1\x82\xd0\xb8" },                           // вести
+   { "HR",       "vijesti" },
+   { "GR",       "\xce\xb5\xce\xb9\xce\xb4\xce\xae\xcf\x83\xce\xb5\xce\xb9\xcf\x82" },   // ειδήσεις
+   { "SE NO",    "nyheter" },
+   { "DK",       "nyheder" },
+   { "FI",       "uutiset" },
+   { "HU",       "h\xc3\xad" "rek" },                                                    // hírek
+   { "RO",       "\xc8\x99" "tiri" },                                                    // știri
+   { "JP",       "\xe3\x83\x8b\xe3\x83\xa5\xe3\x83\xbc\xe3\x82\xb9" },                   // ニュース
+   { "KR",       "\xeb\x89\xb4\xec\x8a\xa4" },                                           // 뉴스
+};
+
+static const char *newsWord(const char *gl)
+{
+   for (unsigned i = 0; i < sizeof NEWS_WORDS / sizeof NEWS_WORDS[0]; i++)
+      for (const char *code = NEWS_WORDS[i].codes; code[0] && code[1]; code += code[2] ? 3 : 2)
+         if (code[0] == gl[0] && code[1] == gl[1]) return NEWS_WORDS[i].word;
+   return "news";
+}
+
+// A live next-page token says which kind of request it continues, and the next page goes wherever that says -
+// never guessed from whether a session is present: "b|<session>|<token>" continues a shelf, whose YouTube token is
+// bound to the session of the reply that handed it out (sent back as X-Goog-Visitor-Id), and "s|<token>" continues
+// a live search. '|' occurs in neither a token nor a session. The grid stores and returns it untouched.
+
+// Turns the YouTube token in `token` into a live token in place: a shelf's when session is set, a search's when it
+// is NULL. 0 done; -1, with the token cleared so the list ends here, when it would not fit or cannot be wrapped.
+static int wrapLiveToken(char *token, int cap, const char *session)
+{
+   int tokenLength = (int)strlen(token);
+   int sessionLength = session ? (int)strlen(session) : 0;
+   int prefix = session ? 3 + sessionLength : 2;
+   if (strchr(token, '|') || tokenLength + prefix >= cap) { token[0] = 0; return -1; }
+   memmove(token + prefix, token, tokenLength + 1);   // no 4 KB copy on the 64 KB worker stack
+   token[0] = session ? 'b' : 's';
+   token[1] = '|';
+   if (session) { memcpy(token + 2, session, sessionLength); token[2 + sessionLength] = '|'; }
+   return 0;
+}
+
+// The YouTube token inside a live token, with *browse set and - for a shelf - its session copied into session.
+// NULL for anything that is not a well-formed live token, including a session that would not pass as a header.
+static const char *splitLiveToken(const char *continuation, int *browse, char *session, int cap)
+{
+   session[0] = 0;
+   if (continuation[0] == 's' && continuation[1] == '|') {
+      *browse = 0;
+      return continuation[2] ? continuation + 2 : NULL;
+   }
+   if (continuation[0] != 'b' || continuation[1] != '|') return NULL;
+   const char *start = continuation + 2, *bar = strchr(start, '|');
+   int length = bar ? (int)(bar - start) : 0;
+   if (length <= 0 || length >= cap || !bar[1]) return NULL;
+   memcpy(session, start, length);
+   session[length] = 0;
+   if (!isSessionToken(session)) { session[0] = 0; return NULL; }
+   *browse = 1;
+   return bar + 1;
+}
+
+// Live streams only, from index `from` on: drops the stream that ended seconds before the shelf was built (it comes
+// back as a video with a duration) and anything upcoming. Compacts in place; returns how many are left from `from`.
+static int keepLiveOnly(SearchResults *out, int from)
+{
+   int kept = from;
+   for (int i = from; i < out->count; i++) {
+      if (!out->items[i].isLive) continue;
+      if (kept != i) out->items[kept] = out->items[i];
+      kept++;
+   }
+   out->count = kept;
+   return kept - from;
+}
+
+static int fetchLive(LiveCategory category, const char *continuation, SearchResults *out, int (*stopped)(void))
+{
+   if (category < 0 || category >= LIVE_COUNT) { memset(out, 0, sizeof *out); return -1; }
+   const char *gl = getContentRegionCode();   // read once: every request of this call uses this one value
+   const char *name = LIVE_FEEDS[category].name;
+   char body[MAX_CONTINUATION + 512];
+   char sent[LIVE_SESSION_CAP] = "", reply[LIVE_SESSION_CAP] = "";
+   char escaped[256];
+   int browse = LIVE_FEEDS[category].kind == LIVE_KIND_BROWSE;
+   int bodyLen;
+   WebRequest request = { NULL, NULL, NULL, 0, 0 };
+
+   if (!continuation) {
+      jsonEscape(LIVE_FEEDS[category].idOrQuery, escaped, sizeof escaped);
+      if (browse) bodyLen = snprintf(body, sizeof body, TRENDING_BODY_FMT, gl, escaped, LIVE_FEEDS[category].params);
+      else        bodyLen = snprintf(body, sizeof body, SEARCH_BODY_FMT, gl, escaped, LIVE_FEEDS[category].params);
+      request.pageOneGl = gl;
+   } else {
+      const char *token = splitLiveToken(continuation, &browse, sent, sizeof sent);
+      if (!token) {   // not ours: end the list quietly rather than send YouTube something it cannot answer
+         logError("[yt] live %s: not a live next-page token, the list ends here\n", name);
+         memset(out, 0, sizeof *out);
+         return 0;
+      }
+      bodyLen = snprintf(body, sizeof body, CONTINUATION_BODY_FMT, gl, token);
+      if (browse) request.visitorId = sent;
+   }
+   if (bodyLen < 0 || bodyLen >= (int)sizeof body) return refuseBody(bodyLen, out);
+   if (browse) { request.replyVisitor = reply; request.replyVisitorCap = sizeof reply; }
+
+   int rc = postAndParseWith(browse ? BROWSE_URL : SEARCH_URL, body, bodyLen, &request, out);
+   int fallbackBelow = continuation ? 0 : LIVE_FEEDS[category].fallbackBelow;
+   // a shelf YouTube has retired may answer with an HTTP error instead of an empty page (FEtrending now says 400):
+   // a page 1 that has a fallback goes on to it; a lost connection (rc above -100) fails as every list does
+   if (rc < 0 && (fallbackBelow == 0 || rc > -100)) {
+      logError("[yt] live %s gl=%s %s failed rc=%d\n", name, gl, continuation ? "next page" : "page 1", rc);
+      return rc;
+   }
+   char note[128] = "";   // what else happened, for the log line
+   if (rc < 0) snprintf(note, sizeof note, ", the shelf answered HTTP %d", -rc);
+   int parsed = out->count;
+   int live = keepLiveOnly(out, 0);   // the shelf's own count, logged as such
+   int tokenIsBrowse = browse;
+
+   if (live < fallbackBelow) {
+      const char *word = LIVE_FEEDS[category].fallbackQuery ? LIVE_FEEDS[category].fallbackQuery : newsWord(gl);
+      int noted = (int)strlen(note);
+      if (stopped && stopped()) {   // the page was switched away from: its result is thrown away anyway
+         snprintf(note + noted, sizeof note - noted, ", stopped before the fallback search");
+      } else {
+         jsonEscape(word, escaped, sizeof escaped);
+         bodyLen = snprintf(body, sizeof body, SEARCH_BODY_FMT, gl, escaped, LIVE_SEARCH_PARAMS);
+         WebRequest fallback = { gl, NULL, NULL, 0, 1 };
+         int before = out->count;
+         int fallbackRc = (bodyLen >= 0 && bodyLen < (int)sizeof body) ? postAndParseWith(SEARCH_URL, body, bodyLen, &fallback, out) : -1;
+         if (fallbackRc == 0) {
+            // the shelf's own streams first, the search's after them; the list pages on with the search's token
+            int added = keepLiveOnly(out, before);
+            snprintf(note + noted, sizeof note - noted, ", fallback search \"%s\": +%d live", word, added);
+            tokenIsBrowse = 0;
+            rc = 0;
+         } else {   // out is as the shelf left it, its own next-page token included
+            snprintf(note + noted, sizeof note - noted, ", fallback search \"%s\" failed rc=%d", word, fallbackRc);
+         }
+      }
+      if (rc < 0) {   // neither the shelf nor its fallback answered
+         logError("[yt] live %s gl=%s page 1 failed%s\n", name, gl, note);
+         return rc;
+      }
+   }
+
+   // every reply brings a new session, and the next page wants this one; a reply without one leaves the one sent
+   // in force. A shelf token with no session would only fetch an empty page, so the list ends instead (echo=0).
+   const char *session = reply[0] ? reply : sent;
+   if (tokenIsBrowse && !session[0]) out->continuation[0] = 0;
+   int tooLong = out->continuation[0] && wrapLiveToken(out->continuation, sizeof out->continuation, tokenIsBrowse ? session : NULL) != 0;
+   logInfo("[yt] live %s gl=%s %s: parsed %d, live %d%s, next=%d%s%s\n", name, gl, continuation ? "next page" : "page 1",
+           parsed, live, note, out->continuation[0] ? 1 : 0,
+           tokenIsBrowse ? (session[0] ? ", echo=1" : ", echo=0") : "", tooLong ? ", token too long - the list ends" : "");
+   return 0;
+}
+
+const Extractor youtubeExtractor = { "youtube", matches, extract, search, fetchTrending, getChannel, fetchLive };

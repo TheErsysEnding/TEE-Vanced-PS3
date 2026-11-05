@@ -39,3 +39,11 @@ int getChannelVideos(const char *channelId, const char *token, SearchResults *ou
          return registry[i]->getChannel(channelId, token, out);
    return -1;
 }
+
+int getLiveFeed(LiveCategory category, const char *continuation, SearchResults *out, int (*stopped)(void))
+{
+   for (unsigned i = 0; i < sizeof registry / sizeof registry[0]; i++)
+      if (registry[i]->getLive)
+         return registry[i]->getLive(category, continuation, out, stopped);
+   return -1;
+}

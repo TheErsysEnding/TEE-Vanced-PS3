@@ -1,4 +1,4 @@
-// home - the landing screen: trending categories in a VideoGrid (see home.h).
+// home - the landing screen: trending categories, live streams and your own lists in a VideoGrid (see home.h).
 
 #include "screens/home.h"
 #include "screens/search.h"
@@ -9,7 +9,7 @@
 #include "screens/play.h"
 #include "video-grid.h"
 #include "storage.h"
-#include "settings.h"           // the content region: its revision makes the Trending lists stale
+#include "settings.h"           // the content region: a new one makes the Trending and Live lists stale
 #include "downloads.h"
 #include "ps-button.h"
 #include "ui/console-glyphs.h"
@@ -27,15 +27,17 @@
 #include "osk-input.h"
 #include "string-utilities.h"   // strCopy
 #include "dbg.h"                // logWarn
+#include <sys/sys_time.h>       // sys_time_get_system_time: how old a Live page is
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
 
 // The page is Bild 4's: the cards from x 176, next to the collapsed rail, under a one-line header. On the
-// left of that line the page title (on Trending its three categories follow as chips); on the right the X /
-// Square / Triangle hints, the page counter and the clock. Everything on it has its capitals centred on the
-// chips' band, HEADER_Y .. HEADER_Y + HEADER_H, which puts the title's baseline at 107 as in the design. The
-// other hints sit at the bottom right; "Loading..." and "No results" sit where the cards start.
+// left of that line the page title (on Trending its three categories follow as chips, on Live its six); on
+// the right the X / Square / Triangle hints, the page counter and the clock. Everything on it has its
+// capitals centred on the chips' band, HEADER_Y .. HEADER_Y + HEADER_H, which puts the title's baseline at
+// 107 as in the design. The other hints sit at the bottom right; "Loading..." and "No results" sit where the
+// cards start.
 #define CONTENT_X     SIDEBAR_CONTENT_X   // 176
 #define HEADER_Y      67
 #define HEADER_H      45
@@ -46,6 +48,7 @@
 #define TITLE_MIN_W   320       // the top hint row narrows its gaps before the title's room drops below this
 #define CHIP_TITLE_GAP 28       // Trending's title -> its first chip (Bild 4)
 #define CHIP_PAD_X    20
+#define CHIP_PAD_MIN  12        // Live's six chips may close up to this before any is left out (fitLiveChips)
 #define CHIP_GAP      10
 #define CHIP_SIZE     20        // 20/700
 #define CHIP_WEIGHT   UI_WEIGHT_BOLD
@@ -62,6 +65,9 @@
 #define HINT_MIN_GAP  14        // a hint row narrows its gaps down to this rather than overlap anything
 #define CROSS_HINT    0         // X's slot in the TOP hint row (see initHome): retitled per category
 #define TRIANGLE_HINT 2         // Triangle's slot in the top row: "Channel" everywhere, "Unsubscribe" in Subscriptions
+#define R3_HINT       0         // R3's slot in the BOTTOM row: hidden on Live, where nothing can be downloaded
+// A Live page lists what is on air NOW. Coming back to one older than this, it is fetched again (resumeHome).
+#define LIVE_MAX_AGE_US (10ull * 60ull * 1000000ull)
 // The chip labels are rendered in white and tinted when drawn, so the chip on screen and the others share one
 // texture each (re-colouring a rendered label means rasterising it again).
 #define TEXT_TINTABLE 0xFFFFFFFFu
@@ -83,7 +89,19 @@ static const char *TrendingNames[TREND_COUNT] = { "Gaming", "Sports", "Podcasts"
 #define HOME_WATCHLATER  (TREND_COUNT + 2)
 #define HOME_HISTORY     (TREND_COUNT + 3)
 #define HOME_PLAYLIST    (TREND_COUNT + 4)
-#define HOME_CAT_COUNT   (TREND_COUNT + 5)
+#define HOME_CAT_COUNT   (TREND_COUNT + 5)   // the cached categories - and the ring L1/R1 walk outside Live
+
+// The Live page's six chips are numbered after every cached category, so nothing above moves and the cache
+// arrays keep their eight slots (six more would be about 1 MB that is never used): a live list is out of date
+// within minutes, so it is never cached (loadCategory, cacheCurrent). L1/R1 keep to these six (switchCategory).
+// Keep LiveNames in the order of LiveCategory (extractor.h).
+#define HOME_LIVE_FIRST  HOME_CAT_COUNT
+static const char *LiveNames[LIVE_COUNT] = { "Popular", "Gaming", "Sports", "Podcasts", "News", "Music" };
+
+static int isLiveCategory(int category)
+{
+   return category >= HOME_LIVE_FIRST && category < HOME_LIVE_FIRST + LIVE_COUNT;
+}
 
 // each category's fully-loaded results, so returning to a tab skips the feed fetch (thumbnails still refetch).
 static SearchResults categoryCache[HOME_CAT_COUNT];
@@ -105,12 +123,16 @@ static struct {
    int       pendingReload;                    // a stale feed to reload on the next update, not on resume
    char      pendingUnsubId[CHANNEL_ID_LEN];   // what the confirmation is about, copied out of the tile
    char      pendingUnsubName[CHANNEL_NAME_LEN];
+   uint64_t  liveLoadedUs;                     // when the Live page on screen asked for its first page
+   int       liveChipPad;                      // the Live chips' padding, and the run of them the header
+   int       liveChipFirst, liveChipLast;      //   has room for (fitLiveChips)
 } home;
 
 static Label    titleLabel, statusLabel;
 static Label    pageWordLabel, pagePlusLabel;   // "Page" and the "+" of a feed that can still grow ...
 static UiDigits pageDigits;                     // ... round the numbers, which step in equal cells
 static Label    chipLabels[TREND_COUNT];        // Trending's categories, rendered white and tinted per state
+static Label    liveChipLabels[LIVE_COUNT];     // Live's, likewise
 static Label    noticeLabel;
 static UiHints  closeHints, confirmHints;       // the notice's answers: X Close, or X Unsubscribe / O Cancel
 // Two hint rows, as on the Cinema start (Bild 1): X / Square / Triangle - what acts on the selected tile - at
@@ -170,15 +192,30 @@ static int tileWatched(const char *videoId)
    return home.category != HOME_SUBS && isWatched(videoId);
 }
 
+// A source swap (L1/R1, the rail, START) asked the fetch to stop: a Live chip that falls back to a second
+// request asks this before making it, so a switch does not wait for both (getLiveFeed).
+static int homeFetchStopped(void) { return gridStopRequested(&home.grid); }
+
 static int homeFetch(const char *token, SearchResults *out, void *user)
 {
    (void)user;
-   if (home.category == HOME_SUBS)       return fetchSubscriptionChannels(out);
-   if (home.category == HOME_CONTINUE)   return getContinueWatching(out) > 0 ? 0 : -1;
-   if (home.category == HOME_WATCHLATER) return getWatchLater(out) > 0 ? 0 : -1;
-   if (home.category == HOME_HISTORY)    return getWatchHistory(out) > 0 ? 0 : -1;
-   if (home.category == HOME_PLAYLIST)   return getPlaylistItems(openPlaylist, out) > 0 ? 0 : -1;
-   return getTrending(home.category, token, out);
+   // This runs on the grid's worker while the UI thread may switch the page, so the category is read ONCE: two
+   // reads could fall either side of a switch and ask a Live feed for a category that is not one.
+   int category = home.category;
+   if (category == HOME_SUBS)       return fetchSubscriptionChannels(out);
+   if (category == HOME_CONTINUE)   return getContinueWatching(out) > 0 ? 0 : -1;
+   if (category == HOME_WATCHLATER) return getWatchLater(out) > 0 ? 0 : -1;
+   if (category == HOME_HISTORY)    return getWatchHistory(out) > 0 ? 0 : -1;
+   if (category == HOME_PLAYLIST)   return getPlaylistItems(openPlaylist, out) > 0 ? 0 : -1;
+   if (isLiveCategory(category)) {
+      int rc = getLiveFeed((LiveCategory)(category - HOME_LIVE_FIRST), token, out, homeFetchStopped);
+      // As with Subscriptions: a first page cut short by a stop - a News chip whose second request was skipped -
+      // counts as a failure, not as the whole page, so it is fetched again once Home is back on top (resumeHome
+      // reloads a page that is not READY). A source swap throws the page away in any case.
+      if (rc == 0 && !token && homeFetchStopped()) return -1;
+      return rc;
+   }
+   return getTrending((TrendingCategory)category, token, out);
 }
 
 // ---- the header's right end ----
@@ -229,6 +266,67 @@ static void fitTitleWidth(void)
    if (width != titleLabel.width) { freeLabel(&titleLabel); titleLabel.width = width; }
 }
 
+// Live chips first..last side by side, padX either side of each word and CHIP_GAP between them.
+static int liveChipsWidth(int first, int last, int padX)
+{
+   int width = 0;
+   for (int c = first; c <= last; c++) width += liveChipLabels[c].tt.tex.w + 2 * padX + (c > first ? CHIP_GAP : 0);
+   return width;
+}
+
+// Live has six chips where Trending has three, about 710 px after the title. They meet the top hint row with
+// a 12-hour clock, and with RPCS3's wider glyph art even without one. Worked out again whenever the heading is
+// (the row's width and the chip on screen are what change), in this order until the chips fit:
+//   1. the top hint row closes its gaps up, down to HINT_MIN_GAP;
+//   2. the chips close up, their padding from CHIP_PAD_X down to CHIP_PAD_MIN;
+//   3. the header shows the longest run of chips that holds the one on screen.
+// The chip on screen is always drawn whole - should even it alone not fit, it is drawn regardless.
+static void fitLiveChips(void)
+{
+   int active = home.category - HOME_LIVE_FIRST, last = LIVE_COUNT - 1;
+   int x = CONTENT_X + titleLabel.tt.tex.w + CHIP_TITLE_GAP;
+   int padX = CHIP_PAD_X, step = 0;
+   while (x + liveChipsWidth(0, last, padX) > hintsTopLeft() - TITLE_GAP && hintsTop.gap > HINT_MIN_GAP) {
+      int gap = hintsTop.gap - 2;
+      uiSetHintsGap(&hintsTop, gap < HINT_MIN_GAP ? HINT_MIN_GAP : gap);
+      step = 1;
+   }
+   int limit = hintsTopLeft() - TITLE_GAP;
+   while (x + liveChipsWidth(0, last, padX) > limit && padX > CHIP_PAD_MIN) { padX--; step = 2; }
+
+   int first = 0;
+   if (x + liveChipsWidth(0, last, padX) > limit) {
+      step = 3;
+      first = last = active;
+      int longest = 0;
+      for (int from = 0; from <= active; from++) {
+         int to = LIVE_COUNT - 1;
+         while (to > active && x + liveChipsWidth(from, to, padX) > limit) to--;
+         if (x + liveChipsWidth(from, to, padX) <= limit && to - from + 1 > longest) {
+            longest = to - from + 1;
+            first = from;
+            last = to;
+         }
+      }
+   }
+   home.liveChipPad   = padX;
+   home.liveChipFirst = first;
+   home.liveChipLast  = last;
+
+   // which step it took, once per outcome: with this console's glyphs and clock it is the same on every chip
+   // unless it came to step 3
+   static int logged[5] = { -1, -1, -1, -1, -1 };
+   int outcome[5] = { step, hintsTop.gap, padX, first, last };
+   if (memcmp(logged, outcome, sizeof outcome) == 0) return;
+   memcpy(logged, outcome, sizeof outcome);
+   if (step < 3)
+      logInfo("[home] Live chips: all %d fit (step %d: hint gap %d, chip padding %d, %d px to spare)\n", LIVE_COUNT,
+              step, hintsTop.gap, padX, limit - x - liveChipsWidth(0, LIVE_COUNT - 1, padX));
+   else
+      logWarn("[home] Live chips: only %d-%d of %d fit (step 3: hint gap %d, chip padding %d)\n", first + 1,
+              last + 1, LIVE_COUNT, hintsTop.gap, padX);
+}
+
 static void setHeading(void)
 {
    char heading[128];
@@ -237,25 +335,37 @@ static void setHeading(void)
    else if (home.category == HOME_WATCHLATER) snprintf(heading, sizeof heading, "Watch Later");
    else if (home.category == HOME_HISTORY)    snprintf(heading, sizeof heading, "History");
    else if (home.category == HOME_PLAYLIST)   snprintf(heading, sizeof heading, "%s", getPlaylistName(openPlaylist));
+   else if (isLiveCategory(home.category))    snprintf(heading, sizeof heading, "Live");       // the category: a chip
    else                                       snprintf(heading, sizeof heading, "Trending");   // the category: a chip
    uiSetHintCaption(&hintsTop, CROSS_HINT,    home.category == HOME_SUBS ? "Open channel" : "Play");
    uiSetHintCaption(&hintsTop, TRIANGLE_HINT, home.category == HOME_SUBS ? "Unsubscribe"  : "Channel");
+   // A live stream cannot be downloaded, and a Live page holds nothing else: R3 does nothing there (updateHome),
+   // so it has no hint either. The bottom row only gets narrower for it.
+   uiSetHintShown(&hintsBottom, R3_HINT, !isLiveCategory(home.category));
    fitTitleWidth();   // after the captions: the row's new width decides how far the title may run
    // on the playlist tab the heading is the playlist's name - the user's text, so raw and checked for Manrope
    uiSetTextLabel(&titleLabel, UI_PAGE_TITLE_WEIGHT, heading);
+   if (isLiveCategory(home.category)) fitLiveChips();   // after the title: the chips start where it ends
 }
 
 static void loadCategory(void)
 {
    setHeading();
+   if (isLiveCategory(home.category)) {   // never cached: what is on air changes by the minute
+      home.liveLoadedUs = sys_time_get_system_time();
+      setGridSource(&home.grid, homeFetch, NULL);
+      return;
+   }
    if (categoryCached[home.category]) setGridCached(&home.grid, &categoryCache[home.category], homeFetch, NULL);
    else                               setGridSource(&home.grid, homeFetch, NULL);
 }
 
 // Which rail entry the feed on screen belongs to. Trending covers three categories (Gaming/Sports/Podcasts)
-// under one entry, because they are one idea to a viewer and L1/R1 already walks between them.
+// under one entry, because they are one idea to a viewer and L1/R1 already walks between them; Live its six
+// chips likewise.
 static SidebarItem itemForCategory(int category)
 {
+   if (isLiveCategory(category))    return SIDE_LIVE;
    if (category == HOME_SUBS)       return SIDE_SUBS;
    if (category == HOME_CONTINUE)   return SIDE_CONTINUE;
    if (category == HOME_WATCHLATER) return SIDE_LATER;
@@ -269,6 +379,7 @@ static int categoryForItem(SidebarItem item)
 {
    switch (item) {
    case SIDE_TRENDING: return home.category < TREND_COUNT ? home.category : 0;   // keep the trending tab you were on
+   case SIDE_LIVE:     return isLiveCategory(home.category) ? home.category : HOME_LIVE_FIRST;   // or Popular
    case SIDE_SUBS:     return HOME_SUBS;
    case SIDE_CONTINUE: return HOME_CONTINUE;
    case SIDE_LATER:    return HOME_WATCHLATER;
@@ -277,9 +388,11 @@ static int categoryForItem(SidebarItem item)
    }
 }
 
-// cache the current category (only when it's fully loaded) so returning to it is instant.
+// cache the current category (only when it's fully loaded) so returning to it is instant. Live is never
+// cached: it has no slot, and what it lists is stale within minutes.
 static void cacheCurrent(void)
 {
+   if (isLiveCategory(home.category)) return;
    if (gridStage(&home.grid) != GRID_READY || gridBusy(&home.grid)) return;   // don't copy mid-append
    categoryCache[home.category] = *gridResults(&home.grid);
    categoryCached[home.category] = 1;
@@ -384,10 +497,15 @@ static void openSelectedChannel(const SearchResult *item)
    openChannelFor(&channel);
 }
 
+// L1/R1. Outside Live they walk the ring of the eight cached categories, Live not among them; on Live they walk
+// its six chips and never leave it.
 static void switchCategory(int delta)
 {
    cacheCurrent();
-   home.category = (home.category + delta + HOME_CAT_COUNT) % HOME_CAT_COUNT;
+   if (isLiveCategory(home.category))
+      home.category = HOME_LIVE_FIRST + (home.category - HOME_LIVE_FIRST + delta + LIVE_COUNT) % LIVE_COUNT;
+   else
+      home.category = (home.category + delta + HOME_CAT_COUNT) % HOME_CAT_COUNT;
    loadCategory();
 }
 
@@ -424,7 +542,7 @@ static void initHome(void)
    uiAddHint(&hintsTop, GLYPH_SQUARE,   "Watch Later");
    uiAddHint(&hintsTop, GLYPH_TRIANGLE, "Channel");       // TRIANGLE_HINT
    uiInitHints(&hintsBottom);
-   uiAddHint(&hintsBottom, GLYPH_R3,        "Download");
+   uiAddHint(&hintsBottom, GLYPH_R3,        "Download");      // R3_HINT
    uiAddHint(&hintsBottom, GLYPH_L3,        "Add to playlist");
    uiAddHint(&hintsBottom, GLYPH_START,     "Settings");
    uiAddHint(&hintsBottom, GLYPH_L1,        "");
@@ -450,6 +568,11 @@ static void initHome(void)
    uiInitDigits(&pageDigits, PAGE_WEIGHT, PAGE_SIZE);
    for (int c = 0; c < TREND_COUNT; c++)
       uiInitLabel(&chipLabels[c], CHIP_WEIGHT, 0, 0, AUTO, CHIP_SIZE, TEXT_TINTABLE, TEXT_NOWRAP, TrendingNames[c]);
+   for (int c = 0; c < LIVE_COUNT; c++)
+      uiInitLabel(&liveChipLabels[c], CHIP_WEIGHT, 0, 0, AUTO, CHIP_SIZE, TEXT_TINTABLE, TEXT_NOWRAP, LiveNames[c]);
+   home.liveChipPad   = CHIP_PAD_X;   // as designed until a Live heading works out what fits (fitLiveChips)
+   home.liveChipFirst = 0;
+   home.liveChipLast  = LIVE_COUNT - 1;
 
    home.noticeVisible   = 0;
    home.noticeIsConfirm = 0;
@@ -585,7 +708,11 @@ static void updateHome(void)
       if (home.category == HOME_WATCHLATER) loadCategory();   // reflect the add/remove immediately
       return;
    }
-   if (isPadButtonPressed(PAD_BTN_R3)) { if (!selected->isLive) enqueueDownload(selected); return; }   // live can't be downloaded
+   // live can't be downloaded: on a Live page R3 does nothing at all (its hint is hidden there, setHeading)
+   if (isPadButtonPressed(PAD_BTN_R3)) {
+      if (!isLiveCategory(home.category) && !selected->isLive) enqueueDownload(selected);
+      return;
+   }
    // L3 came free when the grid layout did. Filing a video is the thing you want a direct button for -
    // everything else about a playlist happens on its own screen.
    if (isPadButtonPressed(PAD_BTN_L3) && home.category != HOME_SUBS) { openPlaylistChooser(selected); return; }
@@ -635,21 +762,37 @@ static void drawTinted(const Label *label, int x, int y, uint32_t color)
                   GFX_FILTER_NEAREST);
 }
 
-// Trending's categories after its title (Bild 4's chips): the one on screen in text-1 with surface-1 text, the
-// others on surface-2 in text-2. L1/R1 still walk all eight categories, not just these three. A chip that
-// would reach the top hint row is left out rather than drawn into it.
+// A chip after the title (Bild 4's): the one on screen in text-1 with surface-1 text, the others on surface-2 in
+// text-2, padX either side of the word. Returns its width.
+static int drawChip(const Label *label, int x, int padX, int on)
+{
+   int w = label->tt.tex.w + 2 * padX;
+   uiFillPill(x, HEADER_Y, w, HEADER_H, on ? activeTheme->textPrimary : activeTheme->surface);
+   drawTinted(label, x + padX, uiLabelYForCenter(label, HEADER_Y, HEADER_H),
+              on ? activeTheme->surface1 : activeTheme->textSecondary);
+   return w;
+}
+
+// Trending's categories after its title. L1/R1 still walk all eight categories, not just these three. A chip
+// that would reach the top hint row is left out rather than drawn into it.
 static void drawTrendingChips(int x)
 {
    int limit = hintsTopLeft() - TITLE_GAP;
    for (int c = 0; c < TREND_COUNT; c++) {
       const Label *label = &chipLabels[c];
-      int w = label->tt.tex.w + 2 * CHIP_PAD_X;
-      if (label->tt.tex.w <= 0 || x + w > limit) break;
-      int on = (c == home.category);
-      uiFillPill(x, HEADER_Y, w, HEADER_H, on ? activeTheme->textPrimary : activeTheme->surface);
-      drawTinted(label, x + CHIP_PAD_X, uiLabelYForCenter(label, HEADER_Y, HEADER_H),
-                 on ? activeTheme->surface1 : activeTheme->textSecondary);
-      x += w + CHIP_GAP;
+      if (label->tt.tex.w <= 0 || x + label->tt.tex.w + 2 * CHIP_PAD_X > limit) break;
+      x += drawChip(label, x, CHIP_PAD_X, c == home.category) + CHIP_GAP;
+   }
+}
+
+// Live's six chips after its title, L1/R1's ring on this page: the run fitLiveChips found room for, which
+// always holds the one on screen.
+static void drawLiveChips(int x)
+{
+   int active = home.category - HOME_LIVE_FIRST;
+   for (int c = home.liveChipFirst; c <= home.liveChipLast; c++) {
+      if (liveChipLabels[c].tt.tex.w <= 0) continue;
+      x += drawChip(&liveChipLabels[c], x, home.liveChipPad, c == active) + CHIP_GAP;
    }
 }
 
@@ -670,11 +813,14 @@ static void drawPageCounter(int right)
    if (more) uiDrawLabelAt(&pagePlusLabel, x + numbersW, uiLabelYForBaseline(&pagePlusLabel, baseline));
 }
 
-// the header line: the title (and Trending's chips), the page counter and the clock - the hints come later
+// the header line: the title (and Trending's or Live's chips), the page counter and the clock - the hints come
+// later
 static void drawHeader(void)
 {
    uiDrawLabelAt(&titleLabel, CONTENT_X, uiLabelYForCenter(&titleLabel, HEADER_Y, HEADER_H));
-   if (home.category < TREND_COUNT) drawTrendingChips(CONTENT_X + titleLabel.tt.tex.w + CHIP_TITLE_GAP);
+   int chipsX = CONTENT_X + titleLabel.tt.tex.w + CHIP_TITLE_GAP;
+   if      (home.category < TREND_COUNT)     drawTrendingChips(chipsX);
+   else if (isLiveCategory(home.category))   drawLiveChips(chipsX);
    if (gridStage(&home.grid) == GRID_READY) drawPageCounter(pageRight());
 
    Font *clockFont = uiGetFont(UI_WEIGHT_BOLD);
@@ -742,23 +888,36 @@ static void resumeHome(void)
    if (playlistStale) categoryCached[HOME_PLAYLIST] = 0;
 
    // A new content region (Settings > Region) makes every list YouTube chose for the old one stale: the three
-   // Trending feeds are dropped, the one on screen reloads. Unlike the markers above, this one moves on at
-   // once - every regional cache goes in the same breath and the page on screen reloads whatever happens, so
-   // there is no retry to lose. Subscriptions stay: a channel's uploads are the same in every region, and a
-   // refetch costs one request per channel. Continue watching, Watch Later, History and the playlists are kept
-   // on the console.
+   // Trending feeds are dropped, a Trending or Live page on screen reloads (Live is never cached). Unlike the
+   // markers above, this one moves on at once - every regional cache goes in the same breath and the page on
+   // screen reloads whatever happens, so there is no retry to lose. Subscriptions stay: a channel's uploads are
+   // the same in every region, and a refetch costs one request per channel. Continue watching, Watch Later,
+   // History and the playlists are kept on the console.
    int regionStale = getContentRegionRevision() != regionRevisionSeen;
    if (regionStale) {
       regionRevisionSeen = getContentRegionRevision();
       for (int c = 0; c < TREND_COUNT; c++) categoryCached[c] = 0;
-      logInfo("[home] region now %s: Trending reloads\n", getContentRegionCode());
+      logInfo("[home] region now %s: Trending and Live reload\n", getContentRegionCode());
+   }
+
+   // A Live page lists what is on air NOW, and streams end: back after ten minutes - a stream watched for a
+   // while, say - a good part of it would show LIVE on recordings and on streams that no longer play. Such a
+   // page is fetched again; a younger one keeps its list and its selection, like every other page.
+   int liveStale = 0;
+   if (isLiveCategory(home.category) && gridStage(&home.grid) == GRID_READY) {
+      uint64_t age = sys_time_get_system_time() - home.liveLoadedUs;
+      if (age >= LIVE_MAX_AGE_US) {
+         liveStale = 1;
+         logInfo("[home] Live page is %d min old: it reloads\n", (int)(age / 60000000ull));
+      }
    }
 
    int showingStale = (subsStale && home.category == HOME_SUBS) ||
                       (laterStale && home.category == HOME_WATCHLATER) ||
                       (historyStale && (home.category == HOME_HISTORY || home.category == HOME_CONTINUE)) ||
                       (playlistStale && home.category == HOME_PLAYLIST) ||
-                      (regionStale && home.category < TREND_COUNT);
+                      (regionStale && (home.category < TREND_COUNT || isLiveCategory(home.category))) ||
+                      liveStale;
 
    // Do NOT reload here. Autoplay resumes this screen only to pass straight through it: advanceAutoplay
    // pops the finished player, which lands here, and immediately pushes the next one - and the push calls
@@ -781,6 +940,7 @@ static void termHome(void)
    freeLabel(&pagePlusLabel);
    uiFreeDigits(&pageDigits);
    for (int c = 0; c < TREND_COUNT; c++) freeLabel(&chipLabels[c]);
+   for (int c = 0; c < LIVE_COUNT; c++) freeLabel(&liveChipLabels[c]);
    freeLabel(&noticeLabel);
    uiTermHints(&closeHints);
    uiTermHints(&confirmHints);

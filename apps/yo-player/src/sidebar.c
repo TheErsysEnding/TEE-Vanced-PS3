@@ -46,13 +46,15 @@
 // used to do in the draw path on every move of the highlight.
 #define TEXT_TINTABLE 0xFFFFFFFFu
 
-// Four of the eight have an exact glyph in the embedded set (search, clock, history, cog). The other four
-// have none - there is no play, trending, subscription or playlist symbol in it - so they borrow the
-// nearest honest reading rather than a made-up one: an up arrow for what is rising, a star for channels you
-// follow, a right arrow for picking a video back up, stacked pages for lists of videos.
+// Four of the nine have an exact glyph in the embedded set (search, clock, history, cog). The other five
+// have none - there is no play, trending, broadcast, subscription or playlist symbol in it - so they borrow
+// the nearest honest reading rather than a made-up one: an up arrow for what is rising, the signal arcs for
+// what is on air, a star for channels you follow, a right arrow for picking a video back up, stacked pages
+// for lists of videos.
 static const IconId ITEM_ICONS[SIDE_COUNT] = {
    ICON_SEARCH,      // Search
    ICON_UP_BIG,      // Trending
+   ICON_WIFI,        // Live
    ICON_STAR,        // Subscriptions
    ICON_RIGHT_BIG,   // Continue watching
    ICON_DOCS,        // Playlists
@@ -62,7 +64,7 @@ static const IconId ITEM_ICONS[SIDE_COUNT] = {
 };
 
 static const char *ITEM_NAMES[SIDE_COUNT] = {
-   "Search", "Trending", "Subscriptions", "Continue watching",
+   "Search", "Trending", "Live", "Subscriptions", "Continue watching",
    "Playlists", "Watch Later", "History", "Settings",
 };
 
@@ -92,7 +94,7 @@ void initSidebar(void)
       initIcon(&icons[i], ITEM_ICONS[i], ICON_SIZE);
       uiInitLabel(&labels[i], LABEL_WEIGHT, 0, 0, AUTO, LABEL_SIZE, TEXT_TINTABLE, TEXT_NOWRAP, ITEM_NAMES[i]);
       // The panel takes its longest name whole: "Continue watching" at 24/700 needs about 350 px where the
-      // design's panel is 300, and an ellipsis in a menu of eight fixed words would only hide which entry it is.
+      // design's panel is 300, and an ellipsis in a menu of nine fixed words would only hide which entry it is.
       int needed = LABEL_X + labels[i].tt.tex.w + ROW_PAD_R + ROW_X;
       if (needed > panelWidth) panelWidth = needed;
    }
