@@ -9,21 +9,38 @@
 #include "ui/label.h"
 #include "ui/icon-font.h"
 #include "ui-fonts.h"         // uiInitLabel / uiLabelYForCenter: the entry names are Manrope like all UI text
-#include "ui-draw.h"          // uiWithAlpha
+#include "ui-draw.h"          // rounded fills, uiWithAlpha, UI_SCREEN_W
 #include <string.h>
 
-// The first entry is level with the first row of home's list. It used to sit at 96, just under a 26-px
-// heading at the top of the screen; home's Ember heading is 46 px, on the line of the top-right hint row,
-// and its list starts lower to match. The expanded panel is drawn over that heading (home.c, drawHome).
-#define ITEM_TOP     140
-#define ITEM_STEP    88
-#define ICON_SIZE    32
-#define LABEL_SIZE   24       // Ember's panel entries: 24/700
-#define LABEL_WEIGHT UI_WEIGHT_BOLD
-#define PANEL_WIDTH  330      // the expanded overlay, drawn only while focused - at least this wide
-#define LABEL_X      (SIDEBAR_WIDTH + 6)
-#define LABEL_PAD    16       // panel room after the longest name
-#define MARK_WIDTH   5        // the accent bar on the current entry
+// Ember's rail at 1920x1080. Collapsed (Bild 1 and 3) it is a 112-px column with no surface of its own: the
+// orange logo tile, then one 64x64 slot per entry, 14 apart, and Settings alone at the foot.
+#define LOGO_X         26
+#define LOGO_Y         48         // the top of the safe area
+#define LOGO_SIZE      60
+#define LOGO_RADIUS    18
+#define LOGO_TEXT      19         // "TEE" 19/800 in on-accent
+#define WORDMARK_GAP   14         // expanded: the tile -> "Vanced" 26/800, as in Bild 4's logo row
+#define WORDMARK_TEXT  26
+#define SLOT_X         24
+#define SLOT_SIZE      64
+#define SLOT_RADIUS    20
+#define SLOT_TOP       158        // the logo's 48 + 60, its 36 below it, and the column's 14 gap
+#define SLOT_STEP      78         // 64 + 14
+#define SLOT_FOOT      54         // Settings' slot ends 54 above the bottom edge (Bild 1 and 3)
+#define ICON_SIZE      30
+#define ICON_CENTER_X  (SLOT_X + SLOT_SIZE / 2)
+#define ICON_REST_ALPHA 0x9E      // a resting icon in the collapsed rail: text-1 at 62 %, as Bild 1 and 3 draw it
+// Expanded (Bild 4 and 5) it is a panel over the content: a row per entry at the SAME height as its slot,
+// so nothing moves when it opens, with the name 18 px after the icon.
+#define PANEL_MIN_W    300
+#define ROW_X          20         // a row runs from 20 in to 20 short of the panel's edge
+#define ROW_RADIUS     18
+#define ROW_PAD_R      18         // the name -> the row's right end
+#define LABEL_X        (ICON_CENTER_X + ICON_SIZE / 2 + 18)
+#define LABEL_SIZE     24         // Ember's panel entries: 24/700
+#define LABEL_WEIGHT   UI_WEIGHT_BOLD
+#define EDGE_W         2          // the panel's right edge, a hairline against the dimmed content
+#define DISABLED_ALPHA 110
 // The names are rendered once in white and tinted when drawn, the way the icons beside them are: the tint
 // follows the highlight, and re-colouring a rendered label means rasterising it again - which setLabelColor
 // used to do in the draw path on every move of the highlight.
@@ -51,10 +68,11 @@ static const char *ITEM_NAMES[SIDE_COUNT] = {
 
 static Icon  icons[SIDE_COUNT];
 static Label labels[SIDE_COUNT];
+static Label logoLabel, wordmarkLabel;
 static int   current = SIDE_SUBS;   // what the content is showing
 static int   picked  = SIDE_SUBS;   // where the highlight sits while focused
 static int   focused;
-static int   panelWidth = PANEL_WIDTH;   // PANEL_WIDTH, or wider when the longest name needs it
+static int   panelWidth = PANEL_MIN_W;   // PANEL_MIN_W, or wider when the longest name needs it
 
 int isSidebarItemEnabled(SidebarItem item) { (void)item; return 1; }   // every entry leads somewhere now
 const char *sidebarItemName(SidebarItem item)
@@ -66,14 +84,16 @@ void initSidebar(void)
 {
    focused = 0;
    current = picked = SIDE_SUBS;
-   panelWidth = PANEL_WIDTH;
+   panelWidth = PANEL_MIN_W;
 
+   uiInitLabel(&logoLabel, UI_WEIGHT_EXTRABOLD, 0, 0, AUTO, LOGO_TEXT, activeTheme->onAccent, TEXT_NOWRAP, "TEE");
+   uiInitLabel(&wordmarkLabel, UI_WEIGHT_EXTRABOLD, 0, 0, AUTO, WORDMARK_TEXT, activeTheme->textPrimary, TEXT_NOWRAP, "Vanced");
    for (int i = 0; i < SIDE_COUNT; i++) {
       initIcon(&icons[i], ITEM_ICONS[i], ICON_SIZE);
-      uiInitLabel(&labels[i], LABEL_WEIGHT, LABEL_X, 0, AUTO, LABEL_SIZE, TEXT_TINTABLE, TEXT_NOWRAP, ITEM_NAMES[i]);
-      // The panel takes its longest name whole. "Continue watching" in Manrope 24 no longer fits the old
-      // 330, and an ellipsis in a menu of eight fixed words would only hide which entry it is.
-      int needed = LABEL_X + labels[i].tt.tex.w + LABEL_PAD;
+      uiInitLabel(&labels[i], LABEL_WEIGHT, 0, 0, AUTO, LABEL_SIZE, TEXT_TINTABLE, TEXT_NOWRAP, ITEM_NAMES[i]);
+      // The panel takes its longest name whole: "Continue watching" at 24/700 needs about 350 px where the
+      // design's panel is 300, and an ellipsis in a menu of eight fixed words would only hide which entry it is.
+      int needed = LABEL_X + labels[i].tt.tex.w + ROW_PAD_R + ROW_X;
       if (needed > panelWidth) panelWidth = needed;
    }
 }
@@ -81,6 +101,8 @@ void initSidebar(void)
 void termSidebar(void)
 {
    for (int i = 0; i < SIDE_COUNT; i++) { freeIcon(&icons[i]); freeLabel(&labels[i]); }
+   freeLabel(&logoLabel);
+   freeLabel(&wordmarkLabel);
 }
 
 void setSidebarCurrent(SidebarItem item)
@@ -120,7 +142,13 @@ int updateSidebar(void)
    return -1;
 }
 
-static int itemY(int index) { return ITEM_TOP + index * ITEM_STEP; }
+// the top of an entry's slot - the same in both states, so the icons stay put when the panel opens. Settings
+// is pinned to the foot of the rail, the rest stack under the logo.
+static int slotY(int index, int screenH)
+{
+   if (index == SIDE_COUNT - 1) return screenH - SLOT_FOOT - SLOT_SIZE;
+   return SLOT_TOP + index * SLOT_STEP;
+}
 
 // a name (rendered in TEXT_TINTABLE) drawn in `color`, alpha included
 static void drawTinted(const Label *label, int x, int y, uint32_t color)
@@ -130,46 +158,69 @@ static void drawTinted(const Label *label, int x, int y, uint32_t color)
                   GFX_FILTER_NEAREST);
 }
 
-// where an entry's name goes: its capitals centred on the icon's ink, which is what the eye lines it up
-// with - the glyph does not fill its em box, so the box's middle is not the icon's
-static int labelY(int index, int y)
+// An entry's icon with its ink centred in the slot both ways: drawIcon places a glyph by its em box, and the
+// glyph does not fill that box, so the box's middle is not the icon's.
+static void drawEntryIcon(int index, int slotTop, uint32_t color)
 {
-   const Icon *icon = &icons[index];
-   if (icon->tex && icon->tex->h > 0) return uiLabelYForCenter(&labels[index], y + icon->offsetY, icon->tex->h);
-   return uiLabelYForCenter(&labels[index], y, ICON_SIZE);
+   Icon *icon = &icons[index];
+   if (!icon->tex || icon->tex->h <= 0) return;
+   if (!isSidebarItemEnabled((SidebarItem)index)) color = uiWithAlpha(color, DISABLED_ALPHA);
+   drawIconCentered(icon, ICON_CENTER_X, slotTop + (SLOT_SIZE - icon->tex->h) / 2 - icon->offsetY, color);
+}
+
+static void drawLogo(int expanded)
+{
+   uiFillRounded(LOGO_X, LOGO_Y, LOGO_SIZE, LOGO_SIZE, LOGO_RADIUS, activeTheme->accent);
+   uiDrawLabelAt(&logoLabel, LOGO_X + (LOGO_SIZE - logoLabel.tt.tex.w) / 2, uiLabelYForCenter(&logoLabel, LOGO_Y, LOGO_SIZE));
+   if (expanded)
+      uiDrawLabelAt(&wordmarkLabel, LOGO_X + LOGO_SIZE + WORDMARK_GAP, uiLabelYForCenter(&wordmarkLabel, LOGO_Y, LOGO_SIZE));
+}
+
+// The collapsed rail: no surface of its own, just the logo and the icons on the page background, with
+// `active` on its accent-soft square in the accent colour and the others at 62 % of text-1.
+static void drawCollapsed(int screenH, int active)
+{
+   drawLogo(0);
+   for (int i = 0; i < SIDE_COUNT; i++) {
+      int y = slotY(i, screenH);
+      if (i == active) uiFillRounded(SLOT_X, y, SLOT_SIZE, SLOT_SIZE, SLOT_RADIUS, activeTheme->accentSoft);
+      drawEntryIcon(i, y, i == active ? activeTheme->accent : uiWithAlpha(activeTheme->textPrimary, ICON_REST_ALPHA));
+   }
+}
+
+// The expanded panel. The highlight (where X would go) is the accent-soft row with an orange icon and its
+// name in accent-text; the entry the content belongs to keeps its orange icon and reads in text-1 while the
+// highlight is elsewhere, so both stay visible at once; the rest are text-2.
+static void drawExpanded(int screenH)
+{
+   uiFillRect(panelWidth, 0, UI_SCREEN_W - panelWidth, screenH, activeTheme->scrim);
+   uiFillRect(0, 0, panelWidth, screenH, activeTheme->surface1);
+   uiFillRect(panelWidth - EDGE_W, 0, EDGE_W, screenH, activeTheme->hairline);
+   drawLogo(1);
+
+   for (int i = 0; i < SIDE_COUNT; i++) {
+      int y = slotY(i, screenH);
+      int isPicked  = (i == picked);
+      int isCurrent = (i == current);
+      if (isPicked) uiFillRounded(ROW_X, y, panelWidth - 2 * ROW_X, SLOT_SIZE, ROW_RADIUS, activeTheme->accentSoft);
+      uint32_t iconColor = (isPicked || isCurrent) ? activeTheme->accent : activeTheme->textSecondary;
+      uint32_t nameColor = isPicked ? activeTheme->accentText : isCurrent ? activeTheme->textPrimary : activeTheme->textSecondary;
+      if (!isSidebarItemEnabled((SidebarItem)i)) nameColor = uiWithAlpha(nameColor, DISABLED_ALPHA);
+      drawEntryIcon(i, y, iconColor);
+      drawTinted(&labels[i], LABEL_X, uiLabelYForCenter(&labels[i], y, SLOT_SIZE), nameColor);
+   }
 }
 
 void drawSidebar(int screenH)
 {
-   int width = focused ? panelWidth : SIDEBAR_WIDTH;
-   // Expanded or collapsed, it runs the full height. The panel used to stop above the button-hint row: that
-   // row was centred, wide enough to reach under the panel, and painting over it made the hints look broken.
-   // The hint rows are right-aligned now and start far to the right of the panel.
-   //
-   // The rail is its own surface so it reads as furniture rather than as part of the list. Expanded, it is
-   // opaque and sits over the content - the content is never re-laid out.
-   fillGfxRectangle(0, 0, width, screenH, activeTheme->surface);
-   fillGfxRectangle(width, 0, 2, screenH, activeTheme->accent);
+   // The panel runs the full height, Settings at its foot as in the rail. It used to stop above the
+   // button-hint row: that row was centred, wide enough to reach under the panel, and painting over it made
+   // the hints look broken. The hint rows are right-aligned now and start far to the right of the panel.
+   if (focused) drawExpanded(screenH);
+   else         drawCollapsed(screenH, current);
+}
 
-   for (int i = 0; i < SIDE_COUNT; i++) {
-      int y = itemY(i);
-      int isCurrent = (i == current);
-      int isPicked  = focused && i == picked;
-      int enabled   = isSidebarItemEnabled(i);
-
-      if (isPicked)       fillGfxRectangle(0, y - 14, width, ITEM_STEP - 12, activeTheme->rowHighlight);
-      if (isCurrent)      fillGfxRectangle(0, y - 14, MARK_WIDTH, ITEM_STEP - 12, activeTheme->accent);
-
-      uint32_t tint = !enabled  ? activeTheme->textSecondary
-                    : isPicked  ? activeTheme->accent
-                    : isCurrent ? activeTheme->textPrimary
-                                : activeTheme->textSecondary;
-      // a disabled entry is drawn at half strength on top of the muted colour, so it reads as "not yet"
-      if (enabled) drawIcon(&icons[i], SIDEBAR_WIDTH / 2 - ICON_SIZE / 2, y, tint);
-      else         drawIconAlpha(&icons[i], SIDEBAR_WIDTH / 2 - ICON_SIZE / 2, y, tint, 110);
-
-      if (focused) {
-         drawTinted(&labels[i], LABEL_X, labelY(i, y), enabled ? tint : uiWithAlpha(tint, 110));
-      }
-   }
+void drawSidebarPassive(int screenH, SidebarItem active)
+{
+   drawCollapsed(screenH, (active >= 0 && active < SIDE_COUNT) ? (int)active : -1);
 }

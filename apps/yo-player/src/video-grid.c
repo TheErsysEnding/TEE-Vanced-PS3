@@ -6,10 +6,11 @@
 // way back, so VRAM stays flat no matter how many results are loaded. The worker is stopped before playback
 // so no per-call http fetch overlaps the streaming http client.
 //
-// The look is Ember's (UEBERGABE 3.4): every thumbnail is drawn as image, progress line, rounded corners
-// (masks in the page colour), then the focus ring when selected, then the badges; the focus glow goes down
-// first, under all of them. Titles and meta lines are rendered white once and tinted per frame, so a tile can
-// change colour with its state (selected, watched) without being rasterised again.
+// The look is Ember's (UEBERGABE 3.4; the cards of Bild 4, the rows of Bild 5): every thumbnail is drawn as
+// image, progress line, rounded corners (masks in the colour behind it), then the focus ring when selected,
+// then the badges; the focus glow goes down first, under all of them. Titles and meta lines are rendered
+// white once and tinted per frame, so a tile can change colour with its state (selected, watched) without
+// being rasterised again.
 
 #include "video-grid.h"
 
@@ -17,7 +18,7 @@
 #include "theme.h"
 #include "pad.h"
 #include "http.h"
-#include "anim.h"               // interpolateColor: the page colour under the focus glow
+#include "anim.h"               // interpolateColor / applyEasing: the glow under a card, the focus easing
 #include "ui-fonts.h"           // label helpers (raw text, Manrope or FONT_POP), metrics, type scale
 #include "ui-draw.h"            // corners, focus glow + ring, badges, progress bar
 #include "dbg.h"                // paging diagnostics
@@ -26,45 +27,65 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-#define GRID_GAP    22
-// grid view: the text under a thumbnail - title and meta line, one title line each (Bild 4's card with the
-// avatar gone): 16 down to the text, the title's line box 28.6, 4, the meta's 27
-#define TILE_TEXT_GAP   16
-#define TILE_TITLE_BASE 22      // the title's baseline, from the top of the text
-#define TILE_META_BASE  54      // the meta line's baseline, likewise
-#define TILE_TEXT_H     76      // space under each thumbnail for the title + meta line
-#define ROW_TITLE   UI_CARD_TITLE_SIZE    // 22 in Bold
-#define META_SIZE   UI_META_SIZE          // 20 in SemiBold
-#define TITLE_WEIGHT UI_CARD_TITLE_WEIGHT
-#define META_WEIGHT  UI_META_WEIGHT
+// ---- grid view: the list pages' cards (Bild 4) ----
+#define GRID_COL_GAP      32
+#define GRID_ROW_GAP      44      // a card's meta line -> the next row's thumbnails
+// A card's text starts 16 under its thumbnail: a title of up to two lines in 1.3-em line boxes, then, 4
+// lower, the meta line (Bild 4's card with the avatar gone). The title is 24/700, the top of the design's
+// 22-24 for card titles: these cards are 388 px wide where Bild 4's are 342. The baselines are where the
+// design's line boxes put them, counted from the top of the text.
+#define TILE_TEXT_GAP     16
+#define TILE_TITLE_SIZE   24
+#define TILE_TITLE_BASE   25      // (31.2 - 33) / 2 + 26: the first line's baseline in its line box
+#define TILE_TITLE_LINE   31      // 24 x 1.3: the second line's baseline is this much lower
+#define TILE_META_GAP     4
+#define TILE_TEXT_H       93      // two title lines, the gap and the meta line's 27-px box
+// The focused card grows to 104 % about its centre and its text moves 6 down, clear of the bigger picture
+// (Bild 4); the change takes about 150 ms, EASE_OUT_CUBIC (UEBERGABE 3.4). Only the look is eased - the
+// selection itself moves at once, so input never waits for an animation.
+#define FOCUS_GROW        0.02f   // a side
+#define FOCUS_TEXT_SHIFT  6
+#define FOCUS_EASE_US     150000
+#define FOCUS_TITLE_WEIGHT UI_WEIGHT_EXTRABOLD   // Bild 4 sets the focused card's title in 800, the others in 700
+
+// ---- list view: the search results' rows (Bild 5) ----
+#define LIST_ROW_GAP      20
+#define LIST_PAD          18      // a row's padding round its thumbnail
+#define LIST_TEXT_GAP     32      // thumbnail -> text column
+#define LIST_RADIUS       26      // the focused row's plate: the radius UI_RING_ROW is made for
+#define LIST_THUMB_RADIUS 16
+// The row title is 28/700 focused or not. Bild 5 sets the focused one in 30/800, but a size or weight change
+// means rasterising two titles on every move of the selection; the plate, ring and glow mark the row.
+#define LIST_TITLE_SIZE   28
+#define LIST_TITLE_BASE   28      // (33.6 - 38) / 2 + 30: the first line's baseline in its 1.2-em line box
+#define LIST_TITLE_LINE   34      // 28 x 1.2
+#define LIST_META_GAP     12      // the title's last line box -> the meta line's box
+#define LIST_BADGE_BOTTOM 16      // Bild 5 lifts the duration badge this far up when a progress line runs under it
+
+// ---- both views ----
+#define TITLE_WEIGHT      UI_CARD_TITLE_WEIGHT   // 700
+#define META_SIZE         UI_META_SIZE           // 20
+#define META_WEIGHT       UI_META_WEIGHT         // 600
+#define CHANNEL_WEIGHT    UI_WEIGHT_BOLD         // list view: the channel, a step heavier than the rest of its line
+#define META_ASCENT       21      // a 20-px line box: the baseline 21 below its top ...
+#define META_BOX          27      // ... in a box 27 tall
 #define MARGIN_ROWS 2           // rows kept materialised above and below the visible band
 #define THUMB_LOOKAHEAD_ROWS 3  // rows below the visible band to fetch thumbnails for ahead of scrolling
 #define DECODES_PER_FRAME 3
+#define MATERIALIZE_PER_FRAME 2 // tiles outside the visible page whose labels are rasterised per frame
 #define THUMB_CAP   (96 * 1024) // one mqdefault jpeg fits easily
 #define THUMB_UA    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
 
-// list view: the results column takes this share of the width, the rest is the preview pane. The row
-// thumbnail is a share of the column - small enough that five rows fit a 1080p screen, which is about what a
-// desktop browser shows, while staying legible from a couch.
-#define LIST_COLUMN_PCT 58
-#define LIST_THUMB_PCT  27
-#define LIST_TEXT_GAP   28      // the focus ring takes 9 of it and the selected row's band starts 5 after that
-#define LIST_ROW_GAP    14
-#define LIST_TITLE      24      // card titles are 22-24 (UEBERGABE 3.3): the larger one, beside a thumbnail
-#define LIST_META       UI_META_SIZE
-#define LIST_LINE_GAP   18      // a row's title baseline -> its meta line's capitals
-#define PREVIEW_TITLE   UI_SHELF_TITLE_SIZE     // the selection shown large: a panel title, 32/800
-#define PREVIEW_TITLE_WEIGHT UI_SHELF_TITLE_WEIGHT
-#define PREVIEW_META    UI_META_SIZE
-#define PREVIEW_TITLE_BASE 46   // the preview image's bottom -> the title's first baseline
-#define PREVIEW_META_GAP   18   // the title's last baseline -> the meta line's capitals
-
 #define PROGRESS_BAR_H 6        // "you got this far" line along the bottom edge of a thumbnail
 #define BADGE_INSET    10       // badges sit this far in from the thumbnail's edges (Bild 4)
-#define RING_OUTSET    9        // UI_RING_THUMB's outer edge lies this far outside the thumbnail (ui-draw.h)
+#define BADGE_SPACE    8        // two badges along one edge keep at least this far apart, or the left one goes
 // The glow texture's own alpha at a card's edge (84 of 255, measured on schein-r23): the page under a focused
 // thumbnail's corners is appBg lit by that share of focusGlow (times focusGlow's alpha).
 #define GLOW_EDGE_SHARE 0.33f
+// A text is drawn without the library's ellipsis only when it fits with this much to spare: that mode also
+// cuts a text which just fits (it reserves room for the three dots), and a renderer that rounds its pen
+// differently from the measurement must not lose the last letter instead.
+#define FIT_SLACK      2
 // Titles and meta lines are rendered in white and given their colour when drawn (drawTinted): white times
 // the tint is exactly the tint, and the state colours then cost no re-render.
 #define TEXT_TINTABLE 0xFFFFFFFFu
@@ -224,25 +245,30 @@ static int spawnWorker(VideoGrid *grid)
 static void computeGeometry(VideoGrid *grid)
 {
    if (grid->view == GRID_VIEW_LIST) {
-      int column = grid->width * LIST_COLUMN_PCT / 100;
-      grid->cols     = 1;
-      grid->tileW    = column * LIST_THUMB_PCT / 100;
-      grid->thumbH   = grid->tileW * 9 / 16;
-      grid->rowStep  = grid->thumbH + LIST_ROW_GAP;
-      grid->textX    = grid->tileW + LIST_TEXT_GAP;
-      grid->textW    = column - grid->textX;
-      grid->previewX = grid->x + column + GRID_GAP;
-      grid->previewW = grid->width - column - GRID_GAP;
+      // Exactly LIST_ROWS rows fill the rectangle: each takes a third of its height, less the gap under it,
+      // and its thumbnail is as tall as the row's padding leaves - so the rows scale with what the screen
+      // can spare, keeping Bild 5's proportions.
+      grid->cols        = 1;
+      grid->visibleRows = LIST_ROWS;
+      grid->rowStep     = grid->height / LIST_ROWS;
+      grid->rowH        = grid->rowStep - LIST_ROW_GAP;
+      grid->thumbH      = grid->rowH - 2 * LIST_PAD;
+      if (grid->thumbH < 1) grid->thumbH = 1;
+      grid->tileW       = grid->thumbH * 16 / 9;
+      grid->textX       = LIST_PAD + grid->tileW + LIST_TEXT_GAP;
+      grid->textW       = grid->width - grid->textX - LIST_PAD;
    } else {
-      grid->cols     = GRID_COLS;
-      grid->tileW    = (grid->width - (GRID_COLS - 1) * GRID_GAP) / GRID_COLS;
-      grid->thumbH   = grid->tileW * 9 / 16;
-      grid->rowStep  = grid->thumbH + TILE_TEXT_H + GRID_GAP;
-      grid->textX    = 0;
-      grid->textW    = grid->tileW;
-      grid->previewX = grid->previewW = 0;
+      grid->cols        = GRID_COLS;
+      grid->tileW       = (grid->width - (GRID_COLS - 1) * GRID_COL_GAP) / GRID_COLS;
+      grid->thumbH      = grid->tileW * 9 / 16;
+      grid->rowH        = grid->thumbH + TILE_TEXT_GAP + TILE_TEXT_H;
+      grid->rowStep     = grid->rowH + GRID_ROW_GAP;
+      grid->textX       = 0;
+      grid->textW       = grid->tileW;
+      // whole rows only: the last one needs no gap under it
+      grid->visibleRows = (grid->height + GRID_ROW_GAP) / grid->rowStep;
    }
-   grid->visibleRows = grid->height / grid->rowStep;
+   if (grid->textW < 1) grid->textW = 1;
    if (grid->visibleRows < 1) grid->visibleRows = 1;
 }
 
@@ -252,24 +278,37 @@ static void computeGeometry(VideoGrid *grid)
 // Everything here shows text from YouTube (a duration is too), so every label is a raw text label: a '{' in a
 // title is a character, not markup, and the font is picked per text when it is set - Manrope, or FONT_POP
 // for a title Manrope cannot draw (ui-fonts.h). Titles and meta lines are white, see TEXT_TINTABLE.
+static void freeTileLabels(VideoGrid *grid, int i)
+{
+   freeLabel(&grid->titles[i]);
+   freeLabel(&grid->titles2[i]);
+   freeLabel(&grid->channels[i]);
+   freeLabel(&grid->metas[i]);
+   freeLabel(&grid->durations[i]);
+}
+
+// the focused card's own title pair (labelFocusTitle): emptied, so the next selection rasterises it afresh
+static void freeFocusTitle(VideoGrid *grid)
+{
+   freeLabel(&grid->focusTitle);
+   freeLabel(&grid->focusTitle2);
+   grid->focusTitleIndex = -1;
+}
+
 static void layoutLabels(VideoGrid *grid)
 {
-   int titleSize = grid->view == GRID_VIEW_LIST ? LIST_TITLE : ROW_TITLE;
-   int metaSize  = grid->view == GRID_VIEW_LIST ? LIST_META  : META_SIZE;
+   int titleSize = grid->view == GRID_VIEW_LIST ? LIST_TITLE_SIZE : TILE_TITLE_SIZE;
    for (int i = 0; i < MAX_SEARCH_RESULTS; i++) {
-      freeLabel(&grid->rows[i]);
-      freeLabel(&grid->metas[i]);
-      freeLabel(&grid->durations[i]);
-      uiInitTextLabel(&grid->rows[i],      TITLE_WEIGHT,    0, 0, grid->textW, titleSize,     TEXT_TINTABLE,            TEXT_NOWRAP_ELLIPSIS, "");
-      uiInitTextLabel(&grid->metas[i],     META_WEIGHT,     0, 0, grid->textW, metaSize,      TEXT_TINTABLE,            TEXT_NOWRAP_ELLIPSIS, "");
+      freeTileLabels(grid, i);
+      uiInitTextLabel(&grid->titles[i],    TITLE_WEIGHT,    0, 0, grid->textW, titleSize,     TEXT_TINTABLE,            TEXT_NOWRAP_ELLIPSIS, "");
+      uiInitTextLabel(&grid->titles2[i],   TITLE_WEIGHT,    0, 0, grid->textW, titleSize,     TEXT_TINTABLE,            TEXT_NOWRAP_ELLIPSIS, "");
+      uiInitTextLabel(&grid->channels[i],  CHANNEL_WEIGHT,  0, 0, grid->textW, META_SIZE,     TEXT_TINTABLE,            TEXT_NOWRAP_ELLIPSIS, "");
+      uiInitTextLabel(&grid->metas[i],     META_WEIGHT,     0, 0, grid->textW, META_SIZE,     TEXT_TINTABLE,            TEXT_NOWRAP_ELLIPSIS, "");
       uiInitTextLabel(&grid->durations[i], UI_BADGE_WEIGHT, 0, 0, AUTO,        UI_BADGE_SIZE, activeTheme->textPrimary, TEXT_NOWRAP,          "");
    }
-   freeLabel(&grid->previewTitle);
-   freeLabel(&grid->previewMeta);
-   int previewW = grid->previewW > 0 ? grid->previewW : grid->tileW;
-   uiInitTextLabel(&grid->previewTitle, PREVIEW_TITLE_WEIGHT, 0, 0, previewW, PREVIEW_TITLE, activeTheme->textPrimary,   TEXT_WRAP,            "");
-   uiInitTextLabel(&grid->previewMeta,  META_WEIGHT,          0, 0, previewW, PREVIEW_META,  activeTheme->textSecondary, TEXT_NOWRAP_ELLIPSIS, "");
-   grid->previewFor = -1;
+   freeFocusTitle(grid);
+   uiInitTextLabel(&grid->focusTitle,  FOCUS_TITLE_WEIGHT, 0, 0, grid->textW, titleSize, TEXT_TINTABLE, TEXT_NOWRAP_ELLIPSIS, "");
+   uiInitTextLabel(&grid->focusTitle2, FOCUS_TITLE_WEIGHT, 0, 0, grid->textW, titleSize, TEXT_TINTABLE, TEXT_NOWRAP_ELLIPSIS, "");
 }
 
 // ---- tile windowing (UI side) ----
@@ -287,14 +326,16 @@ static void freeThumbnails(VideoGrid *grid)
 static void resetFeed(VideoGrid *grid)
 {
    freeThumbnails(grid);
-   for (int i = 0; i < MAX_SEARCH_RESULTS; i++) { freeLabel(&grid->rows[i]); freeLabel(&grid->metas[i]); freeLabel(&grid->durations[i]); }
+   for (int i = 0; i < MAX_SEARCH_RESULTS; i++) freeTileLabels(grid, i);
+   freeFocusTitle(grid);
+   memset(grid->labelled, 0, sizeof grid->labelled);
    memset(&grid->results, 0, sizeof grid->results);
    grid->stage = GRID_RUNNING;
    grid->searchParsed = grid->workerDone = 0;
    grid->thumbFetched = 0;
    grid->moreEmpty = grid->moreFailed = 0;
-   grid->previewFor = -1;
    grid->page = grid->selected = grid->scrollRow = grid->winStart = grid->winEnd = 0;
+   grid->focusIndex = grid->focusFrom = -1;   // a new feed: no card to shrink back from
 }
 
 static void beginFeed(VideoGrid *grid)
@@ -333,42 +374,163 @@ static void loadThumbnails(VideoGrid *grid)
    if (!spawnWorker(grid)) grid->workerDone = 1;
 }
 
-// join the non-empty metadata parts with a middle dot (U+00B7, as in Ember's cards) into
-// "author . views . age". Both Manrope and FONT_POP have the dot.
-static void composeMeta(char *out, int cap, const SearchResult *item)
+// join the non-empty parts with a middle dot (U+00B7, as in Ember's cards and rows): "author . views . age".
+// afterChannel starts the line with a dot too, for the list view's meta, which follows its channel label.
+// Both Manrope and FONT_POP have the dot.
+static void joinMeta(char *out, int cap, const char *const *parts, int count, int afterChannel)
 {
-   const char *parts[3] = { item->author, item->views, item->published };
    int length = 0;
    out[0] = 0;
-   for (int i = 0; i < 3; i++) {
+   for (int i = 0; i < count; i++) {
       if (!parts[i][0]) continue;
-      length += snprintf(out + length, cap - length, "%s%s", length ? " \xc2\xb7 " : "", parts[i]);
+      int separate = length > 0 || afterChannel;
+      length += snprintf(out + length, cap - length, "%s%s", separate ? " \xc2\xb7 " : "", parts[i]);
       if (length >= cap) break;
    }
 }
 
-// uiSetTextLabel picks each text's font afresh: a dematerialised tile's labels were freed (text emptied), so
-// they always render here, in Manrope or - for a title with characters Manrope lacks - FONT_POP.
+// One character, decoded as the library's renderer decodes it (font.c): a malformed byte is a character of
+// its own. Only its advance and whether it is a space matter to the line break below.
+static uint32_t nextChar(const char *text, int *at)
+{
+   const unsigned char *p = (const unsigned char *)text + *at;
+   uint32_t c = p[0];
+   int length = 1;
+   if ((c & 0xE0) == 0xC0 && (p[1] & 0xC0) == 0x80) {
+      c = ((c & 0x1F) << 6) | (p[1] & 0x3F);
+      length = 2;
+   } else if ((c & 0xF0) == 0xE0 && (p[1] & 0xC0) == 0x80 && (p[2] & 0xC0) == 0x80) {
+      c = ((c & 0x0F) << 12) | ((uint32_t)(p[1] & 0x3F) << 6) | (p[2] & 0x3F);
+      length = 3;
+   } else if ((c & 0xF8) == 0xF0 && (p[1] & 0xC0) == 0x80 && (p[2] & 0xC0) == 0x80 && (p[3] & 0xC0) == 0x80) {
+      c = ((c & 0x07) << 18) | ((uint32_t)(p[1] & 0x3F) << 12) | ((uint32_t)(p[2] & 0x3F) << 6) | (p[3] & 0x3F);
+      length = 4;
+   }
+   *at += length;
+   return c;
+}
+
+// How much of a title goes on its first line at `width` px, measured with the advances the renderer will use
+// (the same font and size): as many whole words as fit. A first word wider than the line - or a title with
+// no spaces at all, as Japanese ones are - is cut at the last character that fits instead. Returns the byte
+// count of the first line; *next is where the second starts, past the spaces at the break. The library can
+// wrap, but not stop after two lines nor end the second with "...", hence one label per line.
+static int fitFirstLine(Font *font, int size, const char *text, int width, int *next)
+{
+   int at = 0, breakAt = -1;
+   float pen = 0.0f;
+   // measureFontChar does not check that the font is open (measureFontText does)
+   if (!font->open) { *next = (int)strlen(text); return *next; }
+   while (text[at]) {
+      int start = at;
+      uint32_t code = nextChar(text, &at);
+      if (code == ' ' && start > 0) breakAt = start;
+      pen += measureFontChar(font, size, code);
+      if (pen > (float)width) {
+         int end = breakAt > 0 ? breakAt : (start > 0 ? start : at);
+         int rest = end;
+         while (text[rest] == ' ') rest++;
+         *next = rest;
+         return end;
+      }
+   }
+   *next = at;
+   return at;
+}
+
+// Sets EXTERNAL text in a font the caller picked, clipped at `width` px: drawn whole where it fits, ending in
+// "..." where it does not. A label renders with the font, width and wrap mode it holds, and setLabelText skips
+// a text the label already shows, so a change to any of them drops the old texture first.
+static void setFittedText(Label *l, Font *font, int width, const char *text)
+{
+   if (!text) text = "";
+   if (width < 1) width = 1;
+   TextWrap wrap = measureFontText(font, l->size, text) <= (float)(width - FIT_SLACK) ? TEXT_NOWRAP : TEXT_NOWRAP_ELLIPSIS;
+   if (l->font != font || !l->raw || l->width != width || l->wrap != wrap) {
+      freeLabel(l);
+      l->font  = font;
+      l->raw   = 1;
+      l->width = width;
+      l->wrap  = wrap;
+   }
+   setLabelText(l, text);
+}
+
+// What a tile shows as its title and as its channel, both cleaned (uiCleanText): an emoji no font has would be
+// a gap an em wide, and one at a title's line break began its second line with a blank indent. Neither font
+// has a letter of Thai, Arabic or Hindi, though, and a title in such a script would still be nothing but such
+// gaps round a stray "|" or digit - a card that looks broken (uiTextIsLegible). The channel name takes the
+// title's place then, the one other name a result has, and leaves the meta line so that it does not show
+// twice. A channel name that would come out blank is left out wherever it would go, so neither line is ever a
+// row of gaps: with both unreadable the card shows its views and age alone.
+static void tileTexts(const SearchResult *item, char *title, int titleCap, char *author, int authorCap)
+{
+   uiCleanText(author, authorCap, item->author);
+   if (!uiTextIsLegible(author)) author[0] = '\0';
+   uiCleanText(title, titleCap, item->title);
+   if (uiTextIsLegible(title)) return;
+   strCopy(title, titleCap, author);
+   author[0] = '\0';
+}
+
+// Puts a title (as tileTexts made it) on its two labels at `weight`: on the first as many whole words as fit
+// (fitFirstLine), the rest on the second. Both lines are in the font picked for the WHOLE title, so a title
+// Manrope cannot draw is in FONT_POP throughout rather than changing font at the break.
+static void setTitleLines(const VideoGrid *grid, Label *first, Label *second, const char *title, UiWeight weight)
+{
+   Font *font = uiPickFont(weight, title);
+   char line[sizeof grid->results.items[0].title];
+   int next = 0;
+   int length = fitFirstLine(font, first->size, title, grid->textW - FIT_SLACK, &next);
+   if (length >= (int)sizeof line) length = (int)sizeof line - 1;
+   memcpy(line, title, (size_t)length);
+   line[length] = '\0';
+   setFittedText(first,  font, grid->textW, line);
+   setFittedText(second, font, grid->textW, title + next);
+}
+
+// Rasterises a tile's labels. A dematerialised tile's labels were freed (text emptied), so everything renders
+// here.
 static void materializeTile(VideoGrid *grid, int i)
 {
-   char meta[128];
    const SearchResult *item = &grid->results.items[i];
-   uiSetTextLabel(&grid->rows[i], TITLE_WEIGHT, item->title);
-   composeMeta(meta, sizeof meta, item);
-   uiSetTextLabel(&grid->metas[i], META_WEIGHT, meta);
+   grid->labelled[i] = 1;
+   char title[sizeof item->title], author[sizeof item->author];
+   tileTexts(item, title, (int)sizeof title, author, (int)sizeof author);
+   setTitleLines(grid, &grid->titles[i], &grid->titles2[i], title, TITLE_WEIGHT);
+
+   // the channel name and the meta line are external text too: cleaned like the title before a font is
+   // picked for them (a channel named with an emoji would otherwise leave its gap and pull in FONT_POP)
+   const char *rest[2] = { item->views, item->published };
+   char meta[160];
+   if (grid->view == GRID_VIEW_LIST) {
+      // Bild 5's meta line: the channel in its own label, so it can be the brighter part of the line, and the
+      // rest right after it. The channel gets at most three fifths of the column - a long name is cut rather
+      // than squeezing out the views and the age.
+      setFittedText(&grid->channels[i], uiPickFont(CHANNEL_WEIGHT, author), grid->textW * 3 / 5, author);
+      joinMeta(meta, sizeof meta, rest, 2, author[0] != 0);
+      uiCleanText(meta, (int)sizeof meta, meta);
+      setFittedText(&grid->metas[i], uiPickFont(META_WEIGHT, meta), grid->textW - grid->channels[i].tt.tex.w, meta);
+   } else {
+      const char *parts[3] = { author, item->views, item->published };
+      joinMeta(meta, sizeof meta, parts, 3, 0);
+      uiCleanText(meta, (int)sizeof meta, meta);
+      setFittedText(&grid->metas[i], uiPickFont(META_WEIGHT, meta), grid->textW, meta);
+   }
    uiSetTextLabel(&grid->durations[i], UI_BADGE_WEIGHT, item->isLive ? "LIVE" : item->duration);
 }
 
+// The thumbnail is retired rather than freed: a page turn in the list view moves the window by three rows,
+// past its two-row margin, so a tile leaving it may have been drawn in the frame the RSX is still reading.
 static void dematerializeTile(VideoGrid *grid, int i)
 {
-   freeLabel(&grid->rows[i]);
-   freeLabel(&grid->metas[i]);
-   freeLabel(&grid->durations[i]);
-   if (grid->thumbs[i].tex.offset) { freeGfxTexture(&grid->thumbs[i].tex); memset(&grid->thumbs[i].tex, 0, sizeof grid->thumbs[i].tex); }
+   freeTileLabels(grid, i);
+   grid->labelled[i] = 0;
+   if (grid->thumbs[i].tex.offset) { retireGfxTexture(&grid->thumbs[i].tex); memset(&grid->thumbs[i].tex, 0, sizeof grid->thumbs[i].tex); }
 }
 
-// keep exactly the visible band (+ margin) materialised. safe without an RSX flush: a tile leaving the
-// MARGIN_ROWS-wide window wasn't drawn last frame (the grid draws only the inner visible rows).
+// keep exactly the visible band (+ margin) materialised; what leaves it is released (see dematerializeTile).
+// What enters it is labelled by labelWindow.
 static void reconcileWindow(VideoGrid *grid)
 {
    int start = (grid->scrollRow - MARGIN_ROWS) * grid->cols;
@@ -382,21 +544,63 @@ static void reconcileWindow(VideoGrid *grid)
    for (int i = lo; i < hi; i++) {
       int wasIn = (i >= grid->winStart && i < grid->winEnd);
       int nowIn = (i >= start && i < end);
-      if      (nowIn && !wasIn) materializeTile(grid, i);
-      else if (wasIn && !nowIn) dematerializeTile(grid, i);
+      if (wasIn && !nowIn) dematerializeTile(grid, i);
    }
    grid->winStart = start;
    grid->winEnd   = end;
 }
 
+// Rasterises the labels of the tiles in the window: every one on the visible page at once, the rest - the
+// rows either side, kept ready for the next page turn - MATERIALIZE_PER_FRAME a frame, the following page
+// first. A card has up to four labels now (two title lines), and a page turn rasterising the whole next page
+// in one frame would stall exactly the frame that shows the turn.
+static void labelWindow(VideoGrid *grid)
+{
+   int first = grid->scrollRow * grid->cols;
+   int end   = first + grid->visibleRows * grid->cols;
+   if (first < grid->winStart) first = grid->winStart;
+   if (end > grid->winEnd) end = grid->winEnd;
+   for (int i = first; i < end; i++) if (!grid->labelled[i]) materializeTile(grid, i);
+
+   int budget = MATERIALIZE_PER_FRAME;
+   for (int i = end; i < grid->winEnd && budget > 0; i++)
+      if (!grid->labelled[i]) { materializeTile(grid, i); budget--; }
+   for (int i = grid->winStart; i < first && budget > 0; i++)
+      if (!grid->labelled[i]) { materializeTile(grid, i); budget--; }
+}
+
+// Grid view: the focused card's title in 800 (Bild 4). Re-rendering the tiles' own labels in another weight
+// would rasterise two cards' titles on every move of the selection, and again on the way back; instead the
+// title the selection lands on is rasterised once more, into a pair of labels of its own. The card's 700
+// labels stay as they are for when the focus moves on.
+static void labelFocusTitle(VideoGrid *grid)
+{
+   if (grid->view != GRID_VIEW_GRID || grid->results.count <= 0 || grid->focusTitleIndex == grid->selected) return;
+   grid->focusTitleIndex = grid->selected;
+   const SearchResult *item = &grid->results.items[grid->selected];
+   char title[sizeof item->title], author[sizeof item->author];
+   tileTexts(item, title, (int)sizeof title, author, (int)sizeof author);   // the same title the card has
+   setTitleLines(grid, &grid->focusTitle, &grid->focusTitle2, title, FOCUS_TITLE_WEIGHT);
+}
+
+// Decodes kept jpegs for the window, DECODES_PER_FRAME a frame - the visible page's first, so after a jump
+// the pictures on screen arrive before those of the pages either side.
+static int decodeThumbnail(VideoGrid *grid, int i)
+{
+   if (grid->thumbs[i].state != THUMB_FETCHED || !grid->thumbs[i].jpeg || grid->thumbs[i].tex.offset) return 0;
+   grid->thumbs[i].tex = loadGfxTextureMem(grid->thumbs[i].jpeg, (uint32_t)grid->thumbs[i].jpegLen);
+   return 1;
+}
+
 static void decodeWindowThumbnails(VideoGrid *grid)
 {
+   int first = grid->scrollRow * grid->cols;
+   int end   = first + grid->visibleRows * grid->cols;
+   if (first < grid->winStart) first = grid->winStart;
+   if (end > grid->winEnd) end = grid->winEnd;
    int done = 0;
-   for (int i = grid->winStart; i < grid->winEnd && done < DECODES_PER_FRAME; i++)
-      if (grid->thumbs[i].state == THUMB_FETCHED && grid->thumbs[i].jpeg && !grid->thumbs[i].tex.offset) {
-         grid->thumbs[i].tex = loadGfxTextureMem(grid->thumbs[i].jpeg, (uint32_t)grid->thumbs[i].jpegLen);
-         done++;
-      }
+   for (int i = first; i < end && done < DECODES_PER_FRAME; i++) done += decodeThumbnail(grid, i);
+   for (int i = grid->winStart; i < grid->winEnd && done < DECODES_PER_FRAME; i++) done += decodeThumbnail(grid, i);
 }
 
 // ---- paging ----
@@ -439,16 +643,29 @@ static void turnPage(VideoGrid *grid, int delta)
 static void moveSelection(VideoGrid *grid, int delta)
 {
    if (grid->results.count <= 0) return;
-   int size  = pageSize(grid);
-   int first = grid->page * size;
-   int last  = first + size - 1;
+   int size   = pageSize(grid);
+   int first  = grid->page * size;
+   int last   = first + size - 1;
+   int column = (grid->selected - first) % grid->cols;
    if (last >= grid->results.count) last = grid->results.count - 1;
+
+   // In the grid view LEFT and RIGHT keep to the selection's row. The leftmost column is where LEFT belongs
+   // to the rail (home.c opens it on that press): held there, LEFT stops instead of wrapping to the end of the
+   // row above, so the next press reaches the rail rather than a card three columns away. RIGHT stops at the
+   // rightmost column to match: wrapped to the first card of the next row, the LEFT meant to take it back
+   // would open the rail instead.
+   if (grid->cols > 1 && delta == -1 && column == 0)              return;
+   if (grid->cols > 1 && delta ==  1 && column == grid->cols - 1) return;
 
    int target = grid->selected + delta;
    if (target >= first && target <= last) { grid->selected = target; return; }
    if (delta != grid->cols && delta != -grid->cols) return;   // horizontal: stop at the edge
 
-   int column = (grid->selected - first) % grid->cols;
+   // DOWN onto the page's last row where it is shorter than the row above (the end of a feed) lands on that
+   // row's last card, as a step onto a shorter next page does below: from a column past that card DOWN would
+   // otherwise do nothing, with cards in plain view under it. Only off the bottom row does DOWN turn the page.
+   if (delta > 0 && target < first + size && target - column <= last) { grid->selected = last; return; }
+
    if (delta > 0) {
       if (grid->page + 1 > pageCount(grid) - 1) return;
       setPage(grid, grid->page + 1);
@@ -470,20 +687,22 @@ void initVideoGrid(VideoGrid *grid, Font *font, int x, int y, int width, int hei
    grid->font = font;
    grid->x = x; grid->y = y; grid->width = width; grid->height = height;
    grid->view = GRID_VIEW_GRID;
+   grid->focusIndex = grid->focusFrom = -1;
 
    computeGeometry(grid);
    layoutLabels(grid);
    uiInitLabel(&grid->watchLaterBadge, UI_BADGE_WEIGHT, 0, 0, AUTO, UI_BADGE_SIZE, activeTheme->textPrimary, TEXT_NOWRAP, "Watch Later");
+   uiInitLabel(&grid->watchedBadge, UI_BADGE_WEIGHT, 0, 0, AUTO, UI_BADGE_SIZE, activeTheme->textSecondary, TEXT_NOWRAP, "WATCHED");
 }
 
 void termVideoGrid(VideoGrid *grid)
 {
    stopVideoGrid(grid);
    freeThumbnails(grid);
-   for (int i = 0; i < MAX_SEARCH_RESULTS; i++) { freeLabel(&grid->rows[i]); freeLabel(&grid->metas[i]); freeLabel(&grid->durations[i]); }
-   freeLabel(&grid->previewTitle);
-   freeLabel(&grid->previewMeta);
+   for (int i = 0; i < MAX_SEARCH_RESULTS; i++) freeTileLabels(grid, i);
+   freeFocusTitle(grid);
    freeLabel(&grid->watchLaterBadge);
+   freeLabel(&grid->watchedBadge);
 }
 
 void setGridWatchedPredicate(VideoGrid *grid, int (*isWatched)(const char *videoId)) { grid->isWatched = isWatched; }
@@ -553,18 +772,6 @@ void stopVideoGrid(VideoGrid *grid)
    grid->reloadPending = 0;
 }
 
-// list view only: keep the right-hand pane showing whatever is selected.
-static void refreshPreview(VideoGrid *grid)
-{
-   if (grid->view != GRID_VIEW_LIST || grid->previewFor == grid->selected || grid->results.count == 0) return;
-   const SearchResult *item = &grid->results.items[grid->selected];
-   char meta[128];
-   composeMeta(meta, sizeof meta, item);
-   uiSetTextLabel(&grid->previewTitle, PREVIEW_TITLE_WEIGHT, item->title);
-   uiSetTextLabel(&grid->previewMeta, META_WEIGHT, meta);
-   grid->previewFor = grid->selected;
-}
-
 void updateVideoGrid(VideoGrid *grid)
 {
    // reap a finished worker; a deferred source swap then resets and starts the new feed
@@ -573,9 +780,6 @@ void updateVideoGrid(VideoGrid *grid)
       if (grid->reloadPending) { grid->reloadPending = 0; applyDeferredSource(grid); }
    }
    if (grid->stage != GRID_READY) return;
-
-   reconcileWindow(grid);
-   decodeWindowThumbnails(grid);
 
    if (!grid->inputSuppressed) {
       if      (isRepeatDue(&grid->horizontalRepeat, getPadButtonState(PAD_BTN_RIGHT))) moveSelection(grid, 1);
@@ -587,7 +791,11 @@ void updateVideoGrid(VideoGrid *grid)
       else if (isRepeatDue(&grid->pageRepeat, getPadButtonState(PAD_BTN_L2))) turnPage(grid, -1);
    }
 
-   refreshPreview(grid);
+   // after the input, so a page turned just now is labelled before the frame that shows it
+   reconcileWindow(grid);
+   labelWindow(grid);
+   labelFocusTitle(grid);
+   decodeWindowThumbnails(grid);
 
    // idle background work: thumbnails for what is on screen, then the next page of results. The fetch runs a
    // page early, so turning to the last page usually finds the one after it already waiting.
@@ -611,161 +819,189 @@ static void drawTinted(const Label *label, int x, int y, uint32_t color)
                   GFX_FILTER_NEAREST);
 }
 
-static int isTileWatched(const VideoGrid *grid, int i)
-{
-   return grid->isWatched && grid->isWatched(grid->results.items[i].videoId);
-}
+// What a tile shows of your history. A video you stopped part way is STARTED: its progress line, the picture
+// at full strength (Bild 4). One you finished - the player stores 0 for it - or opened without getting
+// anywhere is WATCHED: dimmed, with the badge. The app has always stored the position to resume playback; it
+// was simply never shown, so a half-watched video used to look exactly like an untouched one.
+typedef struct {
+   float progress;   // share of the video watched, 0 = no line to draw
+   int   watched;
+} TileState;
 
-// A tile's text colours. A watched title steps down to textSecondary, as on Ember's watched card - it used to
-// be drawn at a quarter of its alpha, which on the Ember palette came out darker than anything else on the
-// page. The meta line is textTertiary at rest (it is 20 px, the least that colour is allowed at) and
-// textSecondary on the selection, as on Ember's cards and rows.
-static uint32_t titleColor(int watched)
+static TileState tileState(const VideoGrid *grid, int i)
 {
-   return watched ? activeTheme->textSecondary : activeTheme->textPrimary;
-}
-
-static uint32_t metaColor(const VideoGrid *grid, int i)
-{
-   return i == grid->selected ? activeTheme->textSecondary : activeTheme->textTertiary;
-}
-
-// top-left of tile i's thumbnail on the current page - one formula for both views, list view being a grid
-// of one column
-static void tilePosition(const VideoGrid *grid, int i, int *x, int *y)
-{
-   int row = i / grid->cols, col = i % grid->cols;
-   *x = grid->x + col * (grid->tileW + GRID_GAP);
-   *y = grid->y + (row - grid->scrollRow) * grid->rowStep;
-}
-
-// The page under a focused thumbnail's corners: appBg with the glow's light on it. The glow lies under the
-// card, so corner masks in plain appBg would cut four dark notches between the image and the ring.
-static uint32_t focusedCornerColor(void)
-{
-   uint32_t glow = activeTheme->focusGlow;
-   float strength = (float)(glow >> 24) / 255.0f * GLOW_EDGE_SHARE;
-   return interpolateColor(activeTheme->appBg, uiWithAlpha(glow, 255), strength);
-}
-
-// How far you got last time, along the very bottom of the thumbnail. The app has always stored this to
-// resume playback; it was simply never shown, so a half-watched video looked exactly like an untouched one.
-// It goes on before the corner masks, which then round its ends together with the image.
-static void drawProgress(VideoGrid *grid, int i, int tx, int ty, int thumbW)
-{
+   TileState state;
+   state.progress = 0.0f;
+   state.watched  = 0;
    const SearchResult *item = &grid->results.items[i];
-   if (!grid->watchedPosition || item->isLive) return;
-   int total = durationToSeconds(item->duration);
-   int position = grid->watchedPosition(item->videoId);
-   if (total <= 0 || position <= 0) return;
-   float fraction = position >= total ? 1.0f : (float)position / (float)total;
-   uiDrawProgressBar(tx, ty + grid->thumbH - PROGRESS_BAR_H, thumbW, PROGRESS_BAR_H, fraction,
-                     activeTheme->progressTrack, activeTheme->accent, 0);
+   int total    = durationToSeconds(item->duration);
+   int position = (grid->watchedPosition && !item->isLive) ? grid->watchedPosition(item->videoId) : 0;
+   if (total > 0 && position > 0) state.progress = position >= total ? 1.0f : (float)position / (float)total;
+   else                           state.watched  = grid->isWatched && grid->isWatched(item->videoId);
+   return state;
 }
 
-// shared badge painting for both views: duration / LIVE bottom-right of the thumbnail, watch-later top-right.
-// BADGE_INSET keeps the bottom one clear of the progress line, so the two never overlap.
-static void drawBadges(VideoGrid *grid, int i, int tx, int ty, int thumbW)
+// The colour under a focused thumbnail's corners: appBg lit by the glow beneath the card (`strength` = how far
+// the glow has faded in). Corner masks in plain appBg would cut four dark notches between the image and the ring.
+static uint32_t cornerColor(float strength)
+{
+   if (strength <= 0.0f) return activeTheme->appBg;
+   uint32_t glow = activeTheme->focusGlow;
+   float share = (float)(glow >> 24) / 255.0f * GLOW_EDGE_SHARE * strength;
+   return interpolateColor(activeTheme->appBg, uiWithAlpha(glow, 255), share);
+}
+
+// A thumbnail in paint order: the picture (or the placeholder until it lands; dimmed once watched), the
+// progress line along its bottom, then the corner masks, which round both.
+static void drawImage(VideoGrid *grid, int i, int x, int y, int w, int h, int radius, uint32_t behind, TileState state)
+{
+   if (grid->thumbs[i].tex.offset)
+      drawGfxTexture(x, y, w, h, grid->thumbs[i].tex, 0, 0, 1, 1, state.watched ? activeTheme->watchedThumbTint : 0xFFFFFFFF, GFX_FILTER_LINEAR);
+   else
+      fillGfxRectangle(x, y, w, h, activeTheme->surface);
+   if (state.progress > 0.0f)
+      uiDrawProgressBar(x, y + h - PROGRESS_BAR_H, w, PROGRESS_BAR_H, state.progress,
+                        activeTheme->progressTrack, activeTheme->accent, 0);
+   uiDrawImageCorners(x, y, w, h, radius, behind);
+}
+
+// The badges on a thumbnail (x, y, w, h), as Bild 4 places them: LIVE top left in the live colour (a live
+// video has no duration), the duration bottom right, WATCHED bottom left, the Watch Later tag top right.
+// bottomInset keeps the bottom pair clear of a progress line. A badge that would run into its neighbour on a
+// small thumbnail is left out rather than drawn over it - the duration and LIVE win.
+static void drawBadges(VideoGrid *grid, int i, int x, int y, int w, int h, int bottomInset, int watched)
 {
    const SearchResult *item = &grid->results.items[i];
    const Label *duration = &grid->durations[i];
-   // LIVE wears the live colour - in the duration's place for now; it moves top-left with the grid redesign
-   if ((item->duration[0] || item->isLive) && duration->tt.tex.w > 0) {
-      int badgeX = tx + thumbW - BADGE_INSET - uiGetBadgeWidth(duration);
-      int badgeY = ty + grid->thumbH - BADGE_INSET - UI_BADGE_H;
-      uiDrawBadge(badgeX, badgeY, duration, item->isLive ? activeTheme->live : activeTheme->badgeFill);
+   int topLeftEnd = x;              // where the badges along each edge end, for the next one to keep clear of
+   int bottomRightStart = x + w;
+   int bottomY = y + h - bottomInset - UI_BADGE_H;
+
+   if (duration->tt.tex.w > 0 && item->isLive) {
+      topLeftEnd = x + BADGE_INSET + uiDrawBadge(x + BADGE_INSET, y + BADGE_INSET, duration, activeTheme->live);
+   } else if (duration->tt.tex.w > 0 && item->duration[0]) {
+      bottomRightStart = x + w - BADGE_INSET - uiGetBadgeWidth(duration);
+      uiDrawBadge(bottomRightStart, bottomY, duration, activeTheme->badgeFill);
    }
+   if (watched && x + BADGE_INSET + uiGetBadgeWidth(&grid->watchedBadge) + BADGE_SPACE <= bottomRightStart)
+      uiDrawBadge(x + BADGE_INSET, bottomY, &grid->watchedBadge, activeTheme->badgeFill);
    if (grid->isWatchLater && grid->isWatchLater(item->videoId)) {
-      int badgeX = tx + thumbW - BADGE_INSET - uiGetBadgeWidth(&grid->watchLaterBadge);
-      uiDrawBadge(badgeX, ty + BADGE_INSET, &grid->watchLaterBadge, activeTheme->badgeFill);
+      int badgeX = x + w - BADGE_INSET - uiGetBadgeWidth(&grid->watchLaterBadge);
+      if (badgeX >= topLeftEnd + BADGE_SPACE) uiDrawBadge(badgeX, y + BADGE_INSET, &grid->watchLaterBadge, activeTheme->badgeFill);
    }
 }
 
-static void drawThumb(VideoGrid *grid, int i, int tx, int ty, int w, int h, int watched)
+// the top-left of tile i's box on the current page: a card's thumbnail in grid view, a row in list view
+static void itemPosition(const VideoGrid *grid, int i, int *x, int *y)
 {
-   if (grid->thumbs[i].tex.offset)
-      drawGfxTexture(tx, ty, w, h, grid->thumbs[i].tex, 0, 0, 1, 1, watched ? activeTheme->watchedThumbTint : 0xFFFFFFFF, GFX_FILTER_LINEAR);
-   else
-      fillGfxRectangle(tx, ty, w, h, activeTheme->surface);
+   int row = i / grid->cols, col = i % grid->cols;
+   *x = grid->x + col * (grid->tileW + GRID_COL_GAP);
+   *y = grid->y + (row - grid->scrollRow) * grid->rowStep;
 }
 
-// A tile's thumbnail, in paint order: the image (or the placeholder until it lands), the progress line,
-// rounded corners over both, the focus ring when selected, the badges on top. The renderer has no blur, so
-// the selection's glow is a texture - laid under every tile by drawVideoGrid, not here.
-static void drawThumbnail(VideoGrid *grid, int i, int tx, int ty, int watched)
+// A card's thumbnail box, grown about its centre by `grow` (0 = at rest, 1 = fully focused).
+static void cardBox(const VideoGrid *grid, int i, float grow, int *x, int *y, int *w, int *h)
 {
+   int growX = (int)((float)grid->tileW  * FOCUS_GROW * grow + 0.5f);
+   int growY = (int)((float)grid->thumbH * FOCUS_GROW * grow + 0.5f);
+   itemPosition(grid, i, x, y);
+   *x -= growX;
+   *y -= growY;
+   *w = grid->tileW  + 2 * growX;
+   *h = grid->thumbH + 2 * growY;
+}
+
+// How far the focus look has come for the current selection, 0..1 eased. A change of selection starts it
+// again; the card it left shrinks back over the same time (1 - this).
+static float focusProgress(VideoGrid *grid)
+{
+   uint64_t now = sys_time_get_system_time();
+   if (grid->selected != grid->focusIndex) {
+      grid->focusFrom    = grid->focusIndex;
+      grid->focusIndex   = grid->selected;
+      grid->focusSinceUs = now;
+   }
+   uint64_t elapsed = now - grid->focusSinceUs;
+   if (elapsed >= FOCUS_EASE_US) return 1.0f;
+   return applyEasing((float)elapsed / (float)FOCUS_EASE_US, EASE_OUT_CUBIC);
+}
+
+// the glow under card i at `strength` (its alpha follows the card's growth), if the card is on this page
+static void drawCardGlow(VideoGrid *grid, int i, float strength, int first, int end)
+{
+   if (i < first || i >= end || strength <= 0.0f) return;
+   int x, y, w, h;
+   cardBox(grid, i, strength, &x, &y, &w, &h);
+   uint32_t glow = activeTheme->focusGlow;
+   uiDrawFocusGlow(x, y, w, h, uiWithAlpha(glow, (int)((float)(glow >> 24) * strength + 0.5f)));
+}
+
+// grid view: a card - the thumbnail with its badges, and under it the title (one or two lines) and the meta
+// line, each placed by its baseline, so a FONT_POP title (one Manrope cannot draw) sits on the same line its
+// Manrope neighbours do.
+static void drawCard(VideoGrid *grid, int i, float grow)
+{
+   int x, y, w, h, tx, ty;
+   cardBox(grid, i, grow, &x, &y, &w, &h);
+   itemPosition(grid, i, &tx, &ty);
    int selected = (i == grid->selected);
-   drawThumb(grid, i, tx, ty, grid->tileW, grid->thumbH, watched);
-   drawProgress(grid, i, tx, ty, grid->tileW);
-   uiDrawImageCorners(tx, ty, grid->tileW, grid->thumbH, UI_RADIUS_THUMB,
-                      selected ? focusedCornerColor() : activeTheme->appBg);
-   if (selected) uiDrawFocusRing(tx, ty, grid->tileW, grid->thumbH, UI_RING_THUMB, activeTheme->focusBorder);
-   drawBadges(grid, i, tx, ty, grid->tileW);
+   TileState state = tileState(grid, i);
+
+   drawImage(grid, i, x, y, w, h, UI_RADIUS_THUMB, cornerColor(grow), state);
+   if (selected) uiDrawFocusRing(x, y, w, h, UI_RING_THUMB, activeTheme->focusBorder);
+   drawBadges(grid, i, x, y, w, h, BADGE_INSET, state.watched);
+
+   // The title steps down to text-2 once watched, as on Ember's watched card - it used to be drawn at a
+   // quarter of its alpha, which on the Ember palette came out darker than anything else on the page. Focus
+   // outranks that: the focused card's title is text-1 in 800 (Bild 4), or a watched card's title would read no
+   // brighter than its meta line. The meta line is text-3 at rest (20 px, the least that colour is allowed at)
+   // and text-2 on the selection.
+   uint32_t titleColor = (selected || !state.watched) ? activeTheme->textPrimary : activeTheme->textSecondary;
+   uint32_t metaColor  = selected ? activeTheme->textSecondary : activeTheme->textTertiary;
+   // the 800 pair once labelFocusTitle has rasterised it for this card; until then its own 700 labels
+   const Label *title  = &grid->titles[i];
+   const Label *title2 = &grid->titles2[i];
+   if (selected && grid->focusTitleIndex == i) { title = &grid->focusTitle; title2 = &grid->focusTitle2; }
+   int textTop = ty + grid->thumbH + TILE_TEXT_GAP + (int)((float)FOCUS_TEXT_SHIFT * grow + 0.5f);
+   int lines   = title2->tt.tex.w > 0 ? 2 : 1;
+   int base    = textTop + TILE_TITLE_BASE;
+   drawTinted(title,  tx, uiLabelYForBaseline(title,  base), titleColor);
+   drawTinted(title2, tx, uiLabelYForBaseline(title2, base + TILE_TITLE_LINE), titleColor);
+   drawTinted(&grid->metas[i],   tx, uiLabelYForBaseline(&grid->metas[i],
+              textTop + lines * TILE_TITLE_LINE + TILE_META_GAP + META_ASCENT), metaColor);
 }
 
-// grid view: thumbnail with the title and meta line underneath, each placed by its baseline, so a FONT_POP
-// title (one Manrope cannot draw) sits on the same line as its Manrope neighbours.
-static void drawTile(VideoGrid *grid, int i)
+// list view: a row - the thumbnail on the left, the title and the meta line beside it, the block of text
+// centred on the thumbnail. The selected row lies on a surface1 plate with the ring round it (Bild 5).
+static void drawRow(VideoGrid *grid, int i)
 {
-   int tx, ty;
-   tilePosition(grid, i, &tx, &ty);
-   int watched = isTileWatched(grid, i);
-   drawThumbnail(grid, i, tx, ty, watched);
+   int rx, ry;
+   itemPosition(grid, i, &rx, &ry);
+   int selected = (i == grid->selected);
+   TileState state = tileState(grid, i);
 
-   int textTop = ty + grid->thumbH + TILE_TEXT_GAP;
-   drawTinted(&grid->rows[i],  tx, uiLabelYForBaseline(&grid->rows[i],  textTop + TILE_TITLE_BASE), titleColor(watched));
-   drawTinted(&grid->metas[i], tx, uiLabelYForBaseline(&grid->metas[i], textTop + TILE_META_BASE),  metaColor(grid, i));
-}
+   if (selected) uiFillRounded(rx, ry, grid->width, grid->rowH, LIST_RADIUS, activeTheme->surface1);
+   int tx = rx + LIST_PAD, ty = ry + (grid->rowH - grid->thumbH) / 2;
+   drawImage(grid, i, tx, ty, grid->tileW, grid->thumbH, LIST_THUMB_RADIUS,
+             selected ? activeTheme->surface1 : activeTheme->appBg, state);
+   if (selected) uiDrawFocusRing(rx, ry, grid->width, grid->rowH, UI_RING_ROW, activeTheme->focusBorder);
+   drawBadges(grid, i, tx, ty, grid->tileW, grid->thumbH, state.progress > 0.0f ? LIST_BADGE_BOTTOM : BADGE_INSET,
+              state.watched);
 
-// list view: one result per row, thumbnail on the left and the text beside it, the way a browser lists them.
-static void drawListRow(VideoGrid *grid, int i)
-{
-   int tx, ty;
-   tilePosition(grid, i, &tx, &ty);
-   int watched = isTileWatched(grid, i);
-
-   if (i == grid->selected) {
-      // The ring goes round the thumbnail only, exactly as in the grid view. Filling the whole row with
-      // focusBorder instead painted an opaque block under the text column - and focusBorder can be white
-      // (YouTube Classic), so the selected row's title (also white) became invisible. The text band gets
-      // the translucent rowHighlight instead, which marks the row without hiding it. It is as tall as the
-      // ring and starts just clear of it.
-      uiFillRounded(tx + grid->textX - LIST_TEXT_GAP / 2, ty - RING_OUTSET, grid->textW + LIST_TEXT_GAP,
-                    grid->thumbH + 2 * RING_OUTSET, UI_RADIUS_ROW, activeTheme->rowHighlight);
-   }
-   drawThumbnail(grid, i, tx, ty, watched);
-
-   // The text block sits vertically centred against the thumbnail: from the title's capitals to the meta
-   // line's baseline, measured per font - a FONT_POP texture puts its glyphs at other rows than Manrope's.
-   UiTextMetrics title = uiGetTextMetrics(grid->rows[i].font,  grid->rows[i].size);
-   UiTextMetrics meta  = uiGetTextMetrics(grid->metas[i].font, grid->metas[i].size);
-   int titleCaps = title.baseline - title.capTop, metaCaps = meta.baseline - meta.capTop;
-   int titleBase = ty + (grid->thumbH - (titleCaps + LIST_LINE_GAP + metaCaps)) / 2 + titleCaps;
-   int metaBase  = titleBase + LIST_LINE_GAP + metaCaps;
-   drawTinted(&grid->rows[i],  tx + grid->textX, titleBase - title.baseline, titleColor(watched));
-   drawTinted(&grid->metas[i], tx + grid->textX, metaBase - meta.baseline,   metaColor(grid, i));
-}
-
-// list view: the selection shown large on the right, so the small row thumbnails stay readable.
-static void drawPreview(VideoGrid *grid)
-{
-   if (grid->previewW <= 0 || grid->results.count == 0) return;
-   int i = grid->selected;
-   int w = grid->previewW, h = w * 9 / 16;
-   int x = grid->previewX, y = grid->y;
-
-   drawThumb(grid, i, x, y, w, h, 0);
-   uiDrawImageCorners(x, y, w, h, UI_RADIUS_CARD, activeTheme->appBg);
-
-   // The title wraps over as many lines as it needs; the meta line goes under the last one. A wrapped
-   // texture is one line's texture plus one line pitch per further line, which gives that line's baseline.
-   int titleY = uiLabelYForBaseline(&grid->previewTitle, y + h + PREVIEW_TITLE_BASE);
-   uiDrawLabelAt(&grid->previewTitle, x, titleY);
-   UiTextMetrics title = uiGetTextMetrics(grid->previewTitle.font, grid->previewTitle.size);
-   UiTextMetrics meta  = uiGetTextMetrics(grid->previewMeta.font,  grid->previewMeta.size);
-   int lastBase = titleY + grid->previewTitle.tt.tex.h - title.texH + title.baseline;
-   int metaBase = lastBase + PREVIEW_META_GAP + (meta.baseline - meta.capTop);
-   uiDrawLabelAt(&grid->previewMeta, x, metaBase - meta.baseline);
+   int lines = grid->titles2[i].tt.tex.w > 0 ? 2 : 1;
+   int top   = ty + (grid->thumbH - (lines * LIST_TITLE_LINE + LIST_META_GAP + META_BOX)) / 2;
+   int textX = rx + grid->textX;
+   int base  = top + LIST_TITLE_BASE;
+   int metaBase = top + lines * LIST_TITLE_LINE + LIST_META_GAP + META_ASCENT;
+   // as on a card, focus outranks watched: the selected row's title stays text-1 above its text-1 channel
+   uint32_t titleColor = (selected || !state.watched) ? activeTheme->textPrimary : activeTheme->textSecondary;
+   drawTinted(&grid->titles[i],  textX, uiLabelYForBaseline(&grid->titles[i],  base), titleColor);
+   drawTinted(&grid->titles2[i], textX, uiLabelYForBaseline(&grid->titles2[i], base + LIST_TITLE_LINE), titleColor);
+   // the channel a step brighter than the views and the age after it, as Bild 5 has it
+   drawTinted(&grid->channels[i], textX, uiLabelYForBaseline(&grid->channels[i], metaBase),
+              selected ? activeTheme->textPrimary : activeTheme->textSecondary);
+   drawTinted(&grid->metas[i], textX + grid->channels[i].tt.tex.w, uiLabelYForBaseline(&grid->metas[i], metaBase),
+              selected ? activeTheme->textSecondary : activeTheme->textTertiary);
 }
 
 void drawVideoGrid(VideoGrid *grid)
@@ -774,19 +1010,26 @@ void drawVideoGrid(VideoGrid *grid)
    int first = grid->scrollRow * grid->cols;
    int end   = (grid->scrollRow + grid->visibleRows) * grid->cols;
    if (end > grid->results.count) end = grid->results.count;
+   float focus = focusProgress(grid);
 
    // The selection's glow goes down before ANY tile: it spreads 81 px, further than the gap to the
    // neighbours, so drawn with its own tile it would lie over the tiles before it and under those after it.
-   if (grid->selected >= first && grid->selected < end) {
-      int tx, ty;
-      tilePosition(grid, grid->selected, &tx, &ty);
-      uiDrawFocusGlow(tx, ty, grid->tileW, grid->thumbH, activeTheme->focusGlow);
+   if (grid->view == GRID_VIEW_LIST) {
+      if (grid->selected >= first && grid->selected < end) {
+         int rx, ry;
+         itemPosition(grid, grid->selected, &rx, &ry);
+         uiDrawFocusGlow(rx, ry, grid->width, grid->rowH, activeTheme->focusGlow);
+      }
+      for (int i = first; i < end; i++) drawRow(grid, i);
+      return;
    }
+
+   drawCardGlow(grid, grid->focusFrom, 1.0f - focus, first, end);
+   drawCardGlow(grid, grid->selected, focus, first, end);
    for (int i = first; i < end; i++) {
-      if (grid->view == GRID_VIEW_LIST) drawListRow(grid, i);
-      else                              drawTile(grid, i);
+      float grow = i == grid->selected ? focus : i == grid->focusFrom ? 1.0f - focus : 0.0f;
+      drawCard(grid, i, grow);
    }
-   if (grid->view == GRID_VIEW_LIST) drawPreview(grid);
 }
 
 int                  gridPageIndex(const VideoGrid *grid)    { return grid->page; }

@@ -13,44 +13,66 @@
 #include "ps-button.h"
 #include "ui/console-glyphs.h"
 #include "ui-fonts.h"           // the shared fonts, label helpers, text metrics
-#include "ui-draw.h"            // safe area, rounded panel, focus ring
+#include "ui-draw.h"            // safe area, rounded panel, chips, focus ring, equal-width digits
 #include "ui-hints.h"           // the Ember hint rows
+#include "ui-clock.h"           // the header clock
 
 #include "gfx.h"
 #include "theme.h"
 #include "pad.h"
-#include "font.h"               // measureFontText
+#include "font.h"
 #include "ui/label.h"
 #include "screen-manager.h"
 #include "osk-input.h"
 #include "string-utilities.h"   // strCopy
+#include "dbg.h"                // logWarn
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
 
-// The header is a single line: the page title on the left, its capitals level with the top-right hint row's
-// (UI_HINTS_TOP_Y), and right after the title the page counter - or "Loading..." / "No results" while there
-// is no page. The counter used to sit at the top right, which the X / Square / Triangle hints now hold, and
-// the status used to sit where the list starts, which is under the expanded rail panel.
-#define GRID_TOP      140       // the list starts below the header
-#define GRID_LEFT     (SIDEBAR_WIDTH + 26)
-#define TITLE_GAP     20        // the title -> the page counter or status after it
-#define HEADER_GAP    48        // that counter at its widest -> the top-right hint row
-#define TITLE_MIN_W   320       // the title's budget never drops below this, however wide the hints come out
-#define STATUS_SIZE   24        // page counter / status: 24/700 in textSecondary
+// The page is Bild 4's: the cards from x 176, next to the collapsed rail, under a one-line header. On the
+// left of that line the page title (on Trending its three categories follow as chips); on the right the X /
+// Square / Triangle hints, the page counter and the clock. Everything on it has its capitals centred on the
+// chips' band, HEADER_Y .. HEADER_Y + HEADER_H, which puts the title's baseline at 107 as in the design. The
+// other hints sit at the bottom right; "Loading..." and "No results" sit where the cards start.
+#define CONTENT_X     SIDEBAR_CONTENT_X   // 176
+#define HEADER_Y      67
+#define HEADER_H      45
+#define HEADER_HINTS_Y (HEADER_Y + (HEADER_H - UI_HINT_GLYPH_H) / 2)   // the top hint row, centred on the band
+#define HEADER_GAP    40        // between the top hint row, the page counter and the clock (Bild 1's clock
+                                // sits 40 after the hints before it)
+#define TITLE_GAP     48        // the title or its last chip -> the top hint row, at the least
+#define TITLE_MIN_W   320       // the top hint row narrows its gaps before the title's room drops below this
+#define CHIP_TITLE_GAP 28       // Trending's title -> its first chip (Bild 4)
+#define CHIP_PAD_X    20
+#define CHIP_GAP      10
+#define CHIP_SIZE     20        // 20/700
+#define CHIP_WEIGHT   UI_WEIGHT_BOLD
+#define CLOCK_SIZE    28        // ui-clock.h's clock is 28/700: needed to put its capitals on the band
+#define PAGE_SIZE     24        // page counter: 24/700 in textSecondary, its numbers in equal-width digits
+#define PAGE_WEIGHT   UI_WEIGHT_BOLD
+#define STATUS_SIZE   24        // "Loading..." / "No results": 24/700 in textSecondary, where the cards start
 #define STATUS_WEIGHT UI_WEIGHT_BOLD
-// The grid's height used to run to the bottom of the screen and simply happened not to reach the hint row.
-// That is not a property anyone should rely on: the row count is derived from the thumbnail size, which is
-// derived from the width, so any future change to either can silently push a row into the hints. Measured,
-// the list fits five rows: the last ends at y 946 and its focus ring at 955, well above the bottom hint row
-// at 998 - this reserve is a guard, not a fix.
-#define HINTS_RESERVE 24
+#define GRID_TOP      160
+#define STATUS_BASELINE (GRID_TOP + 30)
+// The grid's rectangle ends above the bottom hint row. The grid lays out as many whole rows of cards as fit
+// it - two, the second ending at y 864 at the most - so the rectangle, not luck, keeps the cards off the hints.
+#define GRID_BOTTOM   (UI_HINTS_BOTTOM_Y - 16)
+#define HINT_MIN_GAP  14        // a hint row narrows its gaps down to this rather than overlap anything
 #define CROSS_HINT    0         // X's slot in the TOP hint row (see initHome): retitled per category
 #define TRIANGLE_HINT 2         // Triangle's slot in the top row: "Channel" everywhere, "Unsubscribe" in Subscriptions
-#define NOTICE_PAD    32        // modal box (search.c has the same kind): inner padding
-#define NOTICE_TEXT   24        // body text, 22-24/400
-#define NOTICE_GAP    24        // the message's last baseline -> the hint line's capitals
-#define NOTICE_RADIUS 26        // as search.c's box: the radius the row ring (UI_RING_ROW) round it is made for
+// The chip labels are rendered in white and tinted when drawn, so the chip on screen and the others share one
+// texture each (re-colouring a rendered label means rasterising it again).
+#define TEXT_TINTABLE 0xFFFFFFFFu
+// The modal box, laid out like search.c's and playlist-screen.c's: the message, then its answers as a row of
+// console glyphs with captions.
+#define NOTICE_PAD_X      44    // inner padding left and right
+#define NOTICE_PAD_TOP    40    // panel top -> the message's first capitals
+#define NOTICE_PAD_BOTTOM 30    // the answers' glyph row -> panel bottom
+#define NOTICE_ANSWERS_DY 34    // the message's last baseline -> the top of the answers' glyph row: a 24-px
+                                // line's descender room and the 24 the other boxes leave under it
+#define NOTICE_TEXT       24    // body text, 22-24/400
+#define NOTICE_RADIUS     26    // the radius the row ring (UI_RING_ROW) round the box is made for
 
 static const char *TrendingNames[TREND_COUNT] = { "Gaming", "Sports", "Podcasts" };
 
@@ -83,13 +105,17 @@ static struct {
    char      pendingUnsubName[CHANNEL_NAME_LEN];
 } home;
 
-static Label   titleLabel, statusLabel, pageLabel;
-static Label   noticeLabel, noticeHintLabel;
+static Label    titleLabel, statusLabel;
+static Label    pageWordLabel, pagePlusLabel;   // "Page" and the "+" of a feed that can still grow ...
+static UiDigits pageDigits;                     // ... round the numbers, which step in equal cells
+static Label    chipLabels[TREND_COUNT];        // Trending's categories, rendered white and tinted per state
+static Label    noticeLabel;
+static UiHints  closeHints, confirmHints;       // the notice's answers: X Close, or X Unsubscribe / O Cancel
 // Two hint rows, as on the Cinema start (Bild 1): X / Square / Triangle - what acts on the selected tile - at
 // the top right, everything else at the bottom right. At the Ember sizes the twelve no longer fit one line
 // inside the safe area.
-static UiHints hintsTop, hintsBottom;
-static int     statusMaxW;   // the widest the page counter / status can get; kept free after the title
+static UiHints  hintsTop, hintsBottom;
+static int      pageMaxW;   // the widest the page counter can get; the top hint row keeps clear of it
 
 // The Subscriptions tab lists the CHANNELS you follow, one tile each, rather than merging their videos into
 // a single feed - a feed like that buries a channel you just subscribed to among everything else, which is
@@ -134,6 +160,14 @@ static int fetchSubscriptionChannels(SearchResults *out)
    return out->count > 0 ? 0 : -1;
 }
 
+// A Subscriptions tile is a CHANNEL (see above): its picture is the newest upload's, but whether you watched
+// that upload says nothing about the channel. Asked about the upload's id, the grid dimmed the whole tile and
+// badged it WATCHED, so on that tab the answer is always no.
+static int tileWatched(const char *videoId)
+{
+   return home.category != HOME_SUBS && isWatched(videoId);
+}
+
 static int homeFetch(const char *token, SearchResults *out, void *user)
 {
    (void)user;
@@ -145,31 +179,52 @@ static int homeFetch(const char *token, SearchResults *out, void *user)
    return getTrending(home.category, token, out);
 }
 
-// The title may run up to the page counter after it, and the counter at its widest must still end before the
-// top-right hint row begins. That row is wider on Subscriptions ("Open channel", "Unsubscribe") and its
-// glyphs' widths are only known at runtime, so the budget is worked out again whenever the captions change.
-// A new width needs the old texture dropped: setLabelText skips a text the label already shows.
-static void fitTitleWidth(void)
+// ---- the header's right end ----
+//
+// From the right: the clock on the safe edge, the page counter HEADER_GAP to the left of the clock's widest
+// form, and the top hint row HEADER_GAP to the left of the counter's widest. Both widths are fixed for the
+// session (equal-width digits, the largest page count a feed can reach), so nothing on the line moves when the
+// hour or the page number gains a digit.
+static int pageRight(void)      { return UI_SAFE_RIGHT - uiGetClockWidth() - HEADER_GAP; }
+static int hintsTopRight(void)  { return pageRight() - pageMaxW - HEADER_GAP; }
+static int hintsTopLeft(void)   { return hintsTopRight() - uiGetHintsWidth(&hintsTop); }
+
+// The page counter at its widest: as many digits a side as the most pages a feed can make (the 500-result cap
+// over the grid's page size). Every digit takes the same cell, so the sample's digits do not matter.
+static int measurePageMaxW(void)
 {
-   int hintsLeft = UI_SAFE_RIGHT - uiGetHintsWidth(&hintsTop);
-   int width = hintsLeft - HEADER_GAP - statusMaxW - TITLE_GAP - GRID_LEFT;
-   if (width < TITLE_MIN_W) width = TITLE_MIN_W;
-   if (width != titleLabel.width) { freeLabel(&titleLabel); titleLabel.width = width; }
+   int size = home.grid.visibleRows * home.grid.cols;
+   int pages = size > 0 ? (MAX_SEARCH_RESULTS + size - 1) / size : MAX_SEARCH_RESULTS;
+   char digits[12], sample[32];
+   snprintf(digits, sizeof digits, "%d", pages);
+   snprintf(sample, sizeof sample, " %s / %s", digits, digits);
+   return pageWordLabel.tt.tex.w + uiGetDigitsWidth(&pageDigits, sample) + pagePlusLabel.tt.tex.w;
 }
 
-// The widest the text after the title gets: the page counter with three digits a side (five results a page
-// and the 500-result cap make a hundred pages), or either status. Digits are proportional in Manrope, so a
-// few of them are tried.
-static int measureStatusWidth(void)
+// Narrows a hint row's gaps, two px at a time down to HINT_MIN_GAP, until it is no wider than maxWidth. How
+// wide a row comes out is up to the console's glyph art - 36x36 for every button on a PS3, 26 to 75 x 23 in
+// RPCS3, all scaled to the row's 34 px - so this is settled at run time, not here.
+static void fitHintRow(UiHints *row, int maxWidth)
 {
-   static const char *SAMPLES[] = { "Page 000 / 000+", "Page 444 / 444+", "Page 888 / 888+", "Loading...", "No results" };
-   Font *font = uiGetFont(STATUS_WEIGHT);
-   float widest = 0.0f;
-   for (int i = 0; i < (int)(sizeof SAMPLES / sizeof SAMPLES[0]); i++) {
-      float width = measureFontText(font, STATUS_SIZE, SAMPLES[i]);
-      if (width > widest) widest = width;
+   int gap = UI_HINT_GAP;
+   uiSetHintsGap(row, gap);
+   while (uiGetHintsWidth(row) > maxWidth && gap > HINT_MIN_GAP) {
+      gap -= 2;
+      uiSetHintsGap(row, gap);
    }
-   return (int)widest + 1;
+}
+
+// The title may run up to TITLE_GAP short of the top hint row. That row is wider on Subscriptions ("Open
+// channel", "Unsubscribe") and its glyphs' widths are only known at run time, so the budget is worked out
+// again whenever the captions change - the row giving up some of its gaps first if the title would get less
+// than TITLE_MIN_W. A new width needs the old texture dropped: setLabelText skips a text the label already
+// shows.
+static void fitTitleWidth(void)
+{
+   fitHintRow(&hintsTop, hintsTopRight() - TITLE_GAP - TITLE_MIN_W - CONTENT_X);
+   int width = hintsTopLeft() - TITLE_GAP - CONTENT_X;
+   if (width < 1) width = 1;
+   if (width != titleLabel.width) { freeLabel(&titleLabel); titleLabel.width = width; }
 }
 
 static void setHeading(void)
@@ -180,7 +235,7 @@ static void setHeading(void)
    else if (home.category == HOME_WATCHLATER) snprintf(heading, sizeof heading, "Watch Later");
    else if (home.category == HOME_HISTORY)    snprintf(heading, sizeof heading, "History");
    else if (home.category == HOME_PLAYLIST)   snprintf(heading, sizeof heading, "%s", getPlaylistName(openPlaylist));
-   else                                       snprintf(heading, sizeof heading, "Trending \xe2\x80\xa2 %s", TrendingNames[home.category]);
+   else                                       snprintf(heading, sizeof heading, "Trending");   // the category: a chip
    uiSetHintCaption(&hintsTop, CROSS_HINT,    home.category == HOME_SUBS ? "Open channel" : "Play");
    uiSetHintCaption(&hintsTop, TRIANGLE_HINT, home.category == HOME_SUBS ? "Unsubscribe"  : "Channel");
    fitTitleWidth();   // after the captions: the row's new width decides how far the title may run
@@ -238,9 +293,17 @@ static void cacheCurrent(void)
 static void showNotice(const char *text)
 {
    uiSetTextLabel(&noticeLabel, UI_BODY_WEIGHT, text);
-   setLabelText(&noticeHintLabel, "Press X to close");
-   home.noticeIsConfirm = 0;
+   home.noticeIsConfirm = 0;   // answered by closeHints
    home.noticeVisible   = 1;
+}
+
+// The name the box calls the pending channel by. One the console has no letters for (all Thai or Arabic, say:
+// uiTextIsLegible) would leave a blank in the sentence, and its tile already shows something else in its place
+// (video-grid.c) - "this channel", the tile you just pressed, says it plainly.
+static const char *pendingChannelName(char *out, int cap)
+{
+   uiCleanText(out, cap, home.pendingUnsubName);
+   return out[0] && uiTextIsLegible(out) ? out : "this channel";
 }
 
 // Triangle on a subscription tile. The tile's TITLE is the channel name; its author is "Latest: <newest
@@ -253,11 +316,10 @@ static void askUnsubscribe(const SearchResult *item)
    strCopy(home.pendingUnsubId,   sizeof home.pendingUnsubId,   item->channelId);
    strCopy(home.pendingUnsubName, sizeof home.pendingUnsubName, item->title);
 
-   char message[256];
-   snprintf(message, sizeof message, "Unsubscribe from %s?", home.pendingUnsubName);
+   char name[CHANNEL_NAME_LEN], message[256];
+   snprintf(message, sizeof message, "Unsubscribe from %s?", pendingChannelName(name, (int)sizeof name));
    uiSetTextLabel(&noticeLabel, UI_BODY_WEIGHT, message);
-   setLabelText(&noticeHintLabel, "X Unsubscribe     O Cancel");
-   home.noticeIsConfirm = 1;
+   home.noticeIsConfirm = 1;   // answered by confirmHints
    home.noticeVisible   = 1;
 }
 
@@ -270,7 +332,7 @@ static void unsubscribeConfirmed(void)
    int rc = setSubscribed(home.pendingUnsubId, NULL, 0);
 
    if (rc != SUBSCRIBE_OK) {
-      char message[256];
+      char name[CHANNEL_NAME_LEN], message[256];
       if (rc == SUBSCRIBE_ERR_WRITE && !isStorageWritable())
          snprintf(message, sizeof message,
                   "The data folder could not be created or written at startup, so nothing can be saved.\n\n%s",
@@ -280,7 +342,7 @@ static void unsubscribeConfirmed(void)
                   "Unsubscribed - but it could not be saved, so the channel is back after a restart.\n\n%s\n\nFree space: %lu KB",
                   getSubscriptionsPath(), getStorageFreeKB());
       else
-         snprintf(message, sizeof message, "Could not unsubscribe from %s.", home.pendingUnsubName);
+         snprintf(message, sizeof message, "Could not unsubscribe from %s.", pendingChannelName(name, (int)sizeof name));
       showNotice(message);
       return;   // the list on screen still matches what is stored, so leave it alone
    }
@@ -369,29 +431,44 @@ static void initHome(void)
    uiAddHint(&hintsBottom, GLYPH_R2,        "Page");
    uiAddHint(&hintsBottom, GLYPH_SELECT,    "PS button");
    uiAddHint(&hintsBottom, GLYPH_DPAD_LEFT, "Menu");
+   // The bottom row has the whole width right of the rail to itself. Its captions never change, and the
+   // glyphs are loaded before any screen, so its width is final here.
+   fitHintRow(&hintsBottom, UI_SAFE_RIGHT - CONTENT_X);
+   if (uiGetHintsWidth(&hintsBottom) > UI_SAFE_RIGHT - CONTENT_X)
+      logWarn("[home] bottom hint row is %d px for %d: it reaches under the rail\n", uiGetHintsWidth(&hintsBottom),
+              UI_SAFE_RIGHT - CONTENT_X);
 
    // The fonts are the shared ones (ui-fonts.h): nothing here opens or closes a font. The title is external
    // text on the playlist tab; its width is set by fitTitleWidth on every heading.
-   uiInitTextLabel(&titleLabel, UI_PAGE_TITLE_WEIGHT, GRID_LEFT, 0, TITLE_MIN_W, UI_PAGE_TITLE_SIZE,
+   uiInitTextLabel(&titleLabel, UI_PAGE_TITLE_WEIGHT, CONTENT_X, 0, TITLE_MIN_W, UI_PAGE_TITLE_SIZE,
                    activeTheme->textPrimary, TEXT_NOWRAP_ELLIPSIS, "");
-   uiInitLabel(&statusLabel, STATUS_WEIGHT, 0, 0, AUTO, STATUS_SIZE, activeTheme->textSecondary, TEXT_NOWRAP, "Loading...");
-   uiInitLabel(&pageLabel,   STATUS_WEIGHT, 0, 0, AUTO, STATUS_SIZE, activeTheme->textSecondary, TEXT_NOWRAP, "");
-   statusMaxW = measureStatusWidth();
+   uiInitLabel(&statusLabel,   STATUS_WEIGHT, 0, 0, AUTO, STATUS_SIZE, activeTheme->textSecondary, TEXT_NOWRAP, "Loading...");
+   uiInitLabel(&pageWordLabel, PAGE_WEIGHT,   0, 0, AUTO, PAGE_SIZE,   activeTheme->textSecondary, TEXT_NOWRAP, "Page");
+   uiInitLabel(&pagePlusLabel, PAGE_WEIGHT,   0, 0, AUTO, PAGE_SIZE,   activeTheme->textSecondary, TEXT_NOWRAP, "+");
+   uiInitDigits(&pageDigits, PAGE_WEIGHT, PAGE_SIZE);
+   for (int c = 0; c < TREND_COUNT; c++)
+      uiInitLabel(&chipLabels[c], CHIP_WEIGHT, 0, 0, AUTO, CHIP_SIZE, TEXT_TINTABLE, TEXT_NOWRAP, TrendingNames[c]);
 
    home.noticeVisible   = 0;
    home.noticeIsConfirm = 0;
    home.noticePanelW    = home.screenW * 2 / 3;
-   uiInitTextLabel(&noticeLabel, UI_BODY_WEIGHT, 0, 0, home.noticePanelW - 2 * NOTICE_PAD, NOTICE_TEXT,
+   uiInitTextLabel(&noticeLabel, UI_BODY_WEIGHT, 0, 0, home.noticePanelW - 2 * NOTICE_PAD_X, NOTICE_TEXT,
                    activeTheme->textPrimary, TEXT_WRAP, "");
-   uiInitLabel(&noticeHintLabel, UI_HINT_WEIGHT, 0, 0, AUTO, UI_HINT_SIZE, activeTheme->textSecondary, TEXT_NOWRAP, "");
+   // the answers with the console's own glyphs, as in the other boxes; O closes a plain notice too, as ever
+   uiInitHints(&closeHints);
+   uiAddHint(&closeHints, GLYPH_CROSS, "Close");
+   uiInitHints(&confirmHints);
+   uiAddHint(&confirmHints, GLYPH_CROSS,  "Unsubscribe");
+   uiAddHint(&confirmHints, GLYPH_CIRCLE, "Cancel");
 
    home.pendingReload = 0;
 
-   initVideoGrid(&home.grid, uiGetFont(UI_CARD_TITLE_WEIGHT), GRID_LEFT, GRID_TOP,
-                 UI_SAFE_RIGHT - GRID_LEFT, UI_HINTS_BOTTOM_Y - GRID_TOP - HINTS_RESERVE);
-   setGridView(&home.grid, GRID_VIEW_LIST);   // the list is the only layout now - see sidebar.h
+   // Bild 4's cards (GRID_VIEW_GRID, the grid's own default): four columns between the rail and the safe edge
+   initVideoGrid(&home.grid, uiGetFont(UI_CARD_TITLE_WEIGHT), CONTENT_X, GRID_TOP,
+                 UI_SAFE_RIGHT - CONTENT_X, GRID_BOTTOM - GRID_TOP);
+   pageMaxW = measurePageMaxW();   // needs the grid's page size
    initSidebar();
-   setGridWatchedPredicate(&home.grid, isWatched);
+   setGridWatchedPredicate(&home.grid, tileWatched);
    setGridWatchLaterPredicate(&home.grid, isWatchLater);
    setGridProgressSource(&home.grid, getWatchedPosition);
 
@@ -401,6 +478,15 @@ static void initHome(void)
    playlistRevisionSeen = getPlaylistsRevision();
    home.category = HOME_SUBS;   // always start on Subscriptions
    loadCategory();
+}
+
+// LEFT belongs to the grid while there is a card to the left of the selection, and to the rail from the
+// leftmost column - pages are whole rows, so the column is the index modulo the columns. With no cards on
+// screen (loading, nothing found) there is nothing for LEFT to move, and it opens the rail as it always did.
+static int leftOpensRail(void)
+{
+   if (gridStage(&home.grid) != GRID_READY || !gridSelected(&home.grid) || home.grid.cols <= 1) return 1;
+   return gridSelectedIndex(&home.grid) % home.grid.cols == 0;
 }
 
 static void updateHome(void)
@@ -450,7 +536,9 @@ static void updateHome(void)
       if (!isSidebarFocused()) setGridInputSuppressed(&home.grid, 0);
       return;
    }
-   if (isPadButtonPressed(PAD_BTN_LEFT) || isPadButtonPressed(PAD_BTN_CIRCLE)) {
+   // O opens it from anywhere. LEFT opens it only from the leftmost column of cards - or when there are no
+   // cards to move between: elsewhere LEFT moves the selection left, as a grid needs it to.
+   if ((isPadButtonPressed(PAD_BTN_LEFT) && leftOpensRail()) || isPadButtonPressed(PAD_BTN_CIRCLE)) {
       setSidebarFocused(1);
       setGridInputSuppressed(&home.grid, 1);
       return;
@@ -517,61 +605,104 @@ static void updateHome(void)
 }
 
 // The modal box, laid out from its text's own measurements, so a message in FONT_POP (a Japanese channel
-// name) sits exactly where a Manrope one would: the message's capitals NOTICE_PAD below the top edge, the
-// hint line's capitals NOTICE_GAP below the message's last baseline, and its baseline NOTICE_PAD above the
-// bottom edge.
+// name) sits exactly where a Manrope one would: the message's capitals NOTICE_PAD_TOP below the top edge, the
+// answers' glyph row NOTICE_ANSWERS_DY below the message's last baseline, and NOTICE_PAD_BOTTOM under it.
 static void drawNotice(void)
 {
    UiTextMetrics text = uiGetTextMetrics(noticeLabel.font, noticeLabel.size);
-   UiTextMetrics hint = uiGetTextMetrics(noticeHintLabel.font, noticeHintLabel.size);
-   int textTop      = NOTICE_PAD - text.capTop;                                         // panel-relative
+   const UiHints *answers = home.noticeIsConfirm ? &confirmHints : &closeHints;
+   int textTop      = NOTICE_PAD_TOP - text.capTop;                                     // panel-relative
    int lastBaseline = textTop + noticeLabel.tt.tex.h - text.texH + text.baseline;      // one pitch a line
-   int hintBaseline = lastBaseline + NOTICE_GAP + (hint.baseline - hint.capTop);
-   int panelW = home.noticePanelW, panelH = hintBaseline + NOTICE_PAD;
+   int answersTop   = lastBaseline + NOTICE_ANSWERS_DY;
+   int panelW = home.noticePanelW, panelH = answersTop + UI_HINT_GLYPH_H + NOTICE_PAD_BOTTOM;
    int x = (home.screenW - panelW) / 2, y = (home.screenH - panelH) / 2;
 
    uiFillRect(0, 0, home.screenW, home.screenH, activeTheme->scrim);
    uiFillRounded(x, y, panelW, panelH, NOTICE_RADIUS, activeTheme->surface);
    uiDrawFocusRing(x, y, panelW, panelH, UI_RING_ROW, activeTheme->focusBorder);   // the box owns the pad
-   uiDrawLabelAt(&noticeLabel, x + NOTICE_PAD, y + textTop);
-   uiDrawLabelAt(&noticeHintLabel, x + NOTICE_PAD, y + hintBaseline - hint.baseline);
+   uiDrawLabelAt(&noticeLabel, x + NOTICE_PAD_X, y + textTop);
+   uiDrawHints(answers, x + NOTICE_PAD_X, y + answersTop, UI_ALIGN_LEFT);
+}
+
+// a label rendered in TEXT_TINTABLE, drawn at (x, y) in `color` (an opaque theme colour)
+static void drawTinted(const Label *label, int x, int y, uint32_t color)
+{
+   if (label->tt.tex.w <= 0) return;
+   drawGfxTexture(x, y, label->tt.tex.w, label->tt.tex.h, label->tt.tex, 0.0f, 0.0f, 1.0f, 1.0f, color,
+                  GFX_FILTER_NEAREST);
+}
+
+// Trending's categories after its title (Bild 4's chips): the one on screen in text-1 with surface-1 text, the
+// others on surface-2 in text-2. L1/R1 still walk all eight categories, not just these three. A chip that
+// would reach the top hint row is left out rather than drawn into it.
+static void drawTrendingChips(int x)
+{
+   int limit = hintsTopLeft() - TITLE_GAP;
+   for (int c = 0; c < TREND_COUNT; c++) {
+      const Label *label = &chipLabels[c];
+      int w = label->tt.tex.w + 2 * CHIP_PAD_X;
+      if (label->tt.tex.w <= 0 || x + w > limit) break;
+      int on = (c == home.category);
+      uiFillPill(x, HEADER_Y, w, HEADER_H, on ? activeTheme->textPrimary : activeTheme->surface);
+      drawTinted(label, x + CHIP_PAD_X, uiLabelYForCenter(label, HEADER_Y, HEADER_H),
+                 on ? activeTheme->surface1 : activeTheme->textSecondary);
+      x += w + CHIP_GAP;
+   }
+}
+
+// "Page 3 / 12+" with its right edge at `right`: the word and the "+" are labels, the numbers equal-width
+// digits, so turning a page re-renders nothing and the line does not wobble.
+static void drawPageCounter(int right)
+{
+   char numbers[32];
+   snprintf(numbers, sizeof numbers, " %d / %d", gridPageIndex(&home.grid) + 1, gridPageCount(&home.grid));
+   int more     = gridHasMorePages(&home.grid);
+   int numbersW = uiGetDigitsWidth(&pageDigits, numbers);
+   int x = right - (more ? pagePlusLabel.tt.tex.w : 0) - numbersW - pageWordLabel.tt.tex.w;
+   int digitsY  = uiTextYForCenter(pageDigits.font, pageDigits.size, HEADER_Y, HEADER_H);
+   int baseline = digitsY + uiGetTextMetrics(pageDigits.font, pageDigits.size).baseline;
+   uiDrawLabelAt(&pageWordLabel, x, uiLabelYForBaseline(&pageWordLabel, baseline));
+   x += pageWordLabel.tt.tex.w;
+   uiDrawDigits(&pageDigits, x, digitsY, numbers, activeTheme->textSecondary);
+   if (more) uiDrawLabelAt(&pagePlusLabel, x + numbersW, uiLabelYForBaseline(&pagePlusLabel, baseline));
+}
+
+// the header line: the title (and Trending's chips), the page counter and the clock - the hints come later
+static void drawHeader(void)
+{
+   uiDrawLabelAt(&titleLabel, CONTENT_X, uiLabelYForCenter(&titleLabel, HEADER_Y, HEADER_H));
+   if (home.category < TREND_COUNT) drawTrendingChips(CONTENT_X + titleLabel.tt.tex.w + CHIP_TITLE_GAP);
+   if (gridStage(&home.grid) == GRID_READY) drawPageCounter(pageRight());
+
+   Font *clockFont = uiGetFont(UI_WEIGHT_BOLD);
+   int clockY = uiTextYForCenter(clockFont, CLOCK_SIZE, HEADER_Y, HEADER_H);
+   uiDrawClock(UI_SAFE_RIGHT, clockY + uiGetTextMetrics(clockFont, CLOCK_SIZE).baseline);
 }
 
 static void drawHome(void)
 {
    fillGfxRectangle(0, 0, home.screenW, home.screenH, activeTheme->appBg);
 
-   // Order matters. The grid goes down first, then the heading and, after it, the page counter or the status
-   // line (the heading after the grid, because the selection's glow reaches up under it), and only then the
-   // rail. Expanded, the rail lies OVER the content - heading included, as the design has it - rather than
-   // pushing it aside. The heading starts at the grid's left edge, inside the expanded panel, so drawn after
-   // the rail the 46-px title ran straight across the open menu. A short heading's "Loading..." can end up
-   // under the panel while the menu is open; the menu has the focus then, and the line is back once it closes.
-   if (gridStage(&home.grid) == GRID_READY) drawVideoGrid(&home.grid);
-
-   // the title's capitals on the line of the top-right hint row; the counter on the title's baseline
-   int titleY = uiLabelYForCenter(&titleLabel, UI_HINTS_TOP_Y, UI_HINT_GLYPH_H);
-   int baseline = titleY + uiGetTextMetrics(titleLabel.font, titleLabel.size).baseline;
-   int afterTitle = GRID_LEFT + (titleLabel.tt.tex.w > 0 ? titleLabel.tt.tex.w + TITLE_GAP : 0);
-   moveLabel(&titleLabel, GRID_LEFT, titleY);
-   drawLabel(&titleLabel);
-   Label *state = &statusLabel;
+   // Order matters. The grid goes down first, then the header (after the grid, because the selection's glow
+   // reaches up under it), the hint rows and the download pill, then the rail. Expanded, the rail lies OVER
+   // the page - header included, as the design has it - and dims everything right of it with its scrim,
+   // rather than pushing anything aside: the title starts at the cards' left edge, inside the expanded panel,
+   // so drawn after the rail the 46-px title ran straight across the open menu. The hints and the pill are the
+   // page's too: while the rail has the pad none of those buttons does what its hint says, and drawn over the
+   // scrim they looked as live as the menu. Only a notice goes on top of everything.
    if (gridStage(&home.grid) == GRID_READY) {
-      char page[40];
-      formatGridPage(&home.grid, page, sizeof page);
-      setLabelText(&pageLabel, page);   // only rasterises when the text actually changes
-      state = &pageLabel;
+      drawVideoGrid(&home.grid);
    } else {
+      // where the cards will be, clear of the collapsed rail; under the panel while the menu is open
       setLabelText(&statusLabel, gridStage(&home.grid) == GRID_EMPTY ? "No results" : "Loading...");
+      uiDrawLabelAt(&statusLabel, CONTENT_X, uiLabelYForBaseline(&statusLabel, STATUS_BASELINE));
    }
-   uiPlaceLabelBaseline(state, afterTitle, baseline);
-   drawLabel(state);
+   drawHeader();
+   uiDrawHints(&hintsTop,    hintsTopRight(), HEADER_HINTS_Y,    UI_ALIGN_RIGHT);
+   uiDrawHints(&hintsBottom, UI_SAFE_RIGHT,   UI_HINTS_BOTTOM_Y, UI_ALIGN_RIGHT);
+   drawDownloadOverlay(home.screenW);
 
    drawSidebar(home.screenH);
-
-   uiDrawHints(&hintsTop,    UI_SAFE_RIGHT, UI_HINTS_TOP_Y,    UI_ALIGN_RIGHT);
-   uiDrawHints(&hintsBottom, UI_SAFE_RIGHT, UI_HINTS_BOTTOM_Y, UI_ALIGN_RIGHT);
-   drawDownloadOverlay(home.screenW);
 
    if (home.noticeVisible) drawNotice();
 }
@@ -629,9 +760,13 @@ static void termHome(void)
    uiTermHints(&hintsBottom);
    freeLabel(&titleLabel);
    freeLabel(&statusLabel);
-   freeLabel(&pageLabel);
+   freeLabel(&pageWordLabel);
+   freeLabel(&pagePlusLabel);
+   uiFreeDigits(&pageDigits);
+   for (int c = 0; c < TREND_COUNT; c++) freeLabel(&chipLabels[c]);
    freeLabel(&noticeLabel);
-   freeLabel(&noticeHintLabel);
+   uiTermHints(&closeHints);
+   uiTermHints(&confirmHints);
    // no closeFont: the fonts are shared (ui-fonts.h), and closing one would blank every label that uses it
 }
 

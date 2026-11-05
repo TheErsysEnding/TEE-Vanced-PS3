@@ -27,6 +27,7 @@
 #include "ui/stats.h"
 #include "ui-fonts.h"
 #include "ui-draw.h"
+#include "ui-clock.h"
 #include "bridge-client.h"
 #include "dbg.h"
 
@@ -57,6 +58,7 @@ int main(int argc, char **argv)
    if (initIconFont() != 0) logError("[yt] embedded icon font failed to load; icons will be blank\n");
    initUiFonts();          // Manrope's four weights + one shared FONT_POP, opened once for every screen: memory
                            // fonts take user-font slots, and there are only 8 (see ui-fonts.h)
+   uiInitClock();          // the header clock's digits, in the 12/24-hour form the XMB is set to (ui-clock.h)
    initPad();
 
    initStats(5, 5, 14, activeTheme->textSecondary);

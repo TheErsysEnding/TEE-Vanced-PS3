@@ -15,7 +15,10 @@
 //  - Text from outside - video titles, channel names, search queries, playlist names, chapter titles,
 //    track names - goes through uiInitTextLabel / uiSetTextLabel: drawn raw (a '{' in a title is a
 //    character, not markup) and in Manrope only when Manrope has every character of it; otherwise the
-//    WHOLE text is drawn in FONT_POP, as all text was before.
+//    WHOLE text is drawn in FONT_POP, as all text was before. What no font can draw (emoji ...) is left
+//    out first, and decoration has no say in the font (uiCleanText). Text you render or measure without
+//    those helpers, put through uiCleanText yourself. Text that would still come out mostly blank - a title
+//    in Thai or Arabic, scripts no font of the console has - is caught by uiTextIsLegible.
 //  - Subtitles stay FONT_POP (uiGetFallbackFont).
 //  - Place text with uiPlaceLabelBaseline / uiPlaceLabelCentered. Manrope's and FONT_POP's textures put
 //    the glyphs at different heights, so a position worked out from the font size is right for at most
@@ -89,8 +92,32 @@ int   uiTextFitsManrope(const char *text);
 
 // the font to render this EXTERNAL text in: uiGetFont(weight) when uiTextFitsManrope(text), else FONT_POP
 // - for the whole text, never mixed. Cheap (no rendering); still, call it when the text changes, not per
-// frame.
+// frame. It judges the text exactly as given, so pass it what uiCleanText made of the text, and render that.
 Font *uiPickFont(UiWeight weight, const char *text);
+
+// EXTERNAL text made ready to draw: copied to out (at most outSize - 1 bytes, cut at a character boundary,
+// always terminated) without what the fonts cannot draw - the renderer shows each such character as a gap
+// one em wide. Left out: emoji and pictographs with their joiners, skin tones, flags and variation
+// selectors; symbols neither font has; zero-width and direction marks; control characters. Made plain: the
+// many widths of space and tabs (as ' '), and the "fancy" maths and boxed alphabets people style titles
+// with (as the plain letters). Where something was left out, the spaces around it close up (one space
+// between "radio" and "beats", not two and a gap), and two words it stood between keep one space.
+// Decoration (arrows, shapes, stars, notes, hearts) has no say in the font: a title that is Manrope apart
+// from it stays in Manrope and loses it; one that needs FONT_POP anyway (Japanese) keeps what FONT_POP
+// draws. So uiPickFont on the result picks the face the words need, and that face draws every character
+// left. Letters of scripts neither font has stay (a gap is better than a lost word; a text that is mostly
+// such gaps is uiTextIsLegible's to catch). out may be text itself. Returns the length of out. The label
+// helpers below call it; call it yourself for text you render or measure without them.
+int   uiCleanText(char *out, int outSize, const char *text);
+
+// 0 when text would come out mostly blank: it holds more characters the font uiPickFont gives it cannot draw
+// - the letters of a script no font of the console has (Thai, Arabic, Hebrew, Hindi ...), an em-wide gap
+// each - than letters that font can draw. A Thai title is such a text: drawn, it is an empty line with a stray
+// "|" or digit and a "..." at the end. Show something readable in its place where there is something (the
+// video grid shows the channel name). 1 otherwise, also for text without letters ("2026") and for NULL or "".
+// Judges the text exactly as given, so pass it what uiCleanText made of it. Main thread only: for FONT_POP it
+// asks libfont which glyphs the console's font set really has, the same lookup the renderer makes.
+int   uiTextIsLegible(const char *text);
 
 // ---- labels ----
 // All of these take the same position/width/size/colour/wrap arguments as the library's initLabel (minus
@@ -102,17 +129,18 @@ Font *uiPickFont(UiWeight weight, const char *text);
 void uiInitLabel(Label *l, UiWeight weight, int x, int y, int width, int size, uint32_t color, TextWrap wrap,
                  const char *text);
 
-// A label for EXTERNAL text: raw (no markup), font picked with uiPickFont. text may be NULL or "".
+// A label for EXTERNAL text: raw (no markup), cleaned (uiCleanText), font picked with uiPickFont. text may
+// be NULL or "".
 void uiInitTextLabel(Label *l, UiWeight weight, int x, int y, int width, int size, uint32_t color,
                      TextWrap wrap, const char *text);
 
-// Sets EXTERNAL text on a label made by uiInitTextLabel (or any label - it becomes raw). Picks the font
-// again and, when that changes, drops the old texture and renders anew: a Label binds its font when it
-// renders and setLabelText skips text it already shows, so a plain setLabelText would keep a Japanese
-// title in Manrope (blank) or a Latin one in FONT_POP. Unchanged text in an unchanged font renders
-// nothing (a copy, the coverage check and a compare). text may be NULL (= ""), and may be the label's own
-// l->text. Text longer than a Label holds (255 bytes) is cut at a character boundary, never inside a UTF-8
-// sequence.
+// Sets EXTERNAL text on a label made by uiInitTextLabel (or any label - it becomes raw). Cleans it
+// (uiCleanText), picks the font again and, when that changes, drops the old texture and renders anew: a
+// Label binds its font when it renders and setLabelText skips text it already shows, so a plain
+// setLabelText would keep a Japanese title in Manrope (blank) or a Latin one in FONT_POP. Unchanged text in
+// an unchanged font renders nothing (the cleaning copy, the coverage check and a compare). text may be NULL
+// (= ""), and may be the label's own l->text. Text longer than a Label holds (255 bytes) is cut at a
+// character boundary, never inside a UTF-8 sequence.
 void uiSetTextLabel(Label *l, UiWeight weight, const char *text);
 
 // Re-renders a label's current text in another weight, size or colour (e.g. a row that turns 800 when
