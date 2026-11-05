@@ -7,6 +7,44 @@ before it was tagged. Anything that had not been is said so plainly.
 
 Not yet installed on a console.
 
+The first step of the new look, "Ember": colours, type and the button hints
+change; the layouts stay as they are, apart from what the larger text and the
+TV's safe area need. Every button still does what it did.
+
+### Changed
+
+- **A new palette** from the Ember design: the same TEE orange on a warm dark
+  ground with cream text, and a red of its own for the LIVE badge. A
+  `themes.txt` written by an older version still holds the old colours, and its
+  `[TEE]` block would have hidden the new ones for good - so it is copied to
+  `themes.txt.bak` once and replaced. A theme of your own in it survives in the
+  `.bak`. The `[YouTube Classic]` template has values for every new key.
+- **Manrope** replaces the console font for the app's own text, in four
+  weights embedded in the app (SIL Open Font License, see `NOTICE`). A title,
+  channel name, search or playlist name with a character Manrope does not have
+  (Japanese, Korean, emoji ...) is drawn entirely in the console font, as
+  before. Text from YouTube is no longer read as markup, so a `{` in a title
+  cannot swallow the rest of it.
+- **No text below 20 px** except badges and key captions, which are 18 px in
+  extra bold.
+- **New button hints**: the console's own button symbols, larger and inside
+  the TV's safe area, at the bottom right - in the settings at the bottom left,
+  under the options, as in the design. On the home screen Play, Watch Later and
+  Channel moved to the top right; the other hints stay at the bottom.
+- **SponsorBlock categories** go by their full names everywhere, in the
+  settings and in the player's "Skip ..." and "Skipped ..." messages:
+  Self-promotion, Interaction reminder, Outro and end cards, Filler and
+  tangents. Their colours follow the new design, and Off-topic music turned
+  pink - its orange was all but invisible on the orange played part of the
+  seek bar.
+- The download progress badge moved into the safe area.
+- In the player the times are drawn digit by digit at a fixed width, with a
+  dark outline: they keep their place as they count and stay readable on a
+  bright picture.
+- **The video description** is set in Manrope as well, up to about 70 lines.
+  Manrope's lines are taller, so a longer description stays in the console
+  font, which fits more of them, and nothing that showed before is cut.
+
 ### Fixed
 
 - **Closing the description or the chapter list while Up or Down was still
@@ -16,6 +54,9 @@ Not yet installed on a console.
   list jump** straight away, and keep jumping. A direction held across the
   return now waits for the usual repeat delay; a fresh press still moves the
   list at once.
+- **A description too long for the text renderer left the description
+  empty.** The renderer refuses a text taller than its 16 MB limit; such a
+  description is now shortened from the end until it fits, and ends in "...".
 
 ## v0.13.1 beta — not released yet
 

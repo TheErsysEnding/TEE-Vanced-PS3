@@ -9,7 +9,9 @@
 #include "video-grid.h"
 #include "storage.h"
 #include "downloads.h"
-#include "ui/button-hints.h"
+#include "ui-hints.h"           // the Ember hint row
+#include "ui-draw.h"            // safe area, rounded panel, focus ring, uiDrawLabelAt
+#include "ui-fonts.h"           // the shared fonts, the type scale, label helpers and text placement
 #include "ui/console-glyphs.h"
 
 #include "gfx.h"
@@ -23,18 +25,31 @@
 #include <string.h>
 #include <stdio.h>
 
-#define MARGIN_X      50
-#define HEADER_Y      26
-#define TITLE_SIZE    26
-#define GRID_TOP      74
-#define HINTS_BOTTOM  42
-#define HINT_GLYPH_H  25
-#define HINT_TEXT     21
-#define NOTICE_PAD    28        // modal confirmation box: inner padding
-#define NOTICE_TEXT   26
-#define NOTICE_HINT   20
-#define HEADER_GAP    28        // between the sort mode and the page count in the header
-#define TRIANGLE_HINT 3         // Triangle's slot in the hint row (see initSearch): retitled per mode
+// The list starts 9 px in from the safe area's left edge: that is how far the focus ring reaches outside a
+// thumbnail (UI_RING_THUMB), so the ring stays inside the safe area too. The title lines up with the list.
+#define CONTENT_X         (UI_SAFE_X + 9)
+// The header is one line: the title on the left, the sort mode and the page count right-aligned, all three
+// with their capitals centred on the band of a top-right hint row (UI_HINTS_TOP_Y, centre y 71) - the line
+// home.c puts its title on, so the heading stays where it was when a search opens over Home.
+#define HEADER_Y          UI_HINTS_TOP_Y
+#define HEADER_H          UI_HINT_GLYPH_H
+#define HEADER_GAP        32        // between the title, the sort mode and the page count
+#define SORT_SIZE         UI_META_SIZE
+#define SORT_WEIGHT       UI_WEIGHT_BOLD      // the sort in force is a value: 20/700 in text-1, as in Bild 5
+#define PAGE_SIZE         UI_META_SIZE
+#define PAGE_WEIGHT       UI_META_WEIGHT
+#define GRID_TOP          140       // clear of the title's descenders and of the focus ring 9 px above a row
+#define GRID_BOTTOM       (UI_HINTS_BOTTOM_Y - 16)   // the list's rectangle ends above the hint row; until v0.13
+                                                     // it ran to the bottom edge, under the hints
+#define STATUS_BASELINE   (GRID_TOP + 30)
+#define NOTICE_PAD_X      44        // modal confirmation box: inner padding left and right
+#define NOTICE_PAD_TOP    40        //   panel top -> the first capitals of the message
+#define NOTICE_PAD_BOTTOM 30        //   the "Press X" line -> panel bottom
+#define NOTICE_GAP        24        //   the message -> the "Press X" line
+#define NOTICE_TEXT       24
+#define NOTICE_HINT_H     UI_HINT_GLYPH_H   // the "Press X" line is centred in a band as tall as a hint row
+#define NOTICE_RADIUS     26        // the search rows' radius - the one the row ring (UI_RING_ROW) is made for
+#define TRIANGLE_HINT     3         // Triangle's slot in the hint row (see initSearch): retitled per mode
 
 static const char *SortNames[SORT_COUNT]                = { "Relevance", "Views" };
 static const char *ChannelSortNames[CHANNEL_SORT_COUNT] = { "Latest", "Popular", "Oldest" };
@@ -57,10 +72,9 @@ static struct {
    int       noticePanelW;
 } search;
 
-static Font        font;
-static Label       titleLabel, sortLabel, statusLabel, pageLabel;
-static Label       noticeLabel, noticeHintLabel;
-static ButtonHints hints;
+static Label   titleLabel, sortLabel, statusLabel, pageLabel;
+static Label   noticeLabel, noticeHintLabel;
+static UiHints hints;
 
 static int searchFetch(const char *token, SearchResults *out, void *user)
 {
@@ -77,8 +91,21 @@ static int searchFetch(const char *token, SearchResults *out, void *user)
 // visibly did nothing. Every outcome now says which one it was.
 static void showNotice(const char *text)
 {
-   setLabelText(&noticeLabel, text);
+   uiSetTextLabel(&noticeLabel, UI_BODY_WEIGHT, text);   // may name a channel id: drawn raw, any font it needs
    search.noticeVisible = 1;
+}
+
+// The hint row has to fit between the safe edges, and much of its width is the console's own glyph art, whose
+// size is only known at run time. Should the art come out wider than expected, the gaps narrow instead of the
+// row running off the left edge; at the expected size the full gap fits with room to spare.
+static void fitHintRow(UiHints *row)
+{
+   int gap = UI_HINT_GAP;
+   uiSetHintsGap(row, gap);
+   while (uiGetHintsWidth(row) > UI_SAFE_RIGHT - UI_SAFE_X && gap > UI_HINT_GAP / 2) {
+      gap -= 2;
+      uiSetHintsGap(row, gap);
+   }
 }
 
 // in channel mode Triangle toggles the subscription (you're already in the channel); elsewhere it drills in.
@@ -86,7 +113,8 @@ static void updateTriangleHint(void)
 {
    const char *caption = "Channel";
    if (search.channelId[0]) caption = isSubscribed(search.channelId) ? "Unsubscribe" : "Subscribe";
-   setButtonHintCaption(&hints, TRIANGLE_HINT, caption);
+   uiSetHintCaption(&hints, TRIANGLE_HINT, caption);
+   fitHintRow(&hints);   // the row's width follows its captions
 }
 
 // title (left) shows the mode; sortLabel (right) shows the current ordering.
@@ -95,7 +123,8 @@ static void setHeading(void)
    char heading[192];
    if (search.channelId[0]) { snprintf(heading, sizeof heading, "%s", search.channelName); setLabelText(&sortLabel, ChannelSortNames[search.channelSort]); }
    else                     { snprintf(heading, sizeof heading, "Search: %s", search.query); setLabelText(&sortLabel, SortNames[search.sort]); }
-   setLabelText(&titleLabel, heading);
+   // a channel name or a query: drawn raw, and all of it in FONT_POP when Manrope lacks one of its characters
+   uiSetTextLabel(&titleLabel, UI_PAGE_TITLE_WEIGHT, heading);
    updateTriangleHint();
 }
 
@@ -170,6 +199,51 @@ static void onQueryEntered(const char *text)
    reload();
 }
 
+// How wide a label of fixed text will come out: the renderer makes the texture exactly as wide as the
+// advances add up to, so measuring them in the label's font and size predicts it - with a few px to spare.
+static int measureTextWidth(UiWeight weight, int size, const char *text)
+{
+   float width = measureFontText(uiGetFont(weight), size, text);   // 0 when no font opened at all
+   if (width <= 0.0f) width = (float)strlen(text) * (float)size * 0.6f;
+   return (int)width + 4;
+}
+
+// The widest the page count can get. There are at most 500 results, so never more than three digits, and
+// Manrope's digits are proportional - "Page 111" is narrower than "Page 888" - so the sample uses its widest.
+static int measurePageReserve(void)
+{
+   Font *font = uiGetFont(PAGE_WEIGHT);
+   char widest = '0';
+   float best = 0.0f;
+   if (font->open) {   // measureFontChar does not check that itself
+      for (char c = '0'; c <= '9'; c++) {
+         float advance = measureFontChar(font, PAGE_SIZE, (uint32_t)(unsigned char)c);
+         if (advance > best) { best = advance; widest = c; }
+      }
+   }
+   char sample[32];
+   snprintf(sample, sizeof sample, "Page %c%c%c / %c%c%c+", widest, widest, widest, widest, widest, widest);
+   return measureTextWidth(PAGE_WEIGHT, PAGE_SIZE, sample);
+}
+
+// A label's width is fixed when it is made, and the title's has to leave room for the sort mode and page
+// count right of it, which change as you go. It used to be a flat screen width minus 300, so a long query
+// ran on underneath them; sized against the widest both can ever be, it now ends in "..." short of them.
+static int measureTitleWidth(void)
+{
+   int sortW = 0;
+   for (int i = 0; i < SORT_COUNT; i++) {
+      int width = measureTextWidth(SORT_WEIGHT, SORT_SIZE, SortNames[i]);
+      if (width > sortW) sortW = width;
+   }
+   for (int i = 0; i < CHANNEL_SORT_COUNT; i++) {
+      int width = measureTextWidth(SORT_WEIGHT, SORT_SIZE, ChannelSortNames[i]);
+      if (width > sortW) sortW = width;
+   }
+   int titleW = UI_SAFE_RIGHT - measurePageReserve() - HEADER_GAP - sortW - HEADER_GAP - CONTENT_X;
+   return titleW > 400 ? titleW : 400;
+}
+
 static void initSearch(void)
 {
    search.screenW = getGfxScreenWidth();
@@ -187,29 +261,31 @@ static void initSearch(void)
       strCopy(search.query, sizeof search.query, pendingQuery);
    }
 
-   font = openSystemFont(FONT_POP);
-   initLabel(&titleLabel,  &font, MARGIN_X, HEADER_Y, search.screenW - 300, AUTO, TITLE_SIZE, activeTheme->textPrimary, TEXT_NOWRAP_ELLIPSIS, "");
-   initLabel(&sortLabel,   &font, 0, HEADER_Y, AUTO, AUTO, TITLE_SIZE, activeTheme->textSecondary, TEXT_NOWRAP, "");
-   initLabel(&statusLabel, &font, MARGIN_X, GRID_TOP, search.screenW - 2 * MARGIN_X, AUTO, 21, activeTheme->textSecondary, TEXT_NOWRAP, "Loading...");
-   initLabel(&pageLabel,   &font, 0, HEADER_Y, AUTO, AUTO, TITLE_SIZE, activeTheme->textSecondary, TEXT_NOWRAP, "");
+   // The fonts are the shared ones (ui-fonts.h) - nothing here opens or closes one. Labels are positioned
+   // when they are drawn, by their measured capitals, since the title may come out in FONT_POP.
+   uiInitTextLabel(&titleLabel, UI_PAGE_TITLE_WEIGHT, CONTENT_X, 0, measureTitleWidth(), UI_PAGE_TITLE_SIZE, activeTheme->textPrimary, TEXT_NOWRAP_ELLIPSIS, "");
+   uiInitLabel(&sortLabel,   SORT_WEIGHT,   0, 0, AUTO, SORT_SIZE, activeTheme->textPrimary,   TEXT_NOWRAP, "");
+   uiInitLabel(&statusLabel, UI_BODY_WEIGHT, CONTENT_X, 0, UI_SAFE_RIGHT - CONTENT_X, UI_BODY_SIZE, activeTheme->textSecondary, TEXT_NOWRAP, "Loading...");
+   uiInitLabel(&pageLabel,   PAGE_WEIGHT,   0, 0, AUTO, PAGE_SIZE, activeTheme->textSecondary, TEXT_NOWRAP, "");
    search.noticeVisible = 0;
    search.noticePanelW  = search.screenW * 2 / 3;
-   initLabelRaw(&noticeLabel,     &font, 0, 0, search.noticePanelW - 2 * NOTICE_PAD, AUTO, NOTICE_TEXT, activeTheme->textPrimary,   TEXT_WRAP,   "");
-   initLabelRaw(&noticeHintLabel, &font, 0, 0, AUTO, AUTO, NOTICE_HINT, activeTheme->textSecondary, TEXT_NOWRAP, "Press X to close");
+   uiInitTextLabel(&noticeLabel, UI_BODY_WEIGHT, 0, 0, search.noticePanelW - 2 * NOTICE_PAD_X, NOTICE_TEXT, activeTheme->textPrimary, TEXT_WRAP, "");
+   uiInitLabel(&noticeHintLabel, UI_HINT_WEIGHT, 0, 0, AUTO, UI_HINT_SIZE, activeTheme->textSecondary, TEXT_NOWRAP, "Press X to close");
 
-   initButtonHints(&hints, &font, search.screenH - HINTS_BOTTOM, HINT_GLYPH_H, HINT_TEXT, activeTheme->textSecondary);
-   addButtonHint(&hints, getConsoleGlyph(GLYPH_CROSS),    "Play");
-   addButtonHint(&hints, getConsoleGlyph(GLYPH_CIRCLE),   "Back");
-   addButtonHint(&hints, getConsoleGlyph(GLYPH_SQUARE),   "Watch Later");
-   addButtonHint(&hints, getConsoleGlyph(GLYPH_TRIANGLE), "Channel");
-   addButtonHint(&hints, getConsoleGlyph(GLYPH_SELECT),   "Sort");
-   addButtonHint(&hints, getConsoleGlyph(GLYPH_R3),       "Download");
-   addButtonHint(&hints, getConsoleGlyph(GLYPH_L3),       "Add to playlist");
-   addButtonHint(&hints, getConsoleGlyph(GLYPH_START),    "Search");
-   addButtonHint(&hints, getConsoleGlyph(GLYPH_L2),       "");
-   addButtonHint(&hints, getConsoleGlyph(GLYPH_R2),       "Page");
+   uiInitHints(&hints);
+   uiAddHint(&hints, GLYPH_CROSS,    "Play");
+   uiAddHint(&hints, GLYPH_CIRCLE,   "Back");
+   uiAddHint(&hints, GLYPH_SQUARE,   "Watch Later");
+   uiAddHint(&hints, GLYPH_TRIANGLE, "Channel");
+   uiAddHint(&hints, GLYPH_SELECT,   "Sort");
+   uiAddHint(&hints, GLYPH_R3,       "Download");
+   uiAddHint(&hints, GLYPH_L3,       "Add to playlist");
+   uiAddHint(&hints, GLYPH_START,    "Search");
+   uiAddHint(&hints, GLYPH_L2,       "");
+   uiAddHint(&hints, GLYPH_R2,       "Page");
 
-   initVideoGrid(&search.grid, &font, MARGIN_X, GRID_TOP, search.screenW - 2 * MARGIN_X, search.screenH - GRID_TOP);
+   initVideoGrid(&search.grid, uiGetFont(UI_CARD_TITLE_WEIGHT), CONTENT_X, GRID_TOP,
+                 UI_SAFE_RIGHT - CONTENT_X, GRID_BOTTOM - GRID_TOP);
    setGridView(&search.grid, GRID_VIEW_LIST);   // the list is the only layout now
    setGridWatchedPredicate(&search.grid, isWatched);
    setGridWatchLaterPredicate(&search.grid, isWatchLater);
@@ -259,7 +335,10 @@ static void updateSearch(void)
    // for good on a channel whose Videos feed comes back empty, while the hint already read "Subscribe".
    if (search.channelId[0] && isPadButtonPressed(PAD_BTN_TRIANGLE)) { toggleSubscription(); return; }
 
+   int pageBefore = gridPageIndex(&search.grid);
    updateVideoGrid(&search.grid);
+   // one line per page turn in dbg.txt, as on home: VRAM has to come back to the same level page after page
+   if (gridPageIndex(&search.grid) != pageBefore) uiLogVram("search page turn");
    if (gridStage(&search.grid) != GRID_READY) return;
 
    const SearchResult *selected = gridSelected(&search.grid);
@@ -276,57 +355,73 @@ static void updateSearch(void)
    }
 }
 
-static void drawSearch(void)
+// title left, then - right-aligned - the sort mode and, once results are in, the page count
+static void drawHeader(void)
 {
-   fillGfxRectangle(0, 0, search.screenW, search.screenH, activeTheme->appBg);
-   drawLabel(&titleLabel);
-
-   int rightEdge = search.screenW - MARGIN_X;
+   int rightEdge = UI_SAFE_RIGHT;
    if (gridStage(&search.grid) == GRID_READY) {
       char page[40];
       formatGridPage(&search.grid, page, sizeof page);
       setLabelText(&pageLabel, page);   // only rasterises when the text actually changes
-      moveLabel(&pageLabel, rightEdge - pageLabel.tt.tex.w, HEADER_Y);
-      drawLabel(&pageLabel);
-      rightEdge -= pageLabel.tt.tex.w + HEADER_GAP;
+      rightEdge -= pageLabel.tt.tex.w;
+      uiDrawLabelAt(&pageLabel, rightEdge, uiLabelYForCenter(&pageLabel, HEADER_Y, HEADER_H));
+      rightEdge -= HEADER_GAP;
    }
-   moveLabel(&sortLabel, rightEdge - sortLabel.tt.tex.w, HEADER_Y);   // right-aligned, left of the page count
-   drawLabel(&sortLabel);
+   // right-aligned, left of the page count
+   uiDrawLabelAt(&sortLabel, rightEdge - sortLabel.tt.tex.w, uiLabelYForCenter(&sortLabel, HEADER_Y, HEADER_H));
+   uiDrawLabelAt(&titleLabel, CONTENT_X, uiLabelYForCenter(&titleLabel, HEADER_Y, HEADER_H));
+}
 
+// The modal box: the scrim dims everything under it, then a rounded panel with the focus ring round it - the
+// box owns the pad until it is dismissed, which is what the orange frame said in the old look too.
+static void drawNotice(void)
+{
+   // the message's texture starts above its first capitals by an amount that depends on its font
+   UiTextMetrics metrics = uiGetTextMetrics(noticeLabel.font, noticeLabel.size);
+   int textTop = NOTICE_PAD_TOP - metrics.capTop;
+   if (textTop < 0) textTop = 0;
+   int panelW = search.noticePanelW;
+   int panelH = textTop + noticeLabel.tt.tex.h + NOTICE_GAP + NOTICE_HINT_H + NOTICE_PAD_BOTTOM;
+   int x = (search.screenW - panelW) / 2, y = (search.screenH - panelH) / 2;
+   fillGfxRectangle(0, 0, search.screenW, search.screenH, activeTheme->scrim);
+   uiFillRounded(x, y, panelW, panelH, NOTICE_RADIUS, activeTheme->surface);
+   uiDrawFocusRing(x, y, panelW, panelH, UI_RING_ROW, activeTheme->focusBorder);
+   uiDrawLabelAt(&noticeLabel, x + NOTICE_PAD_X, y + textTop);
+   int hintY = y + textTop + noticeLabel.tt.tex.h + NOTICE_GAP;
+   uiDrawLabelAt(&noticeHintLabel, x + NOTICE_PAD_X, uiLabelYForCenter(&noticeHintLabel, hintY, NOTICE_HINT_H));
+}
+
+static void drawSearch(void)
+{
+   fillGfxRectangle(0, 0, search.screenW, search.screenH, activeTheme->appBg);
+
+   // The list goes down first and the heading over it: the focused row's glow reaches 81 px out from its
+   // thumbnail, up into the header, and text drawn before it would come out tinted orange.
    if (gridStage(&search.grid) == GRID_READY) {
       drawVideoGrid(&search.grid);
    } else {
       setLabelText(&statusLabel, gridStage(&search.grid) == GRID_EMPTY ? "No results" : "Loading...");
-      drawLabel(&statusLabel);
+      uiDrawLabelAt(&statusLabel, CONTENT_X, uiLabelYForBaseline(&statusLabel, STATUS_BASELINE));
    }
+   drawHeader();
 
-   drawButtonHints(&hints, search.screenW);
+   uiDrawHints(&hints, UI_SAFE_RIGHT, UI_HINTS_BOTTOM_Y, UI_ALIGN_RIGHT);
    drawDownloadOverlay(search.screenW);
 
-   if (search.noticeVisible) {
-      int panelW = search.noticePanelW;
-      int panelH = noticeLabel.tt.tex.h + 2 * NOTICE_PAD + NOTICE_HINT + 18;
-      int x = (search.screenW - panelW) / 2, y = (search.screenH - panelH) / 2;
-      int ring = activeTheme->focusThickness;
-      fillGfxRectangle(0, 0, search.screenW, search.screenH, activeTheme->scrim);
-      fillGfxRectangle(x - ring, y - ring, panelW + 2 * ring, panelH + 2 * ring, activeTheme->focusBorder);
-      fillGfxRectangle(x, y, panelW, panelH, activeTheme->surface);
-      drawLabelAt(&noticeLabel, x + NOTICE_PAD, y + NOTICE_PAD);
-      drawLabelAt(&noticeHintLabel, x + NOTICE_PAD, y + panelH - NOTICE_PAD - NOTICE_HINT + 6);
-   }
+   if (search.noticeVisible) drawNotice();
 }
 
 static void termSearch(void)
 {
    termVideoGrid(&search.grid);
-   termButtonHints(&hints);
+   uiTermHints(&hints);
    freeLabel(&titleLabel);
    freeLabel(&sortLabel);
    freeLabel(&statusLabel);
    freeLabel(&pageLabel);
    freeLabel(&noticeLabel);
    freeLabel(&noticeHintLabel);
-   closeFont(&font);
+   // no closeFont: the fonts are shared, and closing one would blank every label on every screen
 }
 
 void openSearchQuery(const char *query)

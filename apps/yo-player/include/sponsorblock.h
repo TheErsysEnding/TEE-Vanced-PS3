@@ -33,5 +33,9 @@ typedef struct {
 // returns 0 when the request completed (even with zero segments), negative on a transport error.
 int fetchSponsorSegments(const char *videoId, SponsorSegments *out);
 
-unsigned    getSponsorCategoryColor(SponsorCategory category);   // ARGB, for the seek bar span
-const char *getSponsorCategoryName(SponsorCategory category);    // "Sponsor", "Intro", ... for the skip notice
+// ARGB, opaque: the category's colour on the seek bar span, in the settings and in the player's legend
+unsigned    getSponsorCategoryColor(SponsorCategory category);
+// the category's full name - "Sponsor", "Self-promotion", "Interaction reminder", "Intro", "Outro and end
+// cards", "Off-topic music", "Filler and tangents" - for the settings rows, the "Skip ..." offer and the
+// "Skipped ..." toast (at most 20 characters, so "Skipped " + name fits the player's 64-byte notices)
+const char *getSponsorCategoryName(SponsorCategory category);

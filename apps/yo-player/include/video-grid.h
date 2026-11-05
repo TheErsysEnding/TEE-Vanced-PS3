@@ -15,6 +15,12 @@
 //   GRID_VIEW_GRID - GRID_COLS thumbnails per row, title underneath. Dense; the original look.
 //   GRID_VIEW_LIST - one result per row (thumbnail left, title + meta beside it) down the left of the screen
 //                    with a large preview of the selection on the right, the way a desktop browser lists them.
+//
+// Drawn in the Ember look: thumbnails with rounded corners, the selection as a soft glow plus a ring, badges
+// as rounded boxes. The grid is meant to be drawn on activeTheme->appBg (the corner masks are that colour),
+// and the selection's glow reaches 81 px past its thumbnail - a screen draws its header AFTER the grid.
+// Every label takes its own font from ui-fonts.h: titles and meta lines are text from YouTube, so each is
+// drawn raw, in Manrope when Manrope has every character of it and in FONT_POP when not.
 
 #include "extractor.h"          // SearchResults / SearchResult
 #include "font.h"               // Font
@@ -47,7 +53,8 @@ typedef struct {
 } GridThumb;
 
 typedef struct {
-   Font            *font;
+   Font            *font;                                  // as passed to initVideoGrid; not drawn with any
+                                                           // more (see above) - kept so callers still compile
    int              x, y, width, height;                   // grid rectangle on screen
    GridView         view;
    int              cols;                                  // 1 in list view, GRID_COLS in grid view
@@ -57,8 +64,8 @@ typedef struct {
 
    SearchResults    results;
    GridThumb        thumbs[MAX_SEARCH_RESULTS];
-   Label            rows[MAX_SEARCH_RESULTS];              // per-tile title
-   Label            metas[MAX_SEARCH_RESULTS];             // per-tile "author - views - age"
+   Label            rows[MAX_SEARCH_RESULTS];              // per-tile title (white: tinted when drawn)
+   Label            metas[MAX_SEARCH_RESULTS];             // per-tile "author . views . age" (white, likewise)
    Label            durations[MAX_SEARCH_RESULTS];         // per-tile duration / LIVE badge
    Label            watchLaterBadge;                       // shared "Watch Later" tag drawn on queued tiles
    Label            previewTitle, previewMeta;             // list view: the selection, shown large on the right
@@ -87,6 +94,7 @@ typedef struct {
    int              inputSuppressed;                           // pad ignored, but the grid keeps working
 } VideoGrid;
 
+// font is no longer used for drawing (see the header comment); pass uiGetFont(...) or NULL.
 void initVideoGrid(VideoGrid *grid, Font *font, int x, int y, int width, int height);
 void termVideoGrid(VideoGrid *grid);
 

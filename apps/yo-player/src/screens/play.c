@@ -14,13 +14,15 @@
 #include "stream-select.h"   // pickBestVideo / pickBestAudio (shared with download)
 
 #include "gfx.h"
-#include "theme.h"
-#include "colors.h"   // COLOR_BLACK: the letterbox bars are black whatever the theme
+#include "theme.h"              // every colour, the letterbox's included
 #include "pad.h"
 #include "font.h"
 #include "ui/label.h"
 #include "ui/volume-meter.h"
 #include "button-repeat.h"     // left/right scrub auto-repeat
+#include "ui-fonts.h"           // the shared Manrope weights (and FONT_POP for subtitles), text placement
+#include "ui-draw.h"            // rounded boxes, fixed-width time digits, the safe area
+#include "ui-hints.h"           // UI_HINT_GLYPH_H: the skip offer's glyph is as tall as the hint rows' glyphs
 #include "thread.h"
 #include "screen-manager.h"
 #include "string-utilities.h"   // strCopy
@@ -43,6 +45,7 @@
 
 // volume: up/down step the shared pill meter (ui/volume-meter.h), pills in the theme accent.
 #define VOLUME_DEFAULT    12
+#define VOLUME_NUMBER_WEIGHT UI_WEIGHT_BOLD   // the meter draws its level number in the font it is given
 
 // seek controls (bar + time) show on activity / pause, then auto-hide. left/right scrub the target
 // instantly; the engine seek (a decoder flush + fragment reload each time) fires once input goes quiet.
@@ -55,24 +58,55 @@
 #define CONTROLS_VISIBLE_US 3000000ULL
 #define TOAST_VISIBLE_US    2000000ULL   // how long a toast ("Skipped ...", "Subtitles: ...") stays up
 
+// The HUD keeps its layout - badges along the top, the bar low on the screen - in the Ember font, sizes and
+// colours; Bild 2's layout is a later step. The badges moved in from 40 px off the screen edges to the safe
+// area (ui-draw.h), which is as close as a TV that overscans can be trusted to show.
+#define HUD_TEXT_SIZE      UI_CARD_TITLE_SIZE     // the title, subtitle-language and toast badges: 22/700
+#define HUD_TEXT_WEIGHT    UI_CARD_TITLE_WEIGHT
+#define HUD_BADGE_H        40
+#define HUD_BADGE_PAD_X    16
+#define HUD_TOP_Y          60     // the top badge row (Bild 2's title block starts there too)
+#define HUD_ROW_GAP        12     // the top row -> the toast and the stats panel under it
+#define TOAST_MAX_WIDTH    1000   // ends in "..." past this: a long audio-track name used to be cut off bare
+
+// the times either side of the bar, in fixed-width digits (ui-draw.h) so they no longer twitch as they
+// count, and outlined, as there is nothing behind them but the picture
+#define TIME_TEXT_SIZE     24
+#define TIME_TEXT_WEIGHT   UI_WEIGHT_BOLD
+#define TIME_BAR_GAP       20     // between a time and its end of the bar
+#define TEXT_OUTLINE       2      // px of dark outline round text drawn straight onto the video
+
+// "Loading..." and the failure reason, centred on the black screen
+#define STATUS_TEXT_SIZE   24
+#define STATUS_TEXT_WEIGHT UI_WEIGHT_BOLD
+
 // subtitles: triangle cycles off -> track 1 -> track 2 -> ... -> off; the active cue draws above the
-// seek bar, and the HUD shows the chosen language top-right while the controls are up.
+// seek bar, and the HUD shows the chosen language top-right while the controls are up. The cue stays in
+// FONT_POP (uiGetFallbackFont): the caption languages offered are the ones that font was checked to render.
 #define SUBTITLE_TEXT_SIZE 30
 
 // the "Skip by choice" offer panel
 #define SKIP_PROMPT_TEXT   24
-#define SKIP_PROMPT_GLYPH  26
+#define SKIP_PROMPT_WEIGHT UI_WEIGHT_EXTRABOLD   // "Skip sponsor" in Bild 2: 24/800
+#define SKIP_PROMPT_GLYPH  UI_HINT_GLYPH_H       // as tall as the button-hint glyphs on the other screens
 #define SKIP_PROMPT_PAD    14
+#define SKIP_PROMPT_FRAME  2     // the accent frame round the panel; it counts towards the safe area too
+#define SKIP_PROMPT_GAP    12    // glyph -> text
 
-// description overlay: SELECT toggles the description full-screen; up/down scroll it.
+// description overlay: SELECT toggles the description full-screen; up/down scroll it. Body text (Ember
+// 22-24/400) at the larger end, as a whole page of it is read from the sofa.
 #define DESCRIPTION_MARGIN_X    120
 #define DESCRIPTION_MARGIN_Y    80
 #define DESCRIPTION_TEXT_SIZE   24
+#define DESCRIPTION_TEXT_WEIGHT UI_BODY_WEIGHT
 #define DESCRIPTION_SCROLL_STEP 40
+#define DESCRIPTION_MAX_CUTS    8    // shortening steps for a text too long to render (renderDescription)
 
 // chapter picker: START toggles a centred list of the video's chapters; up/down select
 // (the window follows the selection), cross jumps there, circle/START close without jumping.
 #define CHAPTER_TEXT_SIZE    24
+#define CHAPTER_TITLE_WEIGHT UI_WEIGHT_BOLD       // a row title (Ember 22-24/700); the time beside it 600
+#define CHAPTER_TIME_WEIGHT  UI_WEIGHT_SEMIBOLD
 #define CHAPTER_ROW_HEIGHT   46
 #define CHAPTER_VISIBLE_ROWS 12
 #define CHAPTER_TIME_GAP     24   // between the right-aligned time column and the title column
@@ -172,11 +206,17 @@ static struct {
 } state;
 
 #define STAT_LINES 4
+// R3's stats panel: in body text, under the top badge row (it used to lie beneath the title badge)
+#define STATS_TEXT_SIZE    UI_BODY_SIZE
+#define STATS_TEXT_WEIGHT  UI_BODY_WEIGHT
+#define STATS_PANEL_W      500
+#define STATS_PAD          16
+#define STATS_LINE_H       32
 
-static Font  font;
+// The fonts are the app's shared ones (ui-fonts.h), opened once in main.c: none is opened or closed here.
 static Label statusLabel;
 static Label statLabels[STAT_LINES];
-static Label timeLeftLabel, timeRightLabel;   // seek bar: current time (left) / total (right)
+static UiDigits timeDigits;                   // seek bar: current time (left) / total (right), fixed-width
 static Label toastLabel;                      // brief centred toast ("Skipped ...", "Subtitles: ...")
 static Label skipPromptLabel;                 // "Skip intro" on the offer panel
 static Label titleLabel;                      // video title, top-left while the seek bar is up
@@ -354,24 +394,29 @@ static void initPlay(void)
    state.screenW = getGfxScreenWidth();
    state.screenH = getGfxScreenHeight();
 
-   font = openSystemFont(FONT_POP);
-   initLabel(&statusLabel, &font, 0, 0, 1400, AUTO, 28, activeTheme->textPrimary, TEXT_NOWRAP, "");
+   // fixed text - the app's own English and numbers - is Manrope
+   uiInitLabel(&statusLabel, STATUS_TEXT_WEIGHT, 0, 0, 1400, STATUS_TEXT_SIZE, activeTheme->textPrimary, TEXT_NOWRAP, "");
    for (int i = 0; i < STAT_LINES; i++)
-      initLabel(&statLabels[i], &font, 0, 0, 600, AUTO, 22, activeTheme->textPrimary, TEXT_NOWRAP, "");
-   initLabel(&timeLeftLabel,  &font, 0, 0, 200, AUTO, 22, activeTheme->textPrimary, TEXT_NOWRAP, "");
-   initLabel(&timeRightLabel, &font, 0, 0, 200, AUTO, 22, activeTheme->textPrimary, TEXT_NOWRAP, "");
-   initLabelRaw(&toastLabel, &font, 0, 0, 700, AUTO, 22, activeTheme->textPrimary, TEXT_NOWRAP, "");   // raw: shows track names
-   initLabel(&skipPromptLabel, &font, 0, 0, AUTO, AUTO, SKIP_PROMPT_TEXT, activeTheme->textPrimary, TEXT_NOWRAP, "");
-   initLabelRaw(&titleLabel, &font, 0, 0, 1100, AUTO, 22, activeTheme->textPrimary, TEXT_NOWRAP_ELLIPSIS, "");
-   initLabelRaw(&subtitleLabel, &font, 0, 0, 1600, AUTO, SUBTITLE_TEXT_SIZE, activeTheme->textPrimary, TEXT_WRAP, "");
-   initLabelRaw(&subsHudLabel, &font, 0, 0, 500, AUTO, 22, activeTheme->textPrimary, TEXT_NOWRAP_ELLIPSIS, "");
+      uiInitLabel(&statLabels[i], STATS_TEXT_WEIGHT, 0, 0, STATS_PANEL_W - 2 * STATS_PAD, STATS_TEXT_SIZE,
+                  activeTheme->textPrimary, TEXT_NOWRAP, "");
+   uiInitDigits(&timeDigits, TIME_TEXT_WEIGHT, TIME_TEXT_SIZE);
+   uiInitLabel(&skipPromptLabel, SKIP_PROMPT_WEIGHT, 0, 0, AUTO, SKIP_PROMPT_TEXT, activeTheme->textPrimary, TEXT_NOWRAP, "");
+   // text from YouTube - the title, track names (in the toasts and the subtitle badge), chapter titles - is
+   // raw, and the whole of it is FONT_POP whenever Manrope lacks one of its characters (uiSetTextLabel)
+   uiInitTextLabel(&toastLabel, HUD_TEXT_WEIGHT, 0, 0, TOAST_MAX_WIDTH, HUD_TEXT_SIZE, activeTheme->textPrimary,
+                   TEXT_NOWRAP_ELLIPSIS, "");
+   uiInitTextLabel(&titleLabel, HUD_TEXT_WEIGHT, 0, 0, 1100, HUD_TEXT_SIZE, activeTheme->textPrimary, TEXT_NOWRAP_ELLIPSIS, "");
+   uiInitTextLabel(&subsHudLabel, HUD_TEXT_WEIGHT, 0, 0, 500, HUD_TEXT_SIZE, activeTheme->textPrimary, TEXT_NOWRAP_ELLIPSIS, "");
    for (int i = 0; i < MAX_CHAPTERS; i++) {
-      initLabelRaw(&chapterLabels[i], &font, 0, 0, 990, AUTO, CHAPTER_TEXT_SIZE, activeTheme->textPrimary, TEXT_NOWRAP_ELLIPSIS, "");
-      initLabel(&chapterTimeLabels[i], &font, 0, 0, 150, AUTO, CHAPTER_TEXT_SIZE, activeTheme->textSecondary, TEXT_NOWRAP, "");
+      uiInitTextLabel(&chapterLabels[i], CHAPTER_TITLE_WEIGHT, 0, 0, 990, CHAPTER_TEXT_SIZE, activeTheme->textPrimary,
+                      TEXT_NOWRAP_ELLIPSIS, "");
+      uiInitLabel(&chapterTimeLabels[i], CHAPTER_TIME_WEIGHT, 0, 0, 150, CHAPTER_TEXT_SIZE, activeTheme->textSecondary,
+                  TEXT_NOWRAP, "");
    }
+   initLabelRaw(&subtitleLabel, uiGetFallbackFont(), 0, 0, 1600, AUTO, SUBTITLE_TEXT_SIZE, activeTheme->textPrimary, TEXT_WRAP, "");
    state.subtitlePick = state.subtitleFetched = -1;   // default off (memset left them 0)
 
-   initVolumeMeter(&volumeMeter, &font, activeTheme->accent, volumeLevel);
+   initVolumeMeter(&volumeMeter, uiGetFont(VOLUME_NUMBER_WEIGHT), activeTheme->accent, volumeLevel);
    layoutVolumeMeter(&volumeMeter, state.screenW, state.screenH);
 
    state.threadActive = (spawnJoinableThread(&state.workerTid, worker, 0,
@@ -397,7 +442,7 @@ static void formatTime(char *buffer, int cap, int seconds)
 
 static void showToast(const char *text)
 {
-   setLabelText(&toastLabel, text);
+   uiSetTextLabel(&toastLabel, HUD_TEXT_WEIGHT, text);   // may carry a track name or a chapter title
    state.toastShownUs = sys_time_get_system_time();
    showControls();
 }
@@ -425,7 +470,7 @@ static void cycleSubtitles(void)
    char hud[64];
    if (state.subtitlePick < 0) strCopy(hud, sizeof hud, "Subtitles: Off");
    else snprintf(hud, sizeof hud, "Subtitles: %s", state.captionTracks[state.subtitlePick].name);
-   setLabelText(&subsHudLabel, hud);
+   uiSetTextLabel(&subsHudLabel, HUD_TEXT_WEIGHT, hud);
    showControls();
 }
 
@@ -627,13 +672,54 @@ static void autoSkipSponsor(void)
    }
 }
 
+// Rasterises the description into descriptionTexture: the whole text in Manrope, or the whole text in
+// FONT_POP when Manrope lacks any character of it (emoji are common in descriptions).
+//
+// The renderer refuses a text whose wrapped surface would pass its 16 MB scratch limit (font.c) and leaves
+// the texture empty. At this width that is about 72 lines of Manrope at 24 px - fewer than FONT_POP fits at
+// the same size, as Manrope's line pitch is taller. So a text Manrope cannot fit is first tried whole in
+// FONT_POP, which shows everything a description showed before v0.14. Only a text too long for FONT_POP as
+// well - which used to leave the overlay blank - loses its last quarter (back to a line break where there is
+// one), ends in "...", and is tried again; a refused attempt costs only the layout pass.
+static void renderDescription(void)
+{
+   static char text[sizeof state.description + 8];   // + room for the "\n..." a shortened text ends in
+   strCopy(text, (int)sizeof text, state.description[0] ? state.description : "No description.");
+   int width = state.screenW - 2 * DESCRIPTION_MARGIN_X;
+   Font *font = uiPickFont(DESCRIPTION_TEXT_WEIGHT, text);
+
+   for (int cuts = 0; ; ) {
+      renderFontRaw(&descriptionTexture, font, DESCRIPTION_TEXT_SIZE, text, activeTheme->textPrimary, width, TEXT_WRAP);
+      int length = (int)strlen(text);
+      if (descriptionTexture.tex.w > 0) {
+         if (cuts > 0) logInfo("[yt] description shortened to %d bytes to fit the text renderer\n", length);
+         return;
+      }
+      if (font != uiGetFallbackFont()) {   // too tall in Manrope: the whole of it in FONT_POP before any cut
+         logInfo("[yt] description too long for Manrope (%d bytes), trying FONT_POP\n", length);
+         font = uiGetFallbackFont();
+         continue;
+      }
+      if (cuts >= DESCRIPTION_MAX_CUTS || length <= 64) {   // not the length, then (out of VRAM?): give up
+         logError("[yt] description did not render (%d bytes)\n", length);
+         return;
+      }
+      int cut = length * 3 / 4;
+      int lineBreak = cut;
+      while (lineBreak > 0 && text[lineBreak] != '\n') lineBreak--;
+      if (lineBreak > 0) cut = lineBreak;
+      else while (cut > 0 && ((unsigned char)text[cut] & 0xC0) == 0x80) cut--;   // never inside a character
+      strCopy(text + cut, (int)sizeof text - cut, lineBreak > 0 ? "\n..." : "...");
+      cuts++;
+   }
+}
+
 // SELECT opens the description: rasterise the text once, off the draw path, as one tall wrapped
 // texture the draw scrolls through. playback carries on untouched underneath.
 static void openDescription(void)
 {
    if (!state.descriptionRendered) {
-      renderFontRaw(&descriptionTexture, &font, DESCRIPTION_TEXT_SIZE, state.description[0] ? state.description : "No description.",
-                    activeTheme->textPrimary, state.screenW - 2 * DESCRIPTION_MARGIN_X, TEXT_WRAP);
+      renderDescription();
       state.descriptionRendered = 1;
    }
    state.descriptionScroll = 0;
@@ -672,7 +758,7 @@ static void openChapters(void)
          char timeText[16];
          formatTime(timeText, sizeof timeText, (int)state.chapters.chapters[i].start);
          setLabelText(&chapterTimeLabels[i], timeText);
-         setLabelText(&chapterLabels[i], state.chapters.chapters[i].title);
+         uiSetTextLabel(&chapterLabels[i], CHAPTER_TITLE_WEIGHT, state.chapters.chapters[i].title);
          if (chapterTimeLabels[i].tt.tex.w > state.chapterTimeWidth) state.chapterTimeWidth = chapterTimeLabels[i].tt.tex.w;
          if (chapterLabels[i].tt.tex.w > widestTitle) widestTitle = chapterLabels[i].tt.tex.w;
       }
@@ -757,7 +843,7 @@ static void updatePlay(void)
          state.player = state.pendingPlayer;
          state.pendingPlayer = NULL;
          setAudioPcmFeedVolume(getVolumeMeterFraction(&volumeMeter));
-         setLabelText(&titleLabel, state.title);   // rasterise once, off the draw path
+         uiSetTextLabel(&titleLabel, HUD_TEXT_WEIGHT, state.title);   // rasterise once, off the draw path
          state.stage = STAGE_PLAYING;
          if (state.switchPending) {   // an audio switch landed: keep the paused state, and name the track
             setVideoPaused(state.player, state.switchWasPaused);
@@ -826,7 +912,7 @@ static void updatePlay(void)
       else if (state.subtitleTrack->count == 0) {   // fetch failed or empty track: drop to Off, visibly
          state.subtitlePick = state.subtitleFetched = -1;
          state.subtitlesReady = 0;
-         setLabelText(&subsHudLabel, "Subtitles: Off");
+         uiSetTextLabel(&subsHudLabel, HUD_TEXT_WEIGHT, "Subtitles: Off");
          showToast("Subtitles unavailable");
       }
    }
@@ -901,11 +987,15 @@ static void updateStatLabels(void)
    setLabelText(&statLabels[3], line);
 }
 
+// the stats panel sits one row below the title badge, so the two no longer overlap while the controls are up
 static void drawStatsOverlay(void)
 {
-   int x = 40, y = 44, lineHeight = 30;
-   fillGfxRectangle(x - 14, y - 12, 500, STAT_LINES * lineHeight + 14, activeTheme->badgeFill);
-   for (int i = 0; i < STAT_LINES; i++) drawLabelAt(&statLabels[i], x, y + i * lineHeight);
+   int x = UI_SAFE_X, y = HUD_TOP_Y + HUD_BADGE_H + HUD_ROW_GAP;
+   uiFillRounded(x, y, STATS_PANEL_W, STAT_LINES * STATS_LINE_H + 2 * STATS_PAD, UI_RADIUS_ROW, activeTheme->panelOnVideo);
+   for (int i = 0; i < STAT_LINES; i++) {
+      int lineY = y + STATS_PAD + i * STATS_LINE_H;
+      drawLabelAt(&statLabels[i], x + STATS_PAD, uiLabelYForCenter(&statLabels[i], lineY, STATS_LINE_H));
+   }
 }
 
 // seek bar + time show while scrubbing / paused / ended, else auto-hide after the last activity
@@ -932,8 +1022,8 @@ static void drawSponsorSegments(int barLeft, int span, int barTopY, int barH, fl
    }
 }
 
-// a red YouTube-style progress bar low on the screen with current/total time on each side, drawn from
-// plain rectangles (no spritesheet), with sponsor segments marked over the fill.
+// a YouTube-style progress bar in the accent colour, low on the screen with current/total time on each side,
+// drawn from plain rectangles (no spritesheet), with sponsor segments marked over the fill.
 static void drawSeekBar(void)
 {
    float duration = getVideoDurationSeconds(state.player);
@@ -951,39 +1041,50 @@ static void drawSeekBar(void)
    int filledW  = (int)(progress * span);
 
    fillGfxRectangle(barLeft, barTopY, span, barH, activeTheme->seekTrack);
-   fillGfxRectangle(barLeft, barTopY, filledW, barH, activeTheme->accent);   // progress (youtube red)
+   fillGfxRectangle(barLeft, barTopY, filledW, barH, activeTheme->accent);   // progress (the theme accent)
    if (state.sbReady) drawSponsorSegments(barLeft, span, barTopY, barH, duration);
    if (duration > 0.0f)   // chapter boundaries notch the bar, youtube-style
       for (int i = 1; i < state.chapters.count; i++)
          fillGfxRectangle(barLeft + (int)(state.chapters.chapters[i].start / duration * span), barTopY, 3, barH, activeTheme->seekNotch);
    fillGfxRectangle(barLeft + filledW - 3, barY - 11, 6, 22, activeTheme->textPrimary);   // scrubber handle
 
+   // the times: the digits are pre-rendered (timeDigits), so nothing is rasterised here however often they
+   // change; the position is right-aligned to the bar, the total (secondary, as in Bild 2) starts after it
    char text[16];
-   formatTime(text, sizeof text, (int)position);            setLabelText(&timeLeftLabel, text);
-   formatTime(text, sizeof text, (int)(duration + 0.5f));   setLabelText(&timeRightLabel, text);
-   drawLabelAt(&timeLeftLabel,  barLeft - 20 - timeLeftLabel.tt.tex.w, barY - timeLeftLabel.tt.tex.h / 2);
-   drawLabelAt(&timeRightLabel, barRight + 20, barY - timeRightLabel.tt.tex.h / 2);
+   int timeY = uiTextYForCenter(timeDigits.font, timeDigits.size, barTopY, barH);
+   formatTime(text, sizeof text, (int)position);
+   uiDrawDigitsOutlined(&timeDigits, barLeft - TIME_BAR_GAP - uiGetDigitsWidth(&timeDigits, text), timeY, text,
+                        activeTheme->textPrimary, activeTheme->gradientBase, TEXT_OUTLINE);
+   formatTime(text, sizeof text, (int)(duration + 0.5f));
+   uiDrawDigitsOutlined(&timeDigits, barRight + TIME_BAR_GAP, timeY, text,
+                        activeTheme->textSecondary, activeTheme->gradientBase, TEXT_OUTLINE);
 }
 
-// a top-of-screen HUD badge in the thumbnails' duration-tag style: label on a translucent black box,
-// with breathing room either side so the text never touches the box edges.
-#define BADGE_PAD_X 14
-
-static void drawBadge(Label *label, int x, int y)
+// a top-of-screen HUD badge in the thumbnails' badge style: label on a rounded, translucent box, with
+// breathing room either side so the text never touches the box edges. The box has a fixed height and the
+// label's capitals are centred in it (uiDrawTextBox), so a title that fell back to FONT_POP sits as level
+// as a Manrope one. `fill` is chipOnVideo for the badges, panelOnVideo for the toast.
+static void drawHudBadge(const Label *label, int x, int y, uint32_t fill)
 {
-   fillGfxRectangle(x, y, label->tt.tex.w + 2 * BADGE_PAD_X, label->tt.tex.h + 8, activeTheme->badgeFill);
-   drawLabelAt(label, x + BADGE_PAD_X, y + 4);
+   uiDrawTextBox(x, y, HUD_BADGE_H, HUD_BADGE_PAD_X, UI_RADIUS_BADGE, label, fill);
+}
+
+// the x that ends a HUD badge on the safe area's right edge
+static int rightAlignedHudBadgeX(const Label *label)
+{
+   return UI_SAFE_RIGHT - uiGetTextBoxWidth(label, HUD_BADGE_PAD_X);
 }
 
 // title top-left + chosen subtitle language top-right, shown whenever the seek bar is up.
 static void drawTitle(void)
 {
-   if (titleLabel.tt.tex.w > 0) drawBadge(&titleLabel, 40, 32);
+   if (titleLabel.tt.tex.w > 0) drawHudBadge(&titleLabel, UI_SAFE_X, HUD_TOP_Y, activeTheme->chipOnVideo);
 }
 
 static void drawSubsHud(void)
 {
-   if (subsHudLabel.tt.tex.w > 0) drawBadge(&subsHudLabel, state.screenW - 40 - (subsHudLabel.tt.tex.w + 2 * BADGE_PAD_X), 32);
+   if (subsHudLabel.tt.tex.w > 0)
+      drawHudBadge(&subsHudLabel, rightAlignedHudBadgeX(&subsHudLabel), HUD_TOP_Y, activeTheme->chipOnVideo);
 }
 
 // the active subtitle cue, centred above the seek bar on a dim backdrop.
@@ -992,7 +1093,8 @@ static void drawSubtitle(void)
    if (state.subtitlePick < 0 || subtitleLabel.tt.tex.w == 0) return;
    int x = state.screenW / 2 - subtitleLabel.tt.tex.w / 2;
    int y = (int)(state.screenH * 0.94f) - 40 - subtitleLabel.tt.tex.h;
-   fillGfxRectangle(x - 12, y - 6, subtitleLabel.tt.tex.w + 24, subtitleLabel.tt.tex.h + 12, activeTheme->badgeFill);
+   uiFillRounded(x - 12, y - 6, subtitleLabel.tt.tex.w + 24, subtitleLabel.tt.tex.h + 12, UI_RADIUS_BADGE,
+                 activeTheme->badgeFill);
    drawLabelAt(&subtitleLabel, x, y);
 }
 
@@ -1015,7 +1117,7 @@ static void drawDescription(void)
 }
 
 // the chapter picker: a dim layer, then a centred column of rows windowed around the selection;
-// the selected row gets a subtle highlight with a youtube-red accent on its left edge.
+// the selected row gets a subtle highlight with an accent bar on its left edge.
 static void drawChapters(void)
 {
    fillGfxRectangle(0, 0, state.screenW, state.screenH, activeTheme->scrim);
@@ -1035,11 +1137,13 @@ static void drawChapters(void)
       int rowY  = topY + row * CHAPTER_ROW_HEIGHT;
       if (index == state.chapterSelected) {
          fillGfxRectangle(panelX - 19, rowY, state.chapterPanelWidth + 43, CHAPTER_ROW_HEIGHT, activeTheme->rowHighlight);
-         fillGfxRectangle(panelX - 24, rowY, 5, CHAPTER_ROW_HEIGHT, activeTheme->accent);   // red accent, flush with the highlight
+         fillGfxRectangle(panelX - 24, rowY, 5, CHAPTER_ROW_HEIGHT, activeTheme->accent);   // accent bar, flush with the highlight
       }
+      // capitals centred by each label's own measured font: a title that fell back to FONT_POP stays level
+      // with its Manrope time
       drawLabelAt(&chapterTimeLabels[index], panelX + state.chapterTimeWidth - chapterTimeLabels[index].tt.tex.w,
-                  getCenteredLabelY(&chapterTimeLabels[index], rowY, CHAPTER_ROW_HEIGHT));
-      drawLabelAt(&chapterLabels[index], titleX, getCenteredLabelY(&chapterLabels[index], rowY, CHAPTER_ROW_HEIGHT));
+                  uiLabelYForCenter(&chapterTimeLabels[index], rowY, CHAPTER_ROW_HEIGHT));
+      drawLabelAt(&chapterLabels[index], titleX, uiLabelYForCenter(&chapterLabels[index], rowY, CHAPTER_ROW_HEIGHT));
    }
 }
 
@@ -1047,7 +1151,9 @@ static void drawChapters(void)
 static void drawToast(void)
 {
    if (state.toastShownUs == 0 || sys_time_get_system_time() - state.toastShownUs >= TOAST_VISIBLE_US) return;
-   drawBadge(&toastLabel, state.screenW - 40 - (toastLabel.tt.tex.w + 2 * BADGE_PAD_X), 80);
+   if (toastLabel.tt.tex.w <= 0) return;
+   drawHudBadge(&toastLabel, rightAlignedHudBadgeX(&toastLabel), HUD_TOP_Y + HUD_BADGE_H + HUD_ROW_GAP,
+                activeTheme->panelOnVideo);
 }
 
 // The offer panel: a Triangle glyph and "Skip <category>", on the right where the eye is not busy with the
@@ -1059,21 +1165,23 @@ static void drawSkipPrompt(void)
 
    GfxTexture glyph = getConsoleGlyph(GLYPH_TRIANGLE);
    int glyphW = glyph.h > 0 ? glyph.w * SKIP_PROMPT_GLYPH / glyph.h : SKIP_PROMPT_GLYPH;
-   int panelW = SKIP_PROMPT_PAD * 2 + glyphW + 12 + skipPromptLabel.tt.tex.w;
+   int panelW = SKIP_PROMPT_PAD * 2 + glyphW + SKIP_PROMPT_GAP + skipPromptLabel.tt.tex.w;
    int panelH = SKIP_PROMPT_PAD * 2 + SKIP_PROMPT_GLYPH;
-   int x = state.screenW - 60 - panelW, y = state.screenH - 220 - panelH;
+   int x = UI_SAFE_RIGHT - SKIP_PROMPT_FRAME - panelW, y = state.screenH - 220 - panelH;
 
-   fillGfxRectangle(x - 2, y - 2, panelW + 4, panelH + 4, activeTheme->accent);
-   fillGfxRectangle(x, y, panelW, panelH, activeTheme->badgeFill);
+   // the 2-px accent frame round the dark panel stays, so a borrowed Triangle is hard to miss; both take
+   // Bild 2's rounded corners. The glyph is the console's own art, untinted.
+   uiFillRounded(x - SKIP_PROMPT_FRAME, y - SKIP_PROMPT_FRAME, panelW + 2 * SKIP_PROMPT_FRAME,
+                 panelH + 2 * SKIP_PROMPT_FRAME, UI_RADIUS_ROW + SKIP_PROMPT_FRAME, activeTheme->accent);
+   uiFillRounded(x, y, panelW, panelH, UI_RADIUS_ROW, activeTheme->panelOnVideo);
    if (glyph.offset)
       drawGfxTexture(x + SKIP_PROMPT_PAD, y + SKIP_PROMPT_PAD, glyphW, SKIP_PROMPT_GLYPH, glyph, 0, 0, 1, 1, 0xFFFFFFFF, GFX_FILTER_LINEAR);
-   drawLabelAt(&skipPromptLabel, x + SKIP_PROMPT_PAD + glyphW + 12,
-               y + (panelH - skipPromptLabel.tt.tex.h) / 2);
+   drawLabelAt(&skipPromptLabel, x + SKIP_PROMPT_PAD + glyphW + SKIP_PROMPT_GAP, uiLabelYForCenter(&skipPromptLabel, y, panelH));
 }
 
 static void drawPlay(void)
 {
-   fillGfxRectangle(0, 0, state.screenW, state.screenH, COLOR_BLACK);   // letterbox bars read as black, not the app background
+   fillGfxRectangle(0, 0, state.screenW, state.screenH, activeTheme->letterbox);   // letterbox bars read as black, not the app background
 
    const uint8_t *frame = NULL;
    if (state.player) {
@@ -1099,7 +1207,7 @@ static void drawPlay(void)
    // until the first frame is presented (open, then the async resume seek's reload) keep the loading
    // status up instead of a black screen; with no player this shows the failure message.
    if (!state.firstFrameSeen)
-      drawLabelAt(&statusLabel, state.screenW / 2 - statusLabel.tt.tex.w / 2, state.screenH / 2 - 14);
+      drawLabelAt(&statusLabel, state.screenW / 2 - statusLabel.tt.tex.w / 2, uiLabelYForCenter(&statusLabel, 0, state.screenH));
 }
 
 static void termPlay(void)
@@ -1120,8 +1228,7 @@ static void termPlay(void)
    if (state.pendingPlayer) { destroyVideoPlayer(state.pendingPlayer); state.pendingPlayer = NULL; }
    freeLabel(&statusLabel);
    for (int i = 0; i < STAT_LINES; i++) freeLabel(&statLabels[i]);
-   freeLabel(&timeLeftLabel);
-   freeLabel(&timeRightLabel);
+   uiFreeDigits(&timeDigits);
    freeLabel(&toastLabel);
    freeLabel(&skipPromptLabel);
    freeLabel(&titleLabel);
@@ -1130,7 +1237,8 @@ static void termPlay(void)
    for (int i = 0; i < MAX_CHAPTERS; i++) { freeLabel(&chapterLabels[i]); freeLabel(&chapterTimeLabels[i]); }
    freeVolumeMeter(&volumeMeter);
    freeTextTexture(&descriptionTexture);
-   closeFont(&font);
+   // no closeFont: the fonts are the app's shared ones, and closing one would blank every label on every
+   // screen still using it (ui-fonts.h)
 }
 
 Screen playScreen = { initPlay, NULL, updatePlay, drawPlay, NULL, termPlay, SCREEN_TERMINATED };

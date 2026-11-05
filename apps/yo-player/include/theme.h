@@ -1,41 +1,64 @@
 #pragma once
 
 // theme.h - yo-player's palette as one runtime-swappable struct, so every colour the UI draws comes
-// from one place (nothing is a sprite; all chrome is flat rectangles + text). The shipped theme is
-// YouTube's own dark palette.
+// from one place. The shipped theme is TEE's own "Ember" palette (warm near-black, cream text, TEE orange
+// as the only accent); rounded shapes are white helper textures tinted with these colours (ui-draw.h).
 //
-// Themes live in /dev_hdd0/tmp/yo-player/themes.txt, written on first launch with the built-in
-// YouTube block so every key is visible to edit over FTP. Edit that block to restyle the app, or add
-// a [Name] block of your own and point settings.txt at it with "theme=<name>" (lower case, spaces ->
-// hyphens). There is no in-app theme switcher: colours are read at startup and apply on next launch.
+// Themes live in themes.txt in the app's data directory (getAppDataDir(), see app-paths.h), written on
+// first launch with the built-in [TEE] block so every key is visible to edit over FTP. Edit that block to
+// restyle the app, or add a [Name] block of your own and point settings.txt at it with "theme=<name>"
+// (lower case, spaces -> hyphens). There is no in-app theme switcher: colours are read at startup and
+// apply on next launch.
 
 #include <stdint.h>
 
 typedef struct {
-   uint32_t appBg;              // whole-screen background
-   uint32_t surface;            // raised surface: thumbnail placeholder before the image lands
-   uint32_t accent;             // youtube red: seek-bar fill, LIVE badge, volume pills, chapter accent
-   uint32_t focusBorder;        // ring around the selected thumbnail
-   uint32_t focusGlow;          // wider, translucent ring drawn outside focusBorder - the console has no
-                                // blur, so a second faint ring is what makes the selection read as a glow
+   uint32_t appBg;              // whole-screen background (Ember "bg"); also the colour list fades end in
+   uint32_t surface;            // raised surface (Ember "surface-2"): chips, fields, the rail, the thumbnail
+                                // placeholder before the image lands
+   uint32_t accent;             // TEE orange: seek-bar fill, progress, the selected value, volume fill
+   uint32_t focusBorder;        // the focus ring around the selected thumbnail, row or card
+   uint32_t focusGlow;          // tints the soft glow texture drawn under the focus ring (Ember
+                                // "accent-glow") - the console has no blur, so the glow is a texture
 
-   uint32_t textPrimary;        // titles, durations, times
-   uint32_t textSecondary;      // channel / views / age lines, button hints, sort label
+   uint32_t textPrimary;        // titles, values, durations, times (Ember "text-1")
+   uint32_t textSecondary;      // channel / views / age lines, button hints, descriptions (Ember "text-2")
 
    uint32_t badgeFill;          // translucent black behind every small overlay box (badges, stats, subtitles)
    uint32_t scrim;              // dims the video behind a full-screen overlay (description, chapters)
    uint32_t rowHighlight;       // selected row in the chapter picker
 
-   uint32_t seekTrack;          // unplayed part of the seek bar
-   uint32_t seekNotch;          // chapter boundary marks on the seek bar
+   uint32_t seekTrack;          // unplayed part of the seek bar (Ember "zeitleiste")
+   uint32_t seekNotch;          // chapter boundary marks on the seek bar (the gaps between chapters in the
+                                // Ember timeline)
    uint32_t watchedThumbTint;   // already-watched tiles: opaque darkening applied to the thumbnail
 
-   int focusThickness;          // how far the focus ring extends past the thumbnail (px)
+   // ---- Ember tokens (UEBERGABE 3.1) that the struct did not have before v0.14 ----
+   uint32_t surface1;           // "surface-1": cards, panels, the focused search row
+   uint32_t surface3;           // "surface-3": the chosen value while it is not focused ("calmly selected")
+   uint32_t textTertiary;       // "text-3": channel . date in cards - only at 20 px or larger (18 px grey
+                                // text was unreadable on the TV once already, see theme.c)
+   uint32_t accentSoft;         // "accent-soft": the surface of a selected item (rail entry, chip), 20 %
+   uint32_t accentText;         // "accent-text": text on accentSoft
+   uint32_t onAccent;           // "on-accent": text on the solid accent (logo tile, selected segment)
+   uint32_t live;               // the LIVE badge
+   uint32_t knobGlow;           // glow around the timeline knob in the player (accent at 50 %)
+   uint32_t hintFill;           // "tasten-flaeche": plate behind key symbols on page backgrounds (.12)
+   uint32_t hintFillOnVideo;    // the same over the video (.14)
+   uint32_t chipOnVideo;        // "auf-video": chips over the video (.72)
+   uint32_t panelOnVideo;       // "auf-video": panels over the video - skip offer, toasts, volume (.86)
+   uint32_t progressTrack;      // unplayed part of a started card's progress bar inside its thumbnail
+   uint32_t hairline;           // thin separators and 2-px inset borders on the dark surfaces
+   uint32_t gradientBase;       // the dark the player's top and bottom gradients fade into (alpha per stop)
+   uint32_t letterbox;          // behind the video picture: the bars around a frame that does not fill 16:9
+
+   int focusThickness;          // width of the focus ring in px (Ember: 4; the ring sits 5 px off the card)
 } Theme;
 
-// the palette in use; never NULL (points at the built-in YouTube theme until initTheme runs).
+// the palette in use; never NULL (points at the built-in TEE theme until initTheme runs).
 extern const Theme *activeTheme;
 
-// reads themes.txt (creating it from the built-in when missing) and selects the theme settings.txt
-// names. call once at startup, after the VFS is up and before anything draws or rasterises a label.
+// reads themes.txt (creating it from the built-in when missing, or replacing it - after a backup to
+// themes.txt.bak - when it predates the current palette) and selects the theme settings.txt names. call
+// once at startup, after the VFS is up and before anything draws or rasterises a label.
 void initTheme(void);

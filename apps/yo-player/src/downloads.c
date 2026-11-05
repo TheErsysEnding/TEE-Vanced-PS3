@@ -12,6 +12,9 @@
 #include "string-utilities.h"   // strCopy
 #include "font.h"
 #include "ui/label.h"
+#include "ui-fonts.h"           // the shared fonts and the label helpers: the overlay opens no font of its own
+#include "ui-draw.h"            // safe area, rounded fill, fixed-width digits
+#include "ui-hints.h"           // UI_HINTS_BOTTOM_Y: the overlay sits just above the hint row
 #include "theme.h"
 #include "gfx.h"
 #include "dbg.h"
@@ -22,7 +25,15 @@
 
 #define MAX_QUEUE          16
 #define DISPLAY_TITLE_MAX  32       // longest title shown in the "Downloading ..." overlay
-#define OVERLAY_TEXT_SIZE  19       // matches the grid's Watch Later / duration badge
+// The overlay carries a title, so its text is reading text (20/600), not badge text (18/800). The percent
+// counts up while it is on screen and is drawn in fixed-width digits: Manrope's own digits are proportional,
+// and the overlay's left edge would twitch at every step.
+#define OVERLAY_TEXT_SIZE  UI_META_SIZE
+#define OVERLAY_WEIGHT     UI_META_WEIGHT
+#define OVERLAY_H          UI_HINT_GLYPH_H   // as tall as the hint glyphs under it
+#define OVERLAY_PAD_X      14
+#define OVERLAY_GAP        20       // between the overlay and the hint row under it
+#define OVERLAY_TEXT_MAX_W 560      // a guard: 32 bytes of title come to about 500 px with the words round it
 
 typedef struct { char videoId[16]; char title[160]; } QueueItem;
 
@@ -42,8 +53,10 @@ static struct {
    int              initialized;
 } dl;
 
-static Font  font;
-static Label overlayLabel;
+static Label    overlayLabel;      // `Downloading "<title>"`
+static Label    queueLabel;        // "(+N)" while more downloads wait behind this one, else empty
+static UiDigits percentDigits;     // the percent, in fixed-width digits
+static char     percentText[8];    // " NN%" - the space before the number is part of it
 
 // ---- filename ----
 
@@ -198,7 +211,8 @@ void enqueueDownload(const SearchResult *item)
 // ---- overlay ----
 
 // "Downloading "<title>" NN%" with the title truncated so it can't fill the screen; "(+N)" when more are
-// queued.
+// queued. The title part is one label; the percent and the "(+N)" are drawn after it (drawDownloadOverlay),
+// so neither a count nor a percent step has to re-render the title.
 static void formatOverlay(char *out, int cap)
 {
    char clipped[sizeof dl.activeTitle];
@@ -206,9 +220,7 @@ static void formatOverlay(char *out, int cap)
    truncateUtf8(clipped, DISPLAY_TITLE_MAX);
    int truncated = strcmp(clipped, dl.activeTitle) != 0;
 
-   int queued = dl.count;
-   if (queued > 0) snprintf(out, cap, "Downloading \"%s%s\" %d%% (+%d)", clipped, truncated ? "..." : "", dl.percent, queued);
-   else            snprintf(out, cap, "Downloading \"%s%s\" %d%%", clipped, truncated ? "..." : "", dl.percent);
+   snprintf(out, cap, "Downloading \"%s%s\"", clipped, truncated ? "..." : "");
 }
 
 void updateDownloadOverlay(void)
@@ -216,16 +228,42 @@ void updateDownloadOverlay(void)
    if (!dl.initialized || !dl.active) return;
    char text[128];
    formatOverlay(text, sizeof text);
-   setLabelText(&overlayLabel, text);   // only rasterises on a real change
+   // a video title: drawn raw, and all of it in FONT_POP when Manrope lacks one of its characters. It only
+   // rasterises when the title changes, the "(+N)" when the count does, and the percent never (its digits
+   // were rendered once, in initDownloads).
+   uiSetTextLabel(&overlayLabel, OVERLAY_WEIGHT, text);
+
+   char queued[16] = "";
+   int count = dl.count;
+   if (count > 0) snprintf(queued, sizeof queued, "(+%d)", count);
+   setLabelText(&queueLabel, queued);
+   snprintf(percentText, sizeof percentText, " %d%%", dl.percent);
 }
 
+// Above the right end of the hint row, inside the safe area. Until v0.13 it sat 6 px from the screen's top
+// right corner - outside the safe area, where a TV's overscan can cut it off. Home and Search both draw it,
+// and in their list view this corner is free: the result rows keep to the left column, and the preview of the
+// selection in the right one ends far higher up.
 void drawDownloadOverlay(int screenWidth)
 {
    if (!dl.initialized || !dl.active || overlayLabel.tt.tex.w == 0) return;
-   int badgeW = overlayLabel.tt.tex.w + 12, badgeH = OVERLAY_TEXT_SIZE + 8;
-   int x = screenWidth - badgeW - 6, y = 6;
-   fillGfxRectangle(x, y, badgeW, badgeH, activeTheme->badgeFill);
-   drawLabelAt(&overlayLabel, x + 6, y + 4);
+
+   int spaceW   = uiGetDigitsWidth(&percentDigits, " ");
+   int percentW = uiGetDigitsWidth(&percentDigits, percentText);
+   int queueW   = queueLabel.tt.tex.w > 0 ? spaceW + queueLabel.tt.tex.w : 0;
+   int badgeW   = OVERLAY_PAD_X + overlayLabel.tt.tex.w + percentW + queueW + OVERLAY_PAD_X;
+   int x = screenWidth - UI_SAFE_X - badgeW, y = UI_HINTS_BOTTOM_Y - OVERLAY_GAP - OVERLAY_H;
+   uiFillRounded(x, y, badgeW, OVERLAY_H, UI_RADIUS_BADGE, activeTheme->surface);
+
+   // the three parts share one baseline: the title may have fallen back to FONT_POP, which puts its capitals
+   // at another height in its texture than Manrope does
+   int digitsY  = uiTextYForCenter(percentDigits.font, percentDigits.size, y, OVERLAY_H);
+   int baseline = digitsY + uiGetTextMetrics(percentDigits.font, percentDigits.size).baseline;
+   int textX    = x + OVERLAY_PAD_X;
+   uiDrawLabelAt(&overlayLabel, textX, uiLabelYForBaseline(&overlayLabel, baseline));
+   textX += overlayLabel.tt.tex.w;
+   uiDrawDigits(&percentDigits, textX, digitsY, percentText, activeTheme->textPrimary);
+   if (queueW > 0) uiDrawLabelAt(&queueLabel, textX + percentW + spaceW, uiLabelYForBaseline(&queueLabel, baseline));
 }
 
 // ---- lifecycle ----
@@ -234,8 +272,11 @@ void initDownloads(void)
 {
    memset(&dl, 0, sizeof dl);
    createLock(&dl.mutex);
-   font = openSystemFont(FONT_POP);
-   initLabel(&overlayLabel, &font, 0, 0, AUTO, AUTO, OVERLAY_TEXT_SIZE, activeTheme->textPrimary, TEXT_NOWRAP, "");
+   // the shared fonts (ui-fonts.h), open since initUiFonts; the digits need gfx, up since initGfx
+   uiInitTextLabel(&overlayLabel, OVERLAY_WEIGHT, 0, 0, OVERLAY_TEXT_MAX_W, OVERLAY_TEXT_SIZE, activeTheme->textPrimary, TEXT_NOWRAP_ELLIPSIS, "");
+   uiInitLabel(&queueLabel, OVERLAY_WEIGHT, 0, 0, AUTO, OVERLAY_TEXT_SIZE, activeTheme->textPrimary, TEXT_NOWRAP, "");
+   uiInitDigits(&percentDigits, OVERLAY_WEIGHT, OVERLAY_TEXT_SIZE);
+   strCopy(percentText, sizeof percentText, " 0%");
    dl.initialized = 1;
 }
 
@@ -245,9 +286,11 @@ void shutdownDownloads(void)
    dl.cancelAll = 1;
    if (dl.workerSpawned) joinThread(dl.worker);
    dl.count = 0;
-   finishGfx();   // the overlay label may have been sampled last frame
+   finishGfx();   // the overlay labels may have been sampled last frame
    freeLabel(&overlayLabel);
-   closeFont(&font);
+   freeLabel(&queueLabel);
+   uiFreeDigits(&percentDigits);
+   // no closeFont: the fonts are shared (main.c closes them in termUiFonts, after this)
    destroyLock(&dl.mutex);
    dl.initialized = 0;
 }

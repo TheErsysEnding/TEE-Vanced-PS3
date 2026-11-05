@@ -13,8 +13,7 @@
 // Icons come from simple-lib-app's embedded icon font (ui/icon-font.h): a Fontello TTF compiled into the
 // library, rasterised once per glyph and tinted per draw. Nothing is shipped, nothing is loaded from disk.
 // The PS3's own font has no magnifier, clock or gear - only the 16 controller glyphs the app already uses.
-
-#include "font.h"
+// The entry names are fixed UI text in the shared Manrope (ui-fonts.h); the rail opens no font of its own.
 
 #define SIDEBAR_WIDTH 92
 
@@ -32,7 +31,7 @@ typedef enum {
    SIDE_COUNT
 } SidebarItem;
 
-void initSidebar(Font *font, int screenH);
+void initSidebar(void);
 void termSidebar(void);
 
 // which entry the content on screen belongs to - drives the "you are here" mark
@@ -45,6 +44,7 @@ void setSidebarFocused(int focused);   // entering also parks the highlight on t
 // Returns the picked entry, or -1 when nothing was picked this frame.
 int  updateSidebar(void);
 
+// the rail (or, while focused, the expanded panel) down the full height of the screen
 void drawSidebar(int screenH);
 
 // Kept for entries that may be added before they work: a dimmed, unpickable row says what is coming without

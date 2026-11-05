@@ -25,6 +25,8 @@
 #include "ui/console-glyphs.h"
 #include "ui/icon-font.h"
 #include "ui/stats.h"
+#include "ui-fonts.h"
+#include "ui-draw.h"
 #include "bridge-client.h"
 #include "dbg.h"
 
@@ -53,6 +55,8 @@ int main(int argc, char **argv)
    if (initAudio() != 0) return 1;
    if (initFont() != 0) return 1;
    if (initIconFont() != 0) logError("[yt] embedded icon font failed to load; icons will be blank\n");
+   initUiFonts();          // Manrope's four weights + one shared FONT_POP, opened once for every screen: memory
+                           // fonts take user-font slots, and there are only 8 (see ui-fonts.h)
    initPad();
 
    initStats(5, 5, 14, activeTheme->textSecondary);
@@ -60,10 +64,13 @@ int main(int argc, char **argv)
    initStorage();          // prefs + watch history; seeds the skip categories from the settings above, so
                            // it has to run AFTER loadSettings, not before
    loadConsoleGlyphs();    // decode the console's own button glyphs for the on-screen hints
+   initUiDraw();           // the Ember helper textures - never before initGfx, whose VRAM setup an earlier
+                           // upload breaks
    initVideoExport();      // resolves the download staging folder, so it runs before initDownloads
    initDownloads();        // background download queue + its progress overlay
 
    logInfo("[yt] net rc=%d\n", netRc);
+   uiLogVram("startup");   // the baseline the later [vram] lines compare against
    openHome();       // boot into the home screen (trending categories)
 
    while (!appExitRequested) {
@@ -82,7 +89,10 @@ int main(int argc, char **argv)
    shutdownDownloads();   // cancel + join any in-flight download before the http/vfs layers go away
    shutdownVideoExport();
    freeConsoleGlyphs();
+   termUiDraw();          // waits for the RSX, then frees the helper textures - while gfx is still up
    termStats();
+   termUiFonts();         // the shared fonts: after the download overlay (the last label user) is gone,
+                          // before termFont tears the font library down under them
    termAudio();
    termFont();
    termGfx();

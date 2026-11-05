@@ -11,13 +11,15 @@
 #include "storage.h"
 #include "downloads.h"
 #include "ps-button.h"
-#include "ui/button-hints.h"
 #include "ui/console-glyphs.h"
+#include "ui-fonts.h"           // the shared fonts, label helpers, text metrics
+#include "ui-draw.h"            // safe area, rounded panel, focus ring
+#include "ui-hints.h"           // the Ember hint rows
 
 #include "gfx.h"
 #include "theme.h"
 #include "pad.h"
-#include "font.h"
+#include "font.h"               // measureFontText
 #include "ui/label.h"
 #include "screen-manager.h"
 #include "osk-input.h"
@@ -26,24 +28,29 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-#define MARGIN_X      50
-#define HEADER_Y      26
-#define TITLE_SIZE    26
-#define GRID_TOP      74
+// The header is a single line: the page title on the left, its capitals level with the top-right hint row's
+// (UI_HINTS_TOP_Y), and right after the title the page counter - or "Loading..." / "No results" while there
+// is no page. The counter used to sit at the top right, which the X / Square / Triangle hints now hold, and
+// the status used to sit where the list starts, which is under the expanded rail panel.
+#define GRID_TOP      140       // the list starts below the header
 #define GRID_LEFT     (SIDEBAR_WIDTH + 26)
+#define TITLE_GAP     20        // the title -> the page counter or status after it
+#define HEADER_GAP    48        // that counter at its widest -> the top-right hint row
+#define TITLE_MIN_W   320       // the title's budget never drops below this, however wide the hints come out
+#define STATUS_SIZE   24        // page counter / status: 24/700 in textSecondary
+#define STATUS_WEIGHT UI_WEIGHT_BOLD
 // The grid's height used to run to the bottom of the screen and simply happened not to reach the hint row.
 // That is not a property anyone should rely on: the row count is derived from the thumbnail size, which is
 // derived from the width, so any future change to either can silently push a row into the hints. Measured,
-// today's layout still fits five rows with room to spare - this reserve is a guard, not a fix.
-#define HINTS_RESERVE 44
-#define HINTS_BOTTOM  42        // hint-row top offset from the screen bottom (overlaid, no layout shift)
-#define HINT_GLYPH_H  25
-#define HINT_TEXT     21
-#define CROSS_HINT    0         // X's slot in the hint row (see initHome): retitled per category
-#define TRIANGLE_HINT 2         // Triangle's slot: "Channel" everywhere, "Unsubscribe" in Subscriptions
-#define NOTICE_PAD    28        // modal box: same shape as the one in search.c
-#define NOTICE_TEXT   26
-#define NOTICE_HINT   20
+// the list fits five rows: the last ends at y 946 and its focus ring at 955, well above the bottom hint row
+// at 998 - this reserve is a guard, not a fix.
+#define HINTS_RESERVE 24
+#define CROSS_HINT    0         // X's slot in the TOP hint row (see initHome): retitled per category
+#define TRIANGLE_HINT 2         // Triangle's slot in the top row: "Channel" everywhere, "Unsubscribe" in Subscriptions
+#define NOTICE_PAD    32        // modal box (search.c has the same kind): inner padding
+#define NOTICE_TEXT   24        // body text, 22-24/400
+#define NOTICE_GAP    24        // the message's last baseline -> the hint line's capitals
+#define NOTICE_RADIUS 26        // as search.c's box: the radius the row ring (UI_RING_ROW) round it is made for
 
 static const char *TrendingNames[TREND_COUNT] = { "Gaming", "Sports", "Podcasts" };
 
@@ -76,10 +83,13 @@ static struct {
    char      pendingUnsubName[CHANNEL_NAME_LEN];
 } home;
 
-static Font        font;
-static Label       titleLabel, statusLabel, pageLabel;
-static Label       noticeLabel, noticeHintLabel;
-static ButtonHints hints;
+static Label   titleLabel, statusLabel, pageLabel;
+static Label   noticeLabel, noticeHintLabel;
+// Two hint rows, as on the Cinema start (Bild 1): X / Square / Triangle - what acts on the selected tile - at
+// the top right, everything else at the bottom right. At the Ember sizes the twelve no longer fit one line
+// inside the safe area.
+static UiHints hintsTop, hintsBottom;
+static int     statusMaxW;   // the widest the page counter / status can get; kept free after the title
 
 // The Subscriptions tab lists the CHANNELS you follow, one tile each, rather than merging their videos into
 // a single feed - a feed like that buries a channel you just subscribed to among everything else, which is
@@ -135,6 +145,33 @@ static int homeFetch(const char *token, SearchResults *out, void *user)
    return getTrending(home.category, token, out);
 }
 
+// The title may run up to the page counter after it, and the counter at its widest must still end before the
+// top-right hint row begins. That row is wider on Subscriptions ("Open channel", "Unsubscribe") and its
+// glyphs' widths are only known at runtime, so the budget is worked out again whenever the captions change.
+// A new width needs the old texture dropped: setLabelText skips a text the label already shows.
+static void fitTitleWidth(void)
+{
+   int hintsLeft = UI_SAFE_RIGHT - uiGetHintsWidth(&hintsTop);
+   int width = hintsLeft - HEADER_GAP - statusMaxW - TITLE_GAP - GRID_LEFT;
+   if (width < TITLE_MIN_W) width = TITLE_MIN_W;
+   if (width != titleLabel.width) { freeLabel(&titleLabel); titleLabel.width = width; }
+}
+
+// The widest the text after the title gets: the page counter with three digits a side (five results a page
+// and the 500-result cap make a hundred pages), or either status. Digits are proportional in Manrope, so a
+// few of them are tried.
+static int measureStatusWidth(void)
+{
+   static const char *SAMPLES[] = { "Page 000 / 000+", "Page 444 / 444+", "Page 888 / 888+", "Loading...", "No results" };
+   Font *font = uiGetFont(STATUS_WEIGHT);
+   float widest = 0.0f;
+   for (int i = 0; i < (int)(sizeof SAMPLES / sizeof SAMPLES[0]); i++) {
+      float width = measureFontText(font, STATUS_SIZE, SAMPLES[i]);
+      if (width > widest) widest = width;
+   }
+   return (int)widest + 1;
+}
+
 static void setHeading(void)
 {
    char heading[128];
@@ -144,9 +181,11 @@ static void setHeading(void)
    else if (home.category == HOME_HISTORY)    snprintf(heading, sizeof heading, "History");
    else if (home.category == HOME_PLAYLIST)   snprintf(heading, sizeof heading, "%s", getPlaylistName(openPlaylist));
    else                                       snprintf(heading, sizeof heading, "Trending \xe2\x80\xa2 %s", TrendingNames[home.category]);
-   setLabelText(&titleLabel, heading);
-   setButtonHintCaption(&hints, CROSS_HINT,    home.category == HOME_SUBS ? "Open channel" : "Play");
-   setButtonHintCaption(&hints, TRIANGLE_HINT, home.category == HOME_SUBS ? "Unsubscribe"  : "Channel");
+   uiSetHintCaption(&hintsTop, CROSS_HINT,    home.category == HOME_SUBS ? "Open channel" : "Play");
+   uiSetHintCaption(&hintsTop, TRIANGLE_HINT, home.category == HOME_SUBS ? "Unsubscribe"  : "Channel");
+   fitTitleWidth();   // after the captions: the row's new width decides how far the title may run
+   // on the playlist tab the heading is the playlist's name - the user's text, so raw and checked for Manrope
+   uiSetTextLabel(&titleLabel, UI_PAGE_TITLE_WEIGHT, heading);
 }
 
 static void loadCategory(void)
@@ -192,12 +231,13 @@ static void cacheCurrent(void)
 // ---- modal box: a plain notice, or a yes/no confirmation ----
 //
 // Same shape as search.c's. While it is up it owns the pad, so nothing underneath reacts to the press that
-// dismisses it. The labels are RAW: a channel name is arbitrary text from YouTube, and an unmatched "{" in
+// dismisses it. The message is RAW: a channel name is arbitrary text from YouTube, and an unmatched "{" in
 // it would otherwise be eaten by the {i}/{b}/{color=} markup parser - swallowing the rest of the sentence in
-// the very box that asks you to confirm something irreversible.
+// the very box that asks you to confirm something irreversible. It also picks its font per message, so a
+// Japanese channel name falls back to FONT_POP instead of rendering blank in Manrope.
 static void showNotice(const char *text)
 {
-   setLabelText(&noticeLabel, text);
+   uiSetTextLabel(&noticeLabel, UI_BODY_WEIGHT, text);
    setLabelText(&noticeHintLabel, "Press X to close");
    home.noticeIsConfirm = 0;
    home.noticeVisible   = 1;
@@ -215,7 +255,7 @@ static void askUnsubscribe(const SearchResult *item)
 
    char message[256];
    snprintf(message, sizeof message, "Unsubscribe from %s?", home.pendingUnsubName);
-   setLabelText(&noticeLabel, message);
+   uiSetTextLabel(&noticeLabel, UI_BODY_WEIGHT, message);
    setLabelText(&noticeHintLabel, "X Unsubscribe     O Cancel");
    home.noticeIsConfirm = 1;
    home.noticeVisible   = 1;
@@ -314,37 +354,43 @@ static void initHome(void)
    home.screenW = getGfxScreenWidth();
    home.screenH = getGfxScreenHeight();
 
-   font = openSystemFont(FONT_POP);
-   initLabel(&titleLabel,  &font, GRID_LEFT, HEADER_Y, home.screenW - GRID_LEFT - MARGIN_X, AUTO, TITLE_SIZE, activeTheme->textPrimary, TEXT_NOWRAP_ELLIPSIS, "");
-   initLabel(&statusLabel, &font, GRID_LEFT, GRID_TOP, home.screenW - GRID_LEFT - MARGIN_X, AUTO, 21, activeTheme->textSecondary, TEXT_NOWRAP, "Loading...");
-   initLabel(&pageLabel,   &font, 0, HEADER_Y, AUTO, AUTO, TITLE_SIZE, activeTheme->textSecondary, TEXT_NOWRAP, "");
+   // the hints first: the title's width budget is worked out from the top row's (see fitTitleWidth)
+   uiInitHints(&hintsTop);
+   uiAddHint(&hintsTop, GLYPH_CROSS,    "Play");          // CROSS_HINT
+   uiAddHint(&hintsTop, GLYPH_SQUARE,   "Watch Later");
+   uiAddHint(&hintsTop, GLYPH_TRIANGLE, "Channel");       // TRIANGLE_HINT
+   uiInitHints(&hintsBottom);
+   uiAddHint(&hintsBottom, GLYPH_R3,        "Download");
+   uiAddHint(&hintsBottom, GLYPH_L3,        "Add to playlist");
+   uiAddHint(&hintsBottom, GLYPH_START,     "Settings");
+   uiAddHint(&hintsBottom, GLYPH_L1,        "");
+   uiAddHint(&hintsBottom, GLYPH_R1,        "Category");
+   uiAddHint(&hintsBottom, GLYPH_L2,        "");
+   uiAddHint(&hintsBottom, GLYPH_R2,        "Page");
+   uiAddHint(&hintsBottom, GLYPH_SELECT,    "PS button");
+   uiAddHint(&hintsBottom, GLYPH_DPAD_LEFT, "Menu");
+
+   // The fonts are the shared ones (ui-fonts.h): nothing here opens or closes a font. The title is external
+   // text on the playlist tab; its width is set by fitTitleWidth on every heading.
+   uiInitTextLabel(&titleLabel, UI_PAGE_TITLE_WEIGHT, GRID_LEFT, 0, TITLE_MIN_W, UI_PAGE_TITLE_SIZE,
+                   activeTheme->textPrimary, TEXT_NOWRAP_ELLIPSIS, "");
+   uiInitLabel(&statusLabel, STATUS_WEIGHT, 0, 0, AUTO, STATUS_SIZE, activeTheme->textSecondary, TEXT_NOWRAP, "Loading...");
+   uiInitLabel(&pageLabel,   STATUS_WEIGHT, 0, 0, AUTO, STATUS_SIZE, activeTheme->textSecondary, TEXT_NOWRAP, "");
+   statusMaxW = measureStatusWidth();
 
    home.noticeVisible   = 0;
    home.noticeIsConfirm = 0;
    home.noticePanelW    = home.screenW * 2 / 3;
-   initLabelRaw(&noticeLabel,     &font, 0, 0, home.noticePanelW - 2 * NOTICE_PAD, AUTO, NOTICE_TEXT, activeTheme->textPrimary,   TEXT_WRAP,   "");
-   initLabelRaw(&noticeHintLabel, &font, 0, 0, AUTO, AUTO, NOTICE_HINT, activeTheme->textSecondary, TEXT_NOWRAP, "");
+   uiInitTextLabel(&noticeLabel, UI_BODY_WEIGHT, 0, 0, home.noticePanelW - 2 * NOTICE_PAD, NOTICE_TEXT,
+                   activeTheme->textPrimary, TEXT_WRAP, "");
+   uiInitLabel(&noticeHintLabel, UI_HINT_WEIGHT, 0, 0, AUTO, UI_HINT_SIZE, activeTheme->textSecondary, TEXT_NOWRAP, "");
 
    home.pendingReload = 0;
 
-   initButtonHints(&hints, &font, home.screenH - HINTS_BOTTOM, HINT_GLYPH_H, HINT_TEXT, activeTheme->textSecondary);
-   addButtonHint(&hints, getConsoleGlyph(GLYPH_CROSS),    "Play");
-   addButtonHint(&hints, getConsoleGlyph(GLYPH_SQUARE),   "Watch Later");
-   addButtonHint(&hints, getConsoleGlyph(GLYPH_TRIANGLE), "Channel");
-   addButtonHint(&hints, getConsoleGlyph(GLYPH_R3),       "Download");
-   addButtonHint(&hints, getConsoleGlyph(GLYPH_L3),       "Add to playlist");
-   addButtonHint(&hints, getConsoleGlyph(GLYPH_START),    "Settings");
-   addButtonHint(&hints, getConsoleGlyph(GLYPH_L1),       "");
-   addButtonHint(&hints, getConsoleGlyph(GLYPH_R1),       "Category");
-   addButtonHint(&hints, getConsoleGlyph(GLYPH_L2),       "");
-   addButtonHint(&hints, getConsoleGlyph(GLYPH_R2),       "Page");
-   addButtonHint(&hints, getConsoleGlyph(GLYPH_SELECT),   "PS button");
-   addButtonHint(&hints, getConsoleGlyph(GLYPH_DPAD_LEFT), "Menu");
-
-   initVideoGrid(&home.grid, &font, GRID_LEFT, GRID_TOP,
-                 home.screenW - GRID_LEFT - MARGIN_X, home.screenH - GRID_TOP - HINTS_RESERVE);
+   initVideoGrid(&home.grid, uiGetFont(UI_CARD_TITLE_WEIGHT), GRID_LEFT, GRID_TOP,
+                 UI_SAFE_RIGHT - GRID_LEFT, UI_HINTS_BOTTOM_Y - GRID_TOP - HINTS_RESERVE);
    setGridView(&home.grid, GRID_VIEW_LIST);   // the list is the only layout now - see sidebar.h
-   initSidebar(&font, home.screenH);
+   initSidebar();
    setGridWatchedPredicate(&home.grid, isWatched);
    setGridWatchLaterPredicate(&home.grid, isWatchLater);
    setGridProgressSource(&home.grid, getWatchedPosition);
@@ -424,7 +470,10 @@ static void updateHome(void)
    if      (isPadButtonPressed(PAD_BTN_R1)) { switchCategory(1);  return; }
    else if (isPadButtonPressed(PAD_BTN_L1)) { switchCategory(-1); return; }
 
+   int pageBefore = gridPageIndex(&home.grid);
    updateVideoGrid(&home.grid);
+   // one line per page turn in dbg.txt: VRAM has to come back to the same level page after page
+   if (gridPageIndex(&home.grid) != pageBefore) uiLogVram("home page turn");
    if (gridStage(&home.grid) != GRID_READY) return;
 
    // the feed on screen now reflects these revisions - only at this point is a change really "seen"
@@ -467,43 +516,62 @@ static void updateHome(void)
    }
 }
 
+// The modal box, laid out from its text's own measurements, so a message in FONT_POP (a Japanese channel
+// name) sits exactly where a Manrope one would: the message's capitals NOTICE_PAD below the top edge, the
+// hint line's capitals NOTICE_GAP below the message's last baseline, and its baseline NOTICE_PAD above the
+// bottom edge.
+static void drawNotice(void)
+{
+   UiTextMetrics text = uiGetTextMetrics(noticeLabel.font, noticeLabel.size);
+   UiTextMetrics hint = uiGetTextMetrics(noticeHintLabel.font, noticeHintLabel.size);
+   int textTop      = NOTICE_PAD - text.capTop;                                         // panel-relative
+   int lastBaseline = textTop + noticeLabel.tt.tex.h - text.texH + text.baseline;      // one pitch a line
+   int hintBaseline = lastBaseline + NOTICE_GAP + (hint.baseline - hint.capTop);
+   int panelW = home.noticePanelW, panelH = hintBaseline + NOTICE_PAD;
+   int x = (home.screenW - panelW) / 2, y = (home.screenH - panelH) / 2;
+
+   uiFillRect(0, 0, home.screenW, home.screenH, activeTheme->scrim);
+   uiFillRounded(x, y, panelW, panelH, NOTICE_RADIUS, activeTheme->surface);
+   uiDrawFocusRing(x, y, panelW, panelH, UI_RING_ROW, activeTheme->focusBorder);   // the box owns the pad
+   uiDrawLabelAt(&noticeLabel, x + NOTICE_PAD, y + textTop);
+   uiDrawLabelAt(&noticeHintLabel, x + NOTICE_PAD, y + hintBaseline - hint.baseline);
+}
+
 static void drawHome(void)
 {
    fillGfxRectangle(0, 0, home.screenW, home.screenH, activeTheme->appBg);
 
    // Order matters. The grid goes down first, then the rail OVER it (expanded, it covers the first column
-   // rather than pushing it aside), and only then the heading, the page counter and the status line - those
-   // three start at the grid's left edge, which is INSIDE the expanded panel, and "Loading..." is the only
-   // feedback there is while a feed is on its way. Covering it with the menu would leave a blank screen.
+   // rather than pushing it aside), and only then the heading and, after it, the page counter or the status
+   // line - the heading starts at the grid's left edge, which is INSIDE the expanded panel, and "Loading..."
+   // is the only feedback there is while a feed is on its way. Covering it with the menu would leave a blank
+   // screen. The heading also has to come after the grid because the selection's glow reaches up under it.
    if (gridStage(&home.grid) == GRID_READY) drawVideoGrid(&home.grid);
    drawSidebar(home.screenH);
 
+   // the title's capitals on the line of the top-right hint row; the counter on the title's baseline
+   int titleY = uiLabelYForCenter(&titleLabel, UI_HINTS_TOP_Y, UI_HINT_GLYPH_H);
+   int baseline = titleY + uiGetTextMetrics(titleLabel.font, titleLabel.size).baseline;
+   int afterTitle = GRID_LEFT + (titleLabel.tt.tex.w > 0 ? titleLabel.tt.tex.w + TITLE_GAP : 0);
+   moveLabel(&titleLabel, GRID_LEFT, titleY);
    drawLabel(&titleLabel);
+   Label *state = &statusLabel;
    if (gridStage(&home.grid) == GRID_READY) {
       char page[40];
       formatGridPage(&home.grid, page, sizeof page);
       setLabelText(&pageLabel, page);   // only rasterises when the text actually changes
-      moveLabel(&pageLabel, home.screenW - MARGIN_X - pageLabel.tt.tex.w, HEADER_Y);
-      drawLabel(&pageLabel);
+      state = &pageLabel;
    } else {
       setLabelText(&statusLabel, gridStage(&home.grid) == GRID_EMPTY ? "No results" : "Loading...");
-      drawLabel(&statusLabel);
    }
-   drawButtonHints(&hints, home.screenW);
+   uiPlaceLabelBaseline(state, afterTitle, baseline);
+   drawLabel(state);
+
+   uiDrawHints(&hintsTop,    UI_SAFE_RIGHT, UI_HINTS_TOP_Y,    UI_ALIGN_RIGHT);
+   uiDrawHints(&hintsBottom, UI_SAFE_RIGHT, UI_HINTS_BOTTOM_Y, UI_ALIGN_RIGHT);
    drawDownloadOverlay(home.screenW);
 
-   if (home.noticeVisible) {
-      int panelW = home.noticePanelW;
-      int panelH = noticeLabel.tt.tex.h + 2 * NOTICE_PAD + NOTICE_HINT + 18;
-      int x = (home.screenW - panelW) / 2, y = (home.screenH - panelH) / 2;
-      int ring = activeTheme->focusThickness;
-      fillGfxRectangle(0, 0, home.screenW, home.screenH, activeTheme->scrim);
-      fillGfxRectangle(x - ring, y - ring, panelW + 2 * ring, panelH + 2 * ring, activeTheme->focusBorder);
-      fillGfxRectangle(x, y, panelW, panelH, activeTheme->surface);
-      drawLabelAt(&noticeLabel, x + NOTICE_PAD, y + NOTICE_PAD);
-      drawLabelAt(&noticeHintLabel, x + NOTICE_PAD, y + panelH - NOTICE_PAD - NOTICE_HINT + 6);
-   }
-
+   if (home.noticeVisible) drawNotice();
 }
 
 static void suspendHome(void) { stopVideoGrid(&home.grid); }   // free the http pools for the pushed screen
@@ -555,13 +623,14 @@ static void termHome(void)
 {
    termVideoGrid(&home.grid);
    termSidebar();
-   termButtonHints(&hints);
+   uiTermHints(&hintsTop);
+   uiTermHints(&hintsBottom);
    freeLabel(&titleLabel);
    freeLabel(&statusLabel);
    freeLabel(&pageLabel);
    freeLabel(&noticeLabel);
    freeLabel(&noticeHintLabel);
-   closeFont(&font);
+   // no closeFont: the fonts are shared (ui-fonts.h), and closing one would blank every label that uses it
 }
 
 void openHome(void) { changeScreen(&homeScreen); }
