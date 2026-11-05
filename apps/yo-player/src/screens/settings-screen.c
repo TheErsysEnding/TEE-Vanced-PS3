@@ -1,18 +1,26 @@
 // settings screen - implementation (see settings-screen.h).
 //
-// Two columns: the options on the left, the app's own card on the right. The card is where the channel link
-// lives, so the QR code sits in a place that is always on screen rather than behind a modal nobody opens.
+// The Ember settings page (Bild 3) with only what the app has. The collapsed rail sits at the left edge,
+// drawn passive: Circle is Back on this pushed screen, so the rail only says where you are. Beside it the
+// title with the version under it, the clock on the right. Below, the About card stands in the column where
+// Bild 3 has its category list, and one panel holds every option, Playback above SponsorBlock. It is still
+// ONE list - UP/DOWN walk all eight rows and wrap, as they always did - so no section needs a way of its own
+// to be reached. The card is where the channel link lives, so the QR code sits in a place that is always on
+// screen rather than behind a modal nobody opens.
 
 #include "screens/settings-screen.h"
 #include "storage.h"
 #include "app-paths.h"      // APP_VERSION
 #include "sponsorblock.h"        // SponsorCategory + getSponsorCategoryName/Color
+#include "sidebar.h"             // drawSidebarPassive: the rail, collapsed and never focusable
+#include "ui-clock.h"            // the time of day at the top right, as on the list pages
 #include "ui-hints.h"            // UiHints; brings ui-draw.h (UI_SAFE_*) and ui-fonts.h (uiInitLabel, metrics)
 #include "ui/console-glyphs.h"
 #include "qr-linktree.h"
 
 #include "gfx.h"
 #include "theme.h"
+#include "anim.h"                // interpolateColor: the panels' hairline edge, blended once
 #include "pad.h"
 #include "font.h"
 #include "ui/label.h"
@@ -21,89 +29,133 @@
 #include <string.h>
 #include <stdio.h>
 
-// Everything sits inside the safe area (UI_SAFE_X .. UI_SAFE_RIGHT, ui-draw.h) of the 1920x1080 canvas.
-#define TITLE_BASELINE   107    // the page title's baseline, the same as on the list pages (Bild 4)
-#define LIST_TOP         160
-// A row plate is ROW_H - ROW_GAP = 54 px: 24-px text centred on its capitals keeps its descenders
-// ("Self-promotion", "Autoplay") well inside the plate.
-#define ROW_H            62     // row pitch
-#define ROW_GAP          8
-#define ROW_TEXT         24
+// Everything sits inside the safe area of the 1920x1080 canvas, beside the collapsed rail (112 px wide):
+// content runs from x 176 to UI_SAFE_RIGHT, as on every Ember page.
+#define CONTENT_X        176
+// The title and the clock have their capitals centred on the band the list pages' header uses (home.c), so
+// neither moves when this page opens over Home: the title's baseline comes to 107 as in Bild 4. Bild 3 hangs
+// its clock lower, level with the version line; one place for it on every page reads calmer.
+#define HEADER_Y         67
+#define HEADER_H         45
+#define CLOCK_SIZE       28     // ui-clock.h's clock is 28/700: needed to centre its capitals on the band
+#define CLOCK_WEIGHT     UI_WEIGHT_BOLD
+#define VERSION_DY       43     // the title's baseline -> the version line's: "TEE Vanced V0.14 Beta", 20/600
+                                // in text-3, as in Bild 3
+#define BODY_Y           192    // the About card and the options panel start side by side here
+#define HEADING_SIZE     34     // the card's and the sections' titles: 34/800, Bild 3's panel title
+#define HEADING_WEIGHT   UI_WEIGHT_EXTRABOLD
+#define HEADING_DY       57     // BODY_Y -> those titles' baseline: their capitals 32 px into the box
+#define FIRST_ROW_DY     85     // BODY_Y -> the Autoplay row, and the QR code level with it
+#define BOX_RADIUS       UI_RADIUS_PANEL
+#define BOX_EDGE         2      // a box's inset hairline (Bild 3: 2 px of text-1 at a few per cent)
+
+// The About card, in the column Bild 3 gives its category list. Its padding is the QR code's margin, so the
+// title, the code and the lines under it share one left edge.
+#define CARD_X           CONTENT_X
+#define CARD_W           380
+#define CARD_PAD_X       42
+#define CARD_PAD_BOTTOM  30     // the note's last baseline -> the card's bottom edge
+#define QR_SCALE         8      // 37 modules incl. quiet zone -> 296 px: the card's whole inner width
+#define LINK_GAP         38     // the QR code's bottom -> the link's baseline
+#define NOTE_GAP         33     // the link's baseline -> the note's first baseline
+#define LINK_SIZE        22
+
+// The options panel, where Bild 3 has its SponsorBlock panel: from x 620 to the safe edge, 44 px of padding
+// left and right.
+#define PANEL_X          620
+#define PANEL_W          (UI_SAFE_RIGHT - PANEL_X)
+#define PANEL_PAD_X      44
+#define PANEL_PAD_BOTTOM 24
+#define TEXT_X           (PANEL_X + PANEL_PAD_X)          // 664
+#define TEXT_RIGHT       (UI_SAFE_RIGHT - PANEL_PAD_X)    // 1780
+#define SECTION_DY       52     // the Autoplay row's bottom -> the SponsorBlock title's baseline
+#define EXPLAIN_DY       40     // that title's baseline -> its explanation's
+#define ROWS_DY          33     // the explanation's last baseline -> the first category row
+
+// A row as Bild 3 draws it: 72 tall, the focused one on a plate reaching 18 px past the text either side.
+// Bild 3 steps its rows by 82; eight rows under two section titles only fit inside the safe area at 76,
+// which still leaves 4 px between rows - and only the focused row ever has a plate.
+#define ROW_H            72
+#define ROW_PITCH        76
+#define ROW_TEXT         26     // an option's name, 26/700 - 800 on the focused row
 #define ROW_WEIGHT       UI_WEIGHT_BOLD
-#define ROW_PAD          14
-#define SECTION_GAP      56     // height reserved above a row that opens a section
-#define SECTION_BASE_UP  22     // the section heading's baseline, this far above the section's first row
-#define SECTION_RULE_UP  10     // the rule under the heading, this far above the same row
-#define SECTION_TEXT_GAP 16     // heading -> its explanation, on the same line
-#define VALUE_GAP        30     // right margin of the value column inside the list
-#define VALUE_COLUMN     200    // kept free for the widest value, "Skip by choice" (about 170 px at 24/700)
+#define ROW_FOCUS_WEIGHT UI_WEIGHT_EXTRABOLD
+#define ROW_PLATE_OUT    18
+#define DOT_SIZE         14     // a category's colour, then 16 px to its name
+#define DOT_GAP          16
+#define NAME_GAP         24     // a name ends in "..." this far short of the control on its right
 
-#define LIST_WIDTH    900       // the options column: wide enough for the section heading and its explanation
-                                // on one line, and for "Skip by choice" beside the longest category name
-                                // ("Interaction reminder"); the card gets the rest
-#define CARD_GAP       40       // options column -> card
-#define CARD_PAD       30
-#define CARD_TEXT      24
-#define CARD_TITLE_GAP 24       // the title's baseline -> the QR code
-#define CARD_QR_GAP    20       // the QR code -> the link's capitals
-#define CARD_LINE_GAP  16       // the link's baseline -> the note's capitals
-#define QR_SCALE      7         // 37 modules incl. quiet zone -> 259 px, comfortably inside the card
+// Skip / Ask / Keep as one segment group, right-aligned in the panel: 5 px of padding round three 128x50
+// segments 4 px apart; radius 18 for the group, 14 for a segment - the radius UI_RING_SEGMENT is made for.
+#define SEG_COUNT        3
+#define SEG_W            128
+#define SEG_H            50
+#define SEG_GAP          4
+#define SEG_RADIUS       14
+#define SEG_TEXT         22
+#define GROUP_PAD        5
+#define GROUP_W          (2 * GROUP_PAD + SEG_COUNT * SEG_W + (SEG_COUNT - 1) * SEG_GAP)   // 402
+#define GROUP_H          (SEG_H + 2 * GROUP_PAD)                                          // 60
+#define GROUP_X          (TEXT_RIGHT - GROUP_W)                                           // 1378
 
-// Row order. The two playback options come first because they are the ones changed often; the skip
-// categories are a block of their own, which is also the only place "skip the intro" can be turned on.
+// The autoplay switch from the Ember building blocks (Bild 6): 76x42, a 32-px knob 5 px in, right-aligned
+// like the groups, with its state in words beside it. Focused, it gets the segments' white ring: 3 px wide,
+// 3 px out. ring-r34-w4 scaled by 27/34 follows a pill of radius 21 at that distance - its outer radius
+// comes to 21 + 6 and its stroke to 3.2 px - where the segment's own ring, radius 20, would pinch the pill's
+// round ends.
+#define SWITCH_W         76
+#define SWITCH_H         42
+#define SWITCH_KNOB      32
+#define SWITCH_INSET     5
+#define SWITCH_WORD_GAP  14
+#define SWITCH_RING_OUT  6
+#define SWITCH_RING_SCALE (27.0f / 34.0f)
+
+// The words on the controls are rendered once in white and tinted when drawn (as the rail's names are):
+// a segment's word takes three colours by state, and re-colouring a label would rasterise it again.
+#define TEXT_TINTABLE    0xFFFFFFFFu
+
+// Row order. The playback option comes first because it is the one changed often; the skip categories are
+// a block of their own, which is also the only place "skip the intro" can be turned on.
 enum {
    ROW_AUTOPLAY,
    ROW_SKIP_FIRST,
    ROW_COUNT = ROW_SKIP_FIRST + SPONSOR_CATEGORY_COUNT
 };
 
-static Label       titleLabel;
-static Label       rowLabels[ROW_COUNT], valueLabels[ROW_COUNT];
-static Label       skipSectionLabel, skipHintLabel;
-static Label       cardTitleLabel, cardUrlLabel, cardNoteLabel;
+static Label       titleLabel, versionLabel;
+static Label       aboutLabel, linkLabel, noteLabel;
+static Label       playbackLabel, sponsorLabel, explainLabel;
+static Label       rowLabels[ROW_COUNT][2];       // each option's name at 700 [0] and, focused, 800 [1]
+static Label       segmentLabels[SEG_COUNT][2];   // Skip / Ask / Keep in white, at 700 [0] and 800 [1]
+static Label       switchLabels[2];               // "Off" [0] / "On" [1] in white
 static UiHints     hints;
 static ButtonRepeat navigateRepeat;
 
 static struct {
    int screenW, screenH;
    int selected;
+   // the layout, worked out once from the measured text (see layOut)
+   int titleY, versionBaseline, clockBaseline;
+   int autoplayY, sponsorBaseline, explainBaseline, categoryY, panelH;
+   int linkBaseline, noteBaseline, cardH;
+   uint32_t boxEdge;      // the hairline blended over surface-1, opaque
 } state;
 
 static int skipCategory(int row) { return row - ROW_SKIP_FIRST; }
 
-// the value column for one row, re-read from storage every time so the screen never holds its own copy of
-// a setting (which is how a toggle ends up disagreeing with what was actually saved).
-// A value says what it is by its COLOUR as much as by its word: active is the accent, inactive is muted.
-// Without that the user had to walk the list with the d-pad to find out what was switched on, because
-// eight grey words all look alike from a sofa.
-static void refreshValue(int row)
+// The segment a category's setting lights up: Skip | Ask | Keep, left to right. "Ask" is the old "Skip by
+// choice" (SPONSOR_ACTION_ASK): a skip button for as long as the segment runs.
+static int segmentOf(int action)
 {
-   const char *text;
-   uint32_t colour;
-   if (row == ROW_AUTOPLAY) {
-      int on = getAutoplay();
-      text = on ? "On" : "Off";
-      colour = on ? activeTheme->accent : activeTheme->textSecondary;
-   } else {
-      // Three states, three looks: Skip is the accent, Ask is primary text (it is on, but it waits for
-      // you), Keep is muted. The word alone is not enough from a sofa.
-      switch (getSponsorAction(skipCategory(row))) {
-      case SPONSOR_ACTION_SKIP: text = "Skip";           colour = activeTheme->accent;        break;
-      case SPONSOR_ACTION_ASK:  text = "Skip by choice"; colour = activeTheme->textPrimary;   break;
-      default:                  text = "Keep";           colour = activeTheme->textSecondary; break;
-      }
-   }
-   setLabelColor(&valueLabels[row], colour);
-   setLabelText(&valueLabels[row], text);
-}
-
-static void refreshAllValues(void)
-{
-   for (int row = 0; row < ROW_COUNT; row++) refreshValue(row);
+   if (action == SPONSOR_ACTION_SKIP) return 0;
+   if (action == SPONSOR_ACTION_ASK)  return 1;
+   return 2;
 }
 
 // X cycles a skip category Keep -> Skip -> Skip by choice -> Keep. Skip comes first because it is what
-// most people want from a sponsor segment; "by choice" is the deliberate extra press.
+// most people want from a sponsor segment; "by choice" is the deliberate extra press. With the segments in
+// the order Skip | Ask | Keep, every press moves the lit one a step to the right, and Keep comes round to Skip.
 static void toggleRow(int row)
 {
    if (row == ROW_AUTOPLAY) setAutoplay(!getAutoplay());
@@ -117,23 +169,45 @@ static void toggleRow(int row)
       }
       setSponsorAction(category, next);
    }
-   refreshValue(row);
 }
 
-// y of a row, with the gap that the skip section's heading occupies folded in.
-static int rowY(int row)
-{
-   int y = LIST_TOP + row * ROW_H;
-   if (row >= ROW_SKIP_FIRST) y += SECTION_GAP;
-   return y;
-}
-
-// From the top of a label's capitals to its baseline, measured for its own font and size (ui-fonts.h): the
-// card is laid out by these, because a texture's first rows are blank by an amount that depends on the font.
-static int capHeightOf(const Label *l)
+// The baseline of a label's last line, given its first: every line after the first adds one pitch to the
+// texture, so the texture's height says how many there are.
+static int lastBaselineOf(const Label *l, int firstBaseline)
 {
    UiTextMetrics m = uiGetTextMetrics(l->font, l->size);
-   return m.baseline - m.capTop;
+   int extra = l->tt.tex.h - m.texH;
+   return firstBaseline + (extra > 0 ? extra : 0);
+}
+
+// Everything under the header hangs off BODY_Y. The explanation and the note are wrapped labels; their
+// measured height places what follows them, so should either ever take another line, the rows move down
+// with it instead of running into it.
+static void layOut(void)
+{
+   state.titleY          = uiLabelYForCenter(&titleLabel, HEADER_Y, HEADER_H);
+   state.versionBaseline = state.titleY + uiGetTextMetrics(titleLabel.font, titleLabel.size).baseline + VERSION_DY;
+   Font *clockFont       = uiGetFont(CLOCK_WEIGHT);
+   state.clockBaseline   = uiTextYForCenter(clockFont, CLOCK_SIZE, HEADER_Y, HEADER_H)
+                           + uiGetTextMetrics(clockFont, CLOCK_SIZE).baseline;
+
+   state.autoplayY       = BODY_Y + FIRST_ROW_DY;
+   state.sponsorBaseline = state.autoplayY + ROW_H + SECTION_DY;
+   state.explainBaseline = state.sponsorBaseline + EXPLAIN_DY;
+   state.categoryY       = lastBaselineOf(&explainLabel, state.explainBaseline) + ROWS_DY;
+   state.panelH          = state.categoryY + (ROW_COUNT - 1 - ROW_SKIP_FIRST) * ROW_PITCH + ROW_H
+                           + PANEL_PAD_BOTTOM - BODY_Y;
+
+   int qrSpan = (QR_SIZE + 2 * QR_QUIET) * QR_SCALE;
+   state.linkBaseline = BODY_Y + FIRST_ROW_DY + qrSpan + LINK_GAP;
+   state.noteBaseline = state.linkBaseline + NOTE_GAP;
+   state.cardH        = lastBaselineOf(&noteLabel, state.noteBaseline) + CARD_PAD_BOTTOM - BODY_Y;
+}
+
+static int rowY(int row)
+{
+   if (row == ROW_AUTOPLAY) return state.autoplayY;
+   return state.categoryY + (row - ROW_SKIP_FIRST) * ROW_PITCH;
 }
 
 static void initSettings(void)
@@ -141,43 +215,63 @@ static void initSettings(void)
    state.screenW = getGfxScreenWidth();
    state.screenH = getGfxScreenHeight();
    state.selected = 0;
+   // the panels' 2-px edge: the hairline over surface-1, worked out once and drawn opaque (see drawBox)
+   state.boxEdge = interpolateColor(activeTheme->surface1, uiWithAlpha(activeTheme->hairline, 0xFF),
+                                    (float)(activeTheme->hairline >> 24) / 255.0f);
 
    // Fonts are shared app-wide (ui-fonts.h): nothing is opened here and nothing may be closed in term.
    // All of this screen's text is written in the code, so it is Manrope throughout.
-   uiInitLabel(&titleLabel, UI_PAGE_TITLE_WEIGHT, UI_SAFE_X, 0, UI_SAFE_RIGHT - UI_SAFE_X, UI_PAGE_TITLE_SIZE,
-               activeTheme->textPrimary, TEXT_NOWRAP_ELLIPSIS, "Settings");
-   // an eyebrow heading the way the Ember start design draws one ("CONTINUE WATCHING"): capitals at 20/800
-   // in accent-text - the accent itself is kept for focus, progress and the chosen value
-   uiInitLabel(&skipSectionLabel, UI_WEIGHT_EXTRABOLD, 0, 0, AUTO, UI_META_SIZE, activeTheme->accentText,
-               TEXT_NOWRAP, "SKIP SEGMENTS");
-   // Beside the heading, capped at what is left of the options column: at 20 px it fits there with some 60 px
-   // to spare (LIST_WIDTH), and should a font ever draw it wider it ends in "..." rather than in the card.
-   int explainW = LIST_WIDTH - ROW_PAD - skipSectionLabel.tt.tex.w - SECTION_TEXT_GAP;
-   uiInitLabel(&skipHintLabel, UI_META_WEIGHT, 0, 0, explainW, UI_META_SIZE, activeTheme->textSecondary,
-               TEXT_NOWRAP_ELLIPSIS, "from SponsorBlock - Skip is automatic, Skip by choice offers a button");
+   uiInitLabel(&titleLabel, UI_PAGE_TITLE_WEIGHT, CONTENT_X, 0, AUTO, UI_PAGE_TITLE_SIZE, activeTheme->textPrimary,
+               TEXT_NOWRAP, "Settings");
+   uiInitLabel(&versionLabel, UI_META_WEIGHT, CONTENT_X, 0, AUTO, UI_META_SIZE, activeTheme->textTertiary,
+               TEXT_NOWRAP, "TEE Vanced " APP_VERSION);
 
-   // the names end where the widest value could begin, so even "Interaction reminder" never meets it
-   int nameW = LIST_WIDTH - 2 * ROW_PAD - 8 - VALUE_GAP - VALUE_COLUMN;
+   uiInitLabel(&aboutLabel,    HEADING_WEIGHT, 0, 0, AUTO, HEADING_SIZE, activeTheme->textPrimary, TEXT_NOWRAP, "About");
+   uiInitLabel(&playbackLabel, HEADING_WEIGHT, 0, 0, AUTO, HEADING_SIZE, activeTheme->textPrimary, TEXT_NOWRAP, "Playback");
+   uiInitLabel(&sponsorLabel,  HEADING_WEIGHT, 0, 0, AUTO, HEADING_SIZE, activeTheme->textPrimary, TEXT_NOWRAP, "SponsorBlock");
+   // one line across the panel (about 1050 px of the 1116 there are); wrapped rather than cut should a font
+   // ever draw it wider, and the rows under it follow its height (layOut)
+   uiInitLabel(&explainLabel, UI_BODY_WEIGHT, 0, 0, TEXT_RIGHT - TEXT_X, UI_BODY_SIZE, activeTheme->textSecondary,
+               TEXT_WRAP, "What happens when a marked segment starts. Ask shows a skip button for as long as the segment runs.");
+
+   // the card: raw labels, because the URL is literal text, not markup (it is ASCII, so uiInitTextLabel keeps
+   // it in Manrope). The note is about 335 px, wider than the code, so it takes two lines - broken by hand,
+   // as a plain wrap would leave "contact" alone on the second.
+   int cardTextW = CARD_W - 2 * CARD_PAD_X;
+   uiInitTextLabel(&linkLabel, UI_WEIGHT_BOLD, 0, 0, cardTextW, LINK_SIZE, activeTheme->textPrimary,
+                   TEXT_NOWRAP_ELLIPSIS, QR_URL);
+   uiInitTextLabel(&noteLabel, UI_META_WEIGHT, 0, 0, cardTextW, UI_META_SIZE, activeTheme->textSecondary,
+                   TEXT_WRAP, "Scan for links, streams\nand contact");
+
+   // The names end short of the segment group, so even "Interaction reminder" (about 270 px at 26/800) never
+   // meets it - it has some 660 px. Autoplay's, without a dot, starts 30 px further left, far from its switch.
+   // Each name is rendered in both weights here, once: the focused row's is 800 (Bild 3), and swapping
+   // textures as the focus moves costs nothing, where restyling a label would rasterise it again - and wait
+   // for the RSX - twice for every step of a held d-pad.
+   int nameW = GROUP_X - NAME_GAP - (TEXT_X + DOT_SIZE + DOT_GAP);
    for (int row = 0; row < ROW_COUNT; row++) {
       const char *name;
       if (row == ROW_AUTOPLAY) name = "Autoplay next video";
       else                     name = getSponsorCategoryName((SponsorCategory)skipCategory(row));
-      uiInitLabel(&rowLabels[row],   ROW_WEIGHT, 0, 0, nameW, ROW_TEXT, activeTheme->textPrimary,   TEXT_NOWRAP_ELLIPSIS, name);
-      uiInitLabel(&valueLabels[row], ROW_WEIGHT, 0, 0, AUTO,  ROW_TEXT, activeTheme->textSecondary, TEXT_NOWRAP, "");
+      uiInitLabel(&rowLabels[row][0], ROW_WEIGHT,       0, 0, nameW, ROW_TEXT, activeTheme->textPrimary, TEXT_NOWRAP_ELLIPSIS, name);
+      uiInitLabel(&rowLabels[row][1], ROW_FOCUS_WEIGHT, 0, 0, nameW, ROW_TEXT, activeTheme->textPrimary, TEXT_NOWRAP_ELLIPSIS, name);
    }
-   refreshAllValues();
 
-   // the card: raw labels, because the URL and the build stamp are literal text, not markup (both are ASCII,
-   // so uiInitTextLabel keeps them in Manrope)
-   uiInitTextLabel(&cardTitleLabel, UI_WEIGHT_BOLD, 0, 0, AUTO, CARD_TEXT,    activeTheme->textPrimary,   TEXT_NOWRAP, "TEE Vanced PS3  " APP_VERSION);
-   uiInitTextLabel(&cardUrlLabel,   UI_WEIGHT_BOLD, 0, 0, AUTO, CARD_TEXT,    activeTheme->textPrimary,   TEXT_NOWRAP, QR_URL);
-   uiInitTextLabel(&cardNoteLabel,  UI_META_WEIGHT, 0, 0, AUTO, UI_META_SIZE, activeTheme->textSecondary, TEXT_NOWRAP, "Scan for links, streams and contact");
+   // a segment's word: onAccent on the accent, textPrimary when chosen, textSecondary otherwise (drawSegments)
+   static const char *SEGMENT_WORDS[SEG_COUNT] = { "Skip", "Ask", "Keep" };
+   for (int k = 0; k < SEG_COUNT; k++) {
+      uiInitLabel(&segmentLabels[k][0], ROW_WEIGHT,       0, 0, AUTO, SEG_TEXT, TEXT_TINTABLE, TEXT_NOWRAP, SEGMENT_WORDS[k]);
+      uiInitLabel(&segmentLabels[k][1], ROW_FOCUS_WEIGHT, 0, 0, AUTO, SEG_TEXT, TEXT_TINTABLE, TEXT_NOWRAP, SEGMENT_WORDS[k]);
+   }
+   uiInitLabel(&switchLabels[0], ROW_WEIGHT, 0, 0, AUTO, SEG_TEXT, TEXT_TINTABLE, TEXT_NOWRAP, "Off");
+   uiInitLabel(&switchLabels[1], ROW_WEIGHT, 0, 0, AUTO, SEG_TEXT, TEXT_TINTABLE, TEXT_NOWRAP, "On");
 
    uiInitHints(&hints);
    uiAddHint(&hints, GLYPH_CROSS,  "Change");
    uiAddHint(&hints, GLYPH_CIRCLE, "Back");
 
    memset(&navigateRepeat, 0, sizeof navigateRepeat);
+   layOut();
 }
 
 static void updateSettings(void)
@@ -192,82 +286,145 @@ static void updateSettings(void)
    if (isPadButtonPressed(PAD_BTN_CROSS)) toggleRow(state.selected);
 }
 
+// a label rendered in TEXT_TINTABLE, drawn in `color`
+static void drawTinted(const Label *label, int x, int y, uint32_t color)
+{
+   if (label->tt.tex.w <= 0) return;
+   drawGfxTexture(x, y, label->tt.tex.w, label->tt.tex.h, label->tt.tex, 0.0f, 0.0f, 1.0f, 1.0f, color,
+                  GFX_FILTER_NEAREST);
+}
+
+// An Ember panel (Bild 3): surface-1 with a 2-px inset hairline, drawn as two opaque rounded fills - the edge
+// colour, then the surface 2 px in - so the edge is exactly a CSS inset border and nothing behind shows
+// through it.
+static void drawBox(int x, int y, int w, int h)
+{
+   uiFillRounded(x, y, w, h, BOX_RADIUS, state.boxEdge);
+   uiFillRounded(x + BOX_EDGE, y + BOX_EDGE, w - 2 * BOX_EDGE, h - 2 * BOX_EDGE, BOX_RADIUS - BOX_EDGE,
+                 activeTheme->surface1);
+}
+
+// The values are re-read from storage on every draw, so the screen never holds its own copy of a setting
+// (which is how a toggle ends up disagreeing with what was actually saved). A value says what it is by its
+// look as much as by its word: the chosen segment is filled, the others are muted text - eight rows of grey
+// words all look alike from a sofa. On the focused row the chosen one is the solid accent with the white ring
+// round it, which is what X will move.
+static void drawSegments(int row, int y, int focused)
+{
+   int chosen = segmentOf(getSponsorAction(skipCategory(row)));
+   int groupY = y + (ROW_H - GROUP_H) / 2, segY = groupY + GROUP_PAD;
+   uiFillRounded(GROUP_X, groupY, GROUP_W, GROUP_H, UI_RADIUS_ROW, activeTheme->appBg);
+
+   int chosenX = 0;
+   for (int k = 0; k < SEG_COUNT; k++) {
+      int segX = GROUP_X + GROUP_PAD + k * (SEG_W + SEG_GAP);
+      uint32_t color = activeTheme->textSecondary;
+      if (k == chosen) {
+         uiFillRounded(segX, segY, SEG_W, SEG_H, SEG_RADIUS, focused ? activeTheme->accent : activeTheme->surface3);
+         color = focused ? activeTheme->onAccent : activeTheme->textPrimary;
+         chosenX = segX;
+      }
+      const Label *word = &segmentLabels[k][k == chosen ? 1 : 0];
+      drawTinted(word, segX + (SEG_W - word->tt.tex.w) / 2, uiLabelYForCenter(word, segY, SEG_H), color);
+   }
+   if (focused) uiDrawFocusRing(chosenX, segY, SEG_W, SEG_H, UI_RING_SEGMENT, activeTheme->textPrimary);
+}
+
+// The switch: on, the accent with the dark knob at its right; off, surface-3 with a text-3 knob at its left -
+// the knob's side says it as much as the colour does, and "On" / "Off" beside it say it in words.
+static void drawSwitch(int y, int focused)
+{
+   int on = getAutoplay() ? 1 : 0;
+   int x = TEXT_RIGHT - SWITCH_W, switchY = y + (ROW_H - SWITCH_H) / 2;
+   uiFillPill(x, switchY, SWITCH_W, SWITCH_H, on ? activeTheme->accent : activeTheme->surface3);
+   int knobX = on ? x + SWITCH_W - SWITCH_INSET - SWITCH_KNOB : x + SWITCH_INSET;
+   uiFillCircle(knobX, switchY + (SWITCH_H - SWITCH_KNOB) / 2, SWITCH_KNOB, on ? activeTheme->onAccent : activeTheme->textTertiary);
+
+   if (focused) {
+      int ringX = x - SWITCH_RING_OUT, ringY = switchY - SWITCH_RING_OUT;
+      int ringW = SWITCH_W + 2 * SWITCH_RING_OUT, ringH = SWITCH_H + 2 * SWITCH_RING_OUT;
+      if (uiGetTexture(UI_TEX_RING_R34_W4).offset)
+         uiDrawNineSlice(UI_TEX_RING_R34_W4, ringX, ringY, ringW, ringH, SWITCH_RING_SCALE, activeTheme->textPrimary);
+      else
+         strokeGfxRectangle(ringX, ringY, ringW, ringH, 3, activeTheme->textPrimary);   // as uiDrawFocusRing falls back
+   }
+
+   const Label *word = &switchLabels[on];
+   drawTinted(word, x - SWITCH_WORD_GAP - word->tt.tex.w, uiLabelYForCenter(word, y, ROW_H),
+              on ? activeTheme->textPrimary : activeTheme->textSecondary);
+}
+
+static void drawRow(int row)
+{
+   int y = rowY(row), focused = (row == state.selected);
+   if (focused)   // the plate that says "you are here", as Bild 3 lays it under the focused row
+      uiFillRounded(TEXT_X - ROW_PLATE_OUT, y, TEXT_RIGHT - TEXT_X + 2 * ROW_PLATE_OUT, ROW_H, UI_RADIUS_ROW,
+                    activeTheme->hintFill);
+
+   int nameX = TEXT_X;
+   if (row != ROW_AUTOPLAY) {
+      // the category's colour, the one its segments wear on the player's timeline
+      uiFillCircle(TEXT_X, y + (ROW_H - DOT_SIZE) / 2, DOT_SIZE,
+                   getSponsorCategoryColor((SponsorCategory)skipCategory(row)));
+      nameX += DOT_SIZE + DOT_GAP;
+   }
+   const Label *name = &rowLabels[row][focused];
+   uiDrawLabelAt(name, nameX, uiLabelYForCenter(name, y, ROW_H));
+
+   if (row == ROW_AUTOPLAY) drawSwitch(y, focused);
+   else                     drawSegments(row, y, focused);
+}
+
 static void drawCard(void)
 {
-   int cardX = UI_SAFE_X + LIST_WIDTH + CARD_GAP;
-   int cardW = UI_SAFE_RIGHT - cardX;
-   int qrSpan = (QR_SIZE + 2 * QR_QUIET) * QR_SCALE;
-   int cardY = LIST_TOP;
+   int x = CARD_X + CARD_PAD_X;
+   drawBox(CARD_X, BODY_Y, CARD_W, state.cardH);
+   uiDrawLabelAt(&aboutLabel, x, uiLabelYForBaseline(&aboutLabel, BODY_Y + HEADING_DY));
+   // level with the Autoplay row, so the card and the panel read as one grid
+   drawQrCode(x, BODY_Y + FIRST_ROW_DY, QR_SCALE);
+   uiDrawLabelAt(&linkLabel, x, uiLabelYForBaseline(&linkLabel, state.linkBaseline));
+   uiDrawLabelAt(&noteLabel, x, uiLabelYForBaseline(&noteLabel, state.noteBaseline));
+}
 
-   // laid out from the top by baselines: the title's capitals start CARD_PAD in, the code hangs under the
-   // title, the link and the note follow the code, and CARD_PAD is left under the note's baseline
-   int titleBase = cardY + CARD_PAD + capHeightOf(&cardTitleLabel);
-   int qrY       = titleBase + CARD_TITLE_GAP;
-   int urlBase   = qrY + qrSpan + CARD_QR_GAP + capHeightOf(&cardUrlLabel);
-   int noteBase  = urlBase + CARD_LINE_GAP + capHeightOf(&cardNoteLabel);
-   int cardH     = noteBase + CARD_PAD - cardY;
-
-   // An Ember panel: surface-1 with a hairline edge drawn inward, so the card ends on the safe area's edge.
-   // The edge used to be the accent, but an orange outline is what focus looks like now, and nothing on
-   // this card can be focused.
-   fillGfxRectangle(cardX, cardY, cardW, cardH, activeTheme->surface1);
-   strokeGfxRectangle(cardX, cardY, cardW, cardH, 2, activeTheme->hairline);
-
-   int centre = cardX + cardW / 2;
-   drawLabelAt(&cardTitleLabel, centre - cardTitleLabel.tt.tex.w / 2, uiLabelYForBaseline(&cardTitleLabel, titleBase));
-   drawQrCode(centre - qrSpan / 2, qrY, QR_SCALE);
-   drawLabelAt(&cardUrlLabel,   centre - cardUrlLabel.tt.tex.w / 2,   uiLabelYForBaseline(&cardUrlLabel, urlBase));
-   drawLabelAt(&cardNoteLabel,  centre - cardNoteLabel.tt.tex.w / 2,  uiLabelYForBaseline(&cardNoteLabel, noteBase));
+static void drawPanel(void)
+{
+   drawBox(PANEL_X, BODY_Y, PANEL_W, state.panelH);
+   uiDrawLabelAt(&playbackLabel, TEXT_X, uiLabelYForBaseline(&playbackLabel, BODY_Y + HEADING_DY));
+   uiDrawLabelAt(&sponsorLabel,  TEXT_X, uiLabelYForBaseline(&sponsorLabel, state.sponsorBaseline));
+   uiDrawLabelAt(&explainLabel,  TEXT_X, uiLabelYForBaseline(&explainLabel, state.explainBaseline));
+   for (int row = 0; row < ROW_COUNT; row++) drawRow(row);
 }
 
 static void drawSettings(void)
 {
    fillGfxRectangle(0, 0, state.screenW, state.screenH, activeTheme->appBg);
-   uiPlaceLabelBaseline(&titleLabel, UI_SAFE_X, TITLE_BASELINE);
-   drawLabel(&titleLabel);
+   drawSidebarPassive(state.screenH, SIDE_SETTINGS);
 
-   // the section heading and its explanation share one baseline; the rule runs under both
-   int firstRow = rowY(ROW_SKIP_FIRST);
-   int sectionBase = firstRow - SECTION_BASE_UP;
-   uiPlaceLabelBaseline(&skipSectionLabel, UI_SAFE_X + ROW_PAD, sectionBase);
-   drawLabel(&skipSectionLabel);
-   uiPlaceLabelBaseline(&skipHintLabel, UI_SAFE_X + ROW_PAD + skipSectionLabel.tt.tex.w + SECTION_TEXT_GAP,
-                        sectionBase);
-   drawLabel(&skipHintLabel);
-   fillGfxRectangle(UI_SAFE_X, firstRow - SECTION_RULE_UP, LIST_WIDTH, 2, activeTheme->hairline);
-
-   for (int row = 0; row < ROW_COUNT; row++) {
-      int y = rowY(row), rowH = ROW_H - ROW_GAP;
-      fillGfxRectangle(UI_SAFE_X, y, LIST_WIDTH, rowH, activeTheme->surface);
-      if (row == state.selected) {
-         fillGfxRectangle(UI_SAFE_X, y, LIST_WIDTH, rowH, activeTheme->rowHighlight);
-         fillGfxRectangle(UI_SAFE_X, y, 5, rowH, activeTheme->accent);   // the bar that says "you are here"
-      }
-
-      // name and value are the same font and size, so one y centres the capitals of both in the row
-      int textY = uiLabelYForCenter(&rowLabels[row], y, rowH);
-      drawLabelAt(&rowLabels[row], UI_SAFE_X + ROW_PAD + 8, textY);
-
-      // the value is right-aligned in the options column, so the states line up in one readable stripe
-      int valueX = UI_SAFE_X + LIST_WIDTH - ROW_PAD - valueLabels[row].tt.tex.w;
-      drawLabelAt(&valueLabels[row], valueX, textY);
-   }
+   uiDrawLabelAt(&titleLabel, CONTENT_X, state.titleY);
+   uiDrawLabelAt(&versionLabel, CONTENT_X, uiLabelYForBaseline(&versionLabel, state.versionBaseline));
+   uiDrawClock(UI_SAFE_RIGHT, state.clockBaseline);
 
    drawCard();
-   // bottom left, under the options, where the Ember settings design (Bild 3) puts this screen's hints
-   uiDrawHints(&hints, UI_SAFE_X, UI_HINTS_BOTTOM_Y, UI_ALIGN_LEFT);
+   drawPanel();
+   // bottom left, under the About card, where the Ember settings design (Bild 3) puts this screen's hints
+   uiDrawHints(&hints, CONTENT_X, UI_HINTS_BOTTOM_Y, UI_ALIGN_LEFT);
 }
 
 static void termSettings(void)
 {
    uiTermHints(&hints);
    freeLabel(&titleLabel);
-   freeLabel(&skipSectionLabel);
-   freeLabel(&skipHintLabel);
-   for (int row = 0; row < ROW_COUNT; row++) { freeLabel(&rowLabels[row]); freeLabel(&valueLabels[row]); }
-   freeLabel(&cardTitleLabel);
-   freeLabel(&cardUrlLabel);
-   freeLabel(&cardNoteLabel);
+   freeLabel(&versionLabel);
+   freeLabel(&aboutLabel);
+   freeLabel(&linkLabel);
+   freeLabel(&noteLabel);
+   freeLabel(&playbackLabel);
+   freeLabel(&sponsorLabel);
+   freeLabel(&explainLabel);
+   for (int row = 0; row < ROW_COUNT; row++) { freeLabel(&rowLabels[row][0]); freeLabel(&rowLabels[row][1]); }
+   for (int k = 0; k < SEG_COUNT; k++) { freeLabel(&segmentLabels[k][0]); freeLabel(&segmentLabels[k][1]); }
+   freeLabel(&switchLabels[0]);
+   freeLabel(&switchLabels[1]);
    // no closeFont: the fonts belong to ui-fonts.c and every other screen is still drawing with them
 }
 

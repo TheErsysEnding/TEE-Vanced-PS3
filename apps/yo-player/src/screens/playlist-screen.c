@@ -1,13 +1,17 @@
 // playlist screen - implementation (see playlist-screen.h). Laid out like search-input.c: a plain list of
-// rows with a hint bar, which is the shape this app already uses for "pick one of these".
+// rows with a hint bar, which is the shape this app already uses for "pick one of these". The rows have the
+// Ember settings look (Bild 3): no plate of their own, the focused one on a rounded plate - here with the
+// focus ring and its glow, since nothing inside a row shows the focus the way a settings segment does.
 
 #include "screens/playlist-screen.h"
 #include "storage.h"
+#include "sidebar.h"            // drawSidebarPassive: the rail, when the screen was opened from it
 #include "ui-hints.h"           // UiHints; brings ui-draw.h (UI_SAFE_*) and ui-fonts.h (uiInitLabel, metrics)
 #include "ui/console-glyphs.h"
 
 #include "gfx.h"
 #include "theme.h"
+#include "anim.h"               // interpolateColor: the focused plate's colour
 #include "pad.h"
 #include "font.h"
 #include "ui/label.h"
@@ -19,26 +23,36 @@
 #include <string.h>
 #include <stdio.h>
 
-// Everything sits inside the safe area (UI_SAFE_X .. UI_SAFE_RIGHT, ui-draw.h) of the 1920x1080 canvas.
-#define TITLE_BASELINE 107      // the page title's baseline, the same as on the list pages (Bild 4)
-#define LIST_TOP      160
+// Everything sits inside the safe area of the 1920x1080 canvas. The content starts beside the collapsed rail
+// (112 px), at x 176 like every Ember page - also when the screen opens as the chooser, which draws no rail:
+// the list then sits where the page it was opened from has its content.
+#define CONTENT_X      176
+// the title's capitals centred on the band the list pages' header uses (home.c): its baseline comes to 107
+// as in Bild 4, and it does not move when this screen opens over Home
+#define HEADER_Y       67
+#define HEADER_H       45
+#define LIST_TOP       160
 // The list never scrolls, so the pitch is what CHOOSE mode's 13 rows (12 lists + "New playlist...") allow:
-// the last plate ends at y 958, clear of the hint row at 998. The 54-px plate still keeps 24-px text and its
-// descenders well inside.
-#define ROW_H         62
-#define PLATE_H       (ROW_H - 8)
-#define ROW_TEXT      24
-#define ROW_WEIGHT    UI_WEIGHT_BOLD
-#define ROW_PAD       18
-#define COUNT_GAP     30
-#define COUNT_W       120       // kept for the count; "60 videos" is about 92 px at 20/600
-#define ICON_SIZE     26
-#define ICON_GAP      12        // icon -> name
-#define LIST_WIDTH    900
-#define NOTICE_PAD    28
-#define NOTICE_TEXT   24
-#define NOTICE_GAP    18        // the message's last line -> the hint line under it
-#define NOTICE_RADIUS 26        // the radius the row ring (UI_RING_ROW) round the box is made for
+// the last plate ends at y 958 and its ring at 967, clear of the hint row at 998. The 54-px plate still keeps
+// 24-px text and its descenders well inside.
+#define ROW_H          62
+#define PLATE_H        (ROW_H - 8)
+#define LIST_W         1152     // the settings rows' width (Bild 3): a count stays within reach of its name
+#define ROW_TEXT       24
+#define ROW_WEIGHT     UI_WEIGHT_BOLD
+#define ROW_PAD        20       // plate edge -> icon, and count -> plate edge
+#define COUNT_GAP      30
+#define COUNT_W        120      // kept for the count; "60 videos" is about 92 px at 20/600
+#define ICON_SIZE      26
+#define ICON_GAP       14       // icon -> name
+// The modal box is search.c's: a rounded panel two thirds of the screen wide with the focus ring round it,
+// the message, and under it the buttons that answer it as a hint row with the console's own glyphs.
+#define NOTICE_PAD_X      44
+#define NOTICE_PAD_TOP    40    // panel top -> the message's first capitals
+#define NOTICE_PAD_BOTTOM 30    // the hint row -> panel bottom
+#define NOTICE_GAP        24    // the message -> the hint row
+#define NOTICE_TEXT       24
+#define NOTICE_RADIUS     26    // the radius the row ring (UI_RING_ROW) round the box is made for
 
 typedef enum { MODE_BROWSE, MODE_CHOOSE } PlaylistMode;
 
@@ -49,9 +63,10 @@ typedef enum { MODE_BROWSE, MODE_CHOOSE } PlaylistMode;
 
 static Label       titleLabel, emptyLabel;
 static Label       rowLabels[MAX_PLAYLISTS], countLabels[MAX_PLAYLISTS], newLabel;
-static Label       noticeLabel, noticeHintLabel;
+static Label       noticeLabel;
 static Icon        rowIcon, newIcon;
 static UiHints     hints;
+static UiHints     closeHints, confirmHints;   // the notice's answers: X Close, or X Delete / O Cancel
 static ButtonRepeat navigateRepeat;
 
 static PlaylistMode  mode;
@@ -68,6 +83,7 @@ static struct {
    int confirmDelete;      // the notice is asking whether to delete `deleteTarget`
    int deleteTarget;
    int renderedCount;      // playlists the row labels were built for
+   uint32_t plateFill;     // the focused plate: hintFill over the page, opaque (see initPlaylistScreen)
 } state;
 
 static int rowCount(void)
@@ -83,7 +99,6 @@ static int playlistForRow(int row)
 static void showNotice(const char *text, int isConfirm)
 {
    uiSetTextLabel(&noticeLabel, UI_BODY_WEIGHT, text);   // can quote a playlist name: external text
-   setLabelText(&noticeHintLabel, isConfirm ? "X Delete     O Cancel" : "Press X to close");
    state.confirmDelete = isConfirm;
    state.noticeVisible = 1;
 }
@@ -149,31 +164,41 @@ static void initPlaylistScreen(void)
    state.selected = 0;
    state.noticeVisible = state.confirmDelete = 0;
    state.deleteTarget = -1;
+   // The focused plate is the settings page's hintFill, made opaque over the page: the glow goes down
+   // under the plate, and through a see-through plate it would tint the whole row orange.
+   state.plateFill = interpolateColor(activeTheme->appBg, uiWithAlpha(activeTheme->hintFill, 0xFF),
+                                      (float)(activeTheme->hintFill >> 24) / 255.0f);
 
    mode = pendingMode;
    pendingItem = pendingItemIn;
    openCallback = pendingCallback;
 
    // Fonts are shared app-wide (ui-fonts.h): nothing is opened here and nothing may be closed in term.
-   int textW = LIST_WIDTH - 2 * ROW_PAD - ICON_SIZE - ICON_GAP - COUNT_GAP - COUNT_W;
+   int textW = LIST_W - 2 * ROW_PAD - ICON_SIZE - ICON_GAP - COUNT_GAP - COUNT_W;
 
-   uiInitLabel(&titleLabel, UI_PAGE_TITLE_WEIGHT, UI_SAFE_X, 0, UI_SAFE_RIGHT - UI_SAFE_X, UI_PAGE_TITLE_SIZE,
+   uiInitLabel(&titleLabel, UI_PAGE_TITLE_WEIGHT, CONTENT_X, 0, UI_SAFE_RIGHT - CONTENT_X, UI_PAGE_TITLE_SIZE,
                activeTheme->textPrimary, TEXT_NOWRAP_ELLIPSIS,
                mode == MODE_CHOOSE ? "Add to playlist" : "Playlists");
    // one line at this size (about 930 px), but wrapped inside the safe area rather than clipped should a font
    // ever draw it wider - it was an unwrapped line that simply stopped at its width
-   uiInitLabel(&emptyLabel, UI_BODY_WEIGHT, UI_SAFE_X + ROW_PAD, 0, UI_SAFE_RIGHT - UI_SAFE_X - ROW_PAD,
-               UI_BODY_SIZE, activeTheme->textSecondary, TEXT_WRAP,
+   uiInitLabel(&emptyLabel, UI_BODY_WEIGHT, CONTENT_X, 0, UI_SAFE_RIGHT - CONTENT_X, UI_BODY_SIZE,
+               activeTheme->textSecondary, TEXT_WRAP,
                "No playlists yet - press START to make one, or L3 on any video to file it straight into a new list.");
-   uiInitLabel(&newLabel, ROW_WEIGHT, 0, 0, textW, ROW_TEXT, activeTheme->accent, TEXT_NOWRAP_ELLIPSIS, "New playlist...");
+   // the one row that makes something rather than opens it, in the accent's text colour
+   uiInitLabel(&newLabel, ROW_WEIGHT, 0, 0, textW, ROW_TEXT, activeTheme->accentText, TEXT_NOWRAP_ELLIPSIS, "New playlist...");
 
    for (int i = 0; i < MAX_PLAYLISTS; i++) {
       uiInitTextLabel(&rowLabels[i], ROW_WEIGHT,     0, 0, textW, ROW_TEXT,     activeTheme->textPrimary,   TEXT_NOWRAP_ELLIPSIS, "");
       uiInitLabel(&countLabels[i],   UI_META_WEIGHT, 0, 0, AUTO,  UI_META_SIZE, activeTheme->textSecondary, TEXT_NOWRAP,          "");
    }
-   uiInitTextLabel(&noticeLabel, UI_BODY_WEIGHT, 0, 0, state.screenW / 2, NOTICE_TEXT, activeTheme->textPrimary,
-                   TEXT_WRAP, "");
-   uiInitLabel(&noticeHintLabel, UI_HINT_WEIGHT, 0, 0, AUTO, UI_HINT_SIZE, activeTheme->textSecondary, TEXT_NOWRAP, "");
+   uiInitTextLabel(&noticeLabel, UI_BODY_WEIGHT, 0, 0, state.screenW * 2 / 3 - 2 * NOTICE_PAD_X, NOTICE_TEXT,
+                   activeTheme->textPrimary, TEXT_WRAP, "");
+   // the notice's own line: the console's buttons, where the old text spelled "Press X to close"
+   uiInitHints(&closeHints);
+   uiAddHint(&closeHints, GLYPH_CROSS, "Close");
+   uiInitHints(&confirmHints);
+   uiAddHint(&confirmHints, GLYPH_CROSS,  "Delete");
+   uiAddHint(&confirmHints, GLYPH_CIRCLE, "Cancel");
 
    initIcon(&rowIcon, ICON_DOCS, ICON_SIZE);
    initIcon(&newIcon, ICON_PLUS_CIRCLED, ICON_SIZE);
@@ -256,80 +281,95 @@ static void drawRowIcon(Icon *icon, int x, int plateY, uint32_t tint)
    drawIcon(icon, x, plateY + (PLATE_H - icon->tex->h) / 2 - icon->offsetY, tint);
 }
 
+// The focused row's plate: the glow first, so it shows round the plate and not over it, then the plate and
+// the ring. The ring is the one made for radius-16 cards (UI_RING_CARD, 5 px out): round a radius-18 plate
+// it keeps that distance along the sides and comes out a pixel wider at the corners, where the search rows'
+// ring (radius 26, 4 px out) would almost touch them.
+static void drawFocusPlate(int y)
+{
+   uiDrawFocusGlow(CONTENT_X, y, LIST_W, PLATE_H, activeTheme->focusGlow);
+   uiFillRounded(CONTENT_X, y, LIST_W, PLATE_H, UI_RADIUS_ROW, state.plateFill);
+   uiDrawFocusRing(CONTENT_X, y, LIST_W, PLATE_H, UI_RING_CARD, activeTheme->focusBorder);
+}
+
 static void drawRow(int row, int y)
 {
    int isNewRow = (mode == MODE_CHOOSE && row == CHOOSE_NEW_ROW);
    int playlist = playlistForRow(row);
    int picked = (row == state.selected);
 
-   fillGfxRectangle(UI_SAFE_X, y, LIST_WIDTH, PLATE_H, activeTheme->surface);
-   if (picked) {
-      fillGfxRectangle(UI_SAFE_X, y, LIST_WIDTH, PLATE_H, activeTheme->rowHighlight);
-      fillGfxRectangle(UI_SAFE_X, y, 5, PLATE_H, activeTheme->accent);
-   }
-
-   uint32_t tint = picked ? activeTheme->accent : activeTheme->textSecondary;
-   drawRowIcon(isNewRow ? &newIcon : &rowIcon, UI_SAFE_X + ROW_PAD, y, tint);
+   uint32_t tint = picked ? activeTheme->accent : isNewRow ? activeTheme->accentText : activeTheme->textSecondary;
+   drawRowIcon(isNewRow ? &newIcon : &rowIcon, CONTENT_X + ROW_PAD, y, tint);
 
    int baseline = rowBaseline(y);
-   int textX = UI_SAFE_X + ROW_PAD + ICON_SIZE + ICON_GAP;
+   int textX = CONTENT_X + ROW_PAD + ICON_SIZE + ICON_GAP;
    if (isNewRow) {
-      drawLabelAt(&newLabel, textX, uiLabelYForBaseline(&newLabel, baseline));
+      uiDrawLabelAt(&newLabel, textX, uiLabelYForBaseline(&newLabel, baseline));
       return;
    }
-   setLabelColor(&rowLabels[playlist], picked ? activeTheme->textPrimary : activeTheme->textSecondary);
-   drawLabelAt(&rowLabels[playlist], textX, uiLabelYForBaseline(&rowLabels[playlist], baseline));
-   drawLabelAt(&countLabels[playlist], UI_SAFE_X + LIST_WIDTH - ROW_PAD - countLabels[playlist].tt.tex.w,
-               uiLabelYForBaseline(&countLabels[playlist], baseline));
+   uiDrawLabelAt(&rowLabels[playlist], textX, uiLabelYForBaseline(&rowLabels[playlist], baseline));
+   uiDrawLabelAt(&countLabels[playlist], CONTENT_X + LIST_W - ROW_PAD - countLabels[playlist].tt.tex.w,
+                 uiLabelYForBaseline(&countLabels[playlist], baseline));
+}
+
+// The modal box, laid out from its message's measurements, so a message in FONT_POP (a Japanese playlist
+// name) sits exactly where a Manrope one would: its capitals NOTICE_PAD_TOP below the panel's top, the
+// answers NOTICE_GAP under its texture, and NOTICE_PAD_BOTTOM under them.
+static void drawNotice(void)
+{
+   UiTextMetrics metrics = uiGetTextMetrics(noticeLabel.font, noticeLabel.size);
+   int textTop = NOTICE_PAD_TOP - metrics.capTop;
+   if (textTop < 0) textTop = 0;
+   const UiHints *answers = state.confirmDelete ? &confirmHints : &closeHints;
+   int panelW = state.screenW * 2 / 3;
+   int panelH = textTop + noticeLabel.tt.tex.h + NOTICE_GAP + UI_HINT_GLYPH_H + NOTICE_PAD_BOTTOM;
+   int x = (state.screenW - panelW) / 2, y = (state.screenH - panelH) / 2;
+   // the same box as home's and search's: a rounded panel, and the focus ring round it because it owns
+   // the pad until it is answered
+   fillGfxRectangle(0, 0, state.screenW, state.screenH, activeTheme->scrim);
+   uiFillRounded(x, y, panelW, panelH, NOTICE_RADIUS, activeTheme->surface);
+   uiDrawFocusRing(x, y, panelW, panelH, UI_RING_ROW, activeTheme->focusBorder);
+   uiDrawLabelAt(&noticeLabel, x + NOTICE_PAD_X, y + textTop);
+   uiDrawHints(answers, x + NOTICE_PAD_X, y + textTop + noticeLabel.tt.tex.h + NOTICE_GAP, UI_ALIGN_LEFT);
 }
 
 static void drawPlaylistScreen(void)
 {
    fillGfxRectangle(0, 0, state.screenW, state.screenH, activeTheme->appBg);
-   uiPlaceLabelBaseline(&titleLabel, UI_SAFE_X, TITLE_BASELINE);
-   drawLabel(&titleLabel);
+   // From the rail the screen is one of its pages, and the rail says so. As the chooser (L3 on a video) it is
+   // a step inside the page it came from, which the rail cannot mark.
+   if (mode == MODE_BROWSE) drawSidebarPassive(state.screenH, SIDE_PLAYLISTS);
 
    int rows = rowCount();
+   if (rows > 0) drawFocusPlate(LIST_TOP + state.selected * ROW_H);
+   for (int row = 0; row < rows; row++) drawRow(row, LIST_TOP + row * ROW_H);
    if (rows == 0) {
       // on the line where the first list will appear
-      uiPlaceLabelBaseline(&emptyLabel, UI_SAFE_X + ROW_PAD, rowBaseline(LIST_TOP));
+      uiPlaceLabelBaseline(&emptyLabel, CONTENT_X, rowBaseline(LIST_TOP));
       drawLabel(&emptyLabel);
    }
-   for (int row = 0; row < rows; row++) drawRow(row, LIST_TOP + row * ROW_H);
+
+   // the title after the list: the first row's glow reaches up under it, and text drawn before the glow
+   // would come out tinted orange
+   uiPlaceLabelCentered(&titleLabel, CONTENT_X, HEADER_Y, HEADER_H);
+   drawLabel(&titleLabel);
 
    uiDrawHints(&hints, UI_SAFE_RIGHT, UI_HINTS_BOTTOM_Y, UI_ALIGN_RIGHT);
 
-   if (state.noticeVisible) {
-      // The padding is measured from the ink, not from the textures (whose first and last rows are blank by
-      // an amount that depends on the font): the message's capitals start NOTICE_PAD below the panel's top,
-      // and the hint line's baseline sits NOTICE_PAD above its bottom.
-      UiTextMetrics text = uiGetTextMetrics(noticeLabel.font, noticeLabel.size);
-      UiTextMetrics hint = uiGetTextMetrics(noticeHintLabel.font, noticeHintLabel.size);
-      int textH = noticeLabel.tt.tex.h - text.capTop;   // first line's capitals .. the last line's descenders
-      if (textH < 0) textH = 0;
-      int panelW = state.screenW * 2 / 3;
-      int panelH = NOTICE_PAD + textH + NOTICE_GAP + (hint.baseline - hint.capTop) + NOTICE_PAD;
-      int x = (state.screenW - panelW) / 2, y = (state.screenH - panelH) / 2;
-      // the same box as home's and search's: a rounded panel, and the focus ring round it because it owns
-      // the pad until it is answered
-      fillGfxRectangle(0, 0, state.screenW, state.screenH, activeTheme->scrim);
-      uiFillRounded(x, y, panelW, panelH, NOTICE_RADIUS, activeTheme->surface);
-      uiDrawFocusRing(x, y, panelW, panelH, UI_RING_ROW, activeTheme->focusBorder);
-      drawLabelAt(&noticeLabel, x + NOTICE_PAD, y + NOTICE_PAD - text.capTop);
-      drawLabelAt(&noticeHintLabel, x + NOTICE_PAD, uiLabelYForBaseline(&noticeHintLabel, y + panelH - NOTICE_PAD));
-   }
+   if (state.noticeVisible) drawNotice();
 }
 
 static void termPlaylistScreen(void)
 {
    uiTermHints(&hints);
+   uiTermHints(&closeHints);
+   uiTermHints(&confirmHints);
    freeIcon(&rowIcon);
    freeIcon(&newIcon);
    freeLabel(&titleLabel);
    freeLabel(&emptyLabel);
    freeLabel(&newLabel);
    freeLabel(&noticeLabel);
-   freeLabel(&noticeHintLabel);
    for (int i = 0; i < MAX_PLAYLISTS; i++) { freeLabel(&rowLabels[i]); freeLabel(&countLabels[i]); }
    // no closeFont: the fonts belong to ui-fonts.c and every other screen is still drawing with them
 }

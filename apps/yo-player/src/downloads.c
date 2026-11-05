@@ -12,10 +12,12 @@
 #include "string-utilities.h"   // strCopy
 #include "font.h"
 #include "ui/label.h"
+#include "ui/icon-font.h"       // the chip's download arrow
 #include "ui-fonts.h"           // the shared fonts and the label helpers: the overlay opens no font of its own
-#include "ui-draw.h"            // safe area, rounded fill, fixed-width digits
-#include "ui-hints.h"           // UI_HINTS_BOTTOM_Y: the overlay sits just above the hint row
+#include "ui-draw.h"            // safe area, pills, fixed-width digits
+#include "ui-hints.h"           // UI_HINTS_BOTTOM_Y: by default the overlay sits just above the hint row
 #include "theme.h"
+#include "anim.h"               // interpolateColor: the chip's edge, blended once
 #include "gfx.h"
 #include "dbg.h"
 
@@ -25,13 +27,20 @@
 
 #define MAX_QUEUE          16
 #define DISPLAY_TITLE_MAX  32       // longest title shown in the "Downloading ..." overlay
-// The overlay carries a title, so its text is reading text (20/600), not badge text (18/800). The percent
-// counts up while it is on screen and is drawn in fixed-width digits: Manrope's own digits are proportional,
-// and the overlay's left edge would twitch at every step.
+// The overlay is an Ember chip (Bild 6's filter chips): a pill in surface-2 with the 2-px hairline inside
+// its edge that the search field has, so it holds its own against the page behind it. It carries a title, so
+// its text is reading text (20/600), not badge text (18/800). The percent counts up while it is on screen and
+// is drawn in fixed-width digits, in the accent the app uses for progress: Manrope's own digits are
+// proportional, and the chip's left edge would twitch at every step.
 #define OVERLAY_TEXT_SIZE  UI_META_SIZE
 #define OVERLAY_WEIGHT     UI_META_WEIGHT
-#define OVERLAY_H          UI_HINT_GLYPH_H   // as tall as the hint glyphs under it
-#define OVERLAY_PAD_X      14
+#define PERCENT_WEIGHT     UI_WEIGHT_BOLD
+#define OVERLAY_H          DOWNLOAD_OVERLAY_H
+#define OVERLAY_EDGE       2
+#define OVERLAY_PAD_L      16       // the pill's round end -> the arrow
+#define OVERLAY_PAD_R      20       // the last text -> the pill's round end
+#define OVERLAY_ICON       22
+#define OVERLAY_ICON_GAP   10       // the arrow -> the text
 #define OVERLAY_GAP        20       // between the overlay and the hint row under it
 #define OVERLAY_TEXT_MAX_W 560      // a guard: 32 bytes of title come to about 500 px with the words round it
 
@@ -57,6 +66,8 @@ static Label    overlayLabel;      // `Downloading "<title>"`
 static Label    queueLabel;        // "(+N)" while more downloads wait behind this one, else empty
 static UiDigits percentDigits;     // the percent, in fixed-width digits
 static char     percentText[8];    // " NN%" - the space before the number is part of it
+static Icon     overlayIcon;       // the download arrow at the chip's left end
+static uint32_t overlayEdge;       // the hairline over surface-2, opaque: the chip's 2-px edge
 
 // ---- filename ----
 
@@ -211,7 +222,7 @@ void enqueueDownload(const SearchResult *item)
 // ---- overlay ----
 
 // "Downloading "<title>" NN%" with the title truncated so it can't fill the screen; "(+N)" when more are
-// queued. The title part is one label; the percent and the "(+N)" are drawn after it (drawDownloadOverlay),
+// queued. The title part is one label; the percent and the "(+N)" are drawn after it (drawDownloadOverlayAt),
 // so neither a count nor a percent step has to re-render the title.
 static void formatOverlay(char *out, int cap)
 {
@@ -240,30 +251,64 @@ void updateDownloadOverlay(void)
    snprintf(percentText, sizeof percentText, " %d%%", dl.percent);
 }
 
-// Above the right end of the hint row, inside the safe area. Until v0.13 it sat 6 px from the screen's top
-// right corner - outside the safe area, where a TV's overscan can cut it off. Home and Search both draw it,
-// and in their list view this corner is free: the result rows keep to the left column, and the preview of the
-// selection in the right one ends far higher up.
-void drawDownloadOverlay(int screenWidth)
+static int overlayShown(void)
 {
-   if (!dl.initialized || !dl.active || overlayLabel.tt.tex.w == 0) return;
+   return dl.initialized && dl.active && overlayLabel.tt.tex.w > 0;
+}
 
-   int spaceW   = uiGetDigitsWidth(&percentDigits, " ");
-   int percentW = uiGetDigitsWidth(&percentDigits, percentText);
-   int queueW   = queueLabel.tt.tex.w > 0 ? spaceW + queueLabel.tt.tex.w : 0;
-   int badgeW   = OVERLAY_PAD_X + overlayLabel.tt.tex.w + percentW + queueW + OVERLAY_PAD_X;
-   int x = screenWidth - UI_SAFE_X - badgeW, y = UI_HINTS_BOTTOM_Y - OVERLAY_GAP - OVERLAY_H;
-   uiFillRounded(x, y, badgeW, OVERLAY_H, UI_RADIUS_BADGE, activeTheme->surface);
+// the chip's parts, left to right: the arrow, the title, the percent and - while more wait - the "(+N)"
+static int iconSpan(void)    { return overlayIcon.tex ? OVERLAY_ICON + OVERLAY_ICON_GAP : 0; }
+static int queueSpan(void)
+{
+   return queueLabel.tt.tex.w > 0 ? uiGetDigitsWidth(&percentDigits, " ") + queueLabel.tt.tex.w : 0;
+}
 
-   // the three parts share one baseline: the title may have fallen back to FONT_POP, which puts its capitals
+int getDownloadOverlayWidth(void)
+{
+   if (!overlayShown()) return 0;
+   return OVERLAY_PAD_L + iconSpan() + overlayLabel.tt.tex.w + uiGetDigitsWidth(&percentDigits, percentText)
+          + queueSpan() + OVERLAY_PAD_R;
+}
+
+void drawDownloadOverlayAt(int x, int y, UiAlign align)
+{
+   int chipW = getDownloadOverlayWidth();
+   if (chipW == 0) return;
+   if (align == UI_ALIGN_RIGHT)       x -= chipW;
+   else if (align == UI_ALIGN_CENTER) x -= chipW / 2;
+
+   // the pill and, 2 px inside its edge, the pill again in surface-2: the edge is left as a hairline ring
+   uiFillPill(x, y, chipW, OVERLAY_H, overlayEdge);
+   uiFillPill(x + OVERLAY_EDGE, y + OVERLAY_EDGE, chipW - 2 * OVERLAY_EDGE, OVERLAY_H - 2 * OVERLAY_EDGE,
+              activeTheme->surface);
+
+   int textX = x + OVERLAY_PAD_L;
+   if (overlayIcon.tex) {
+      // the arrow's ink centred in its 22-px box and on the chip: drawIcon places the glyph's em box
+      drawIcon(&overlayIcon, textX + (OVERLAY_ICON - overlayIcon.tex->w) / 2 - overlayIcon.offsetX,
+               y + (OVERLAY_H - overlayIcon.tex->h) / 2 - overlayIcon.offsetY, activeTheme->accent);
+      textX += iconSpan();
+   }
+
+   // the three texts share one baseline: the title may have fallen back to FONT_POP, which puts its capitals
    // at another height in its texture than Manrope does
    int digitsY  = uiTextYForCenter(percentDigits.font, percentDigits.size, y, OVERLAY_H);
    int baseline = digitsY + uiGetTextMetrics(percentDigits.font, percentDigits.size).baseline;
-   int textX    = x + OVERLAY_PAD_X;
    uiDrawLabelAt(&overlayLabel, textX, uiLabelYForBaseline(&overlayLabel, baseline));
    textX += overlayLabel.tt.tex.w;
-   uiDrawDigits(&percentDigits, textX, digitsY, percentText, activeTheme->textPrimary);
-   if (queueW > 0) uiDrawLabelAt(&queueLabel, textX + percentW + spaceW, uiLabelYForBaseline(&queueLabel, baseline));
+   uiDrawDigits(&percentDigits, textX, digitsY, percentText, activeTheme->accent);
+   textX += uiGetDigitsWidth(&percentDigits, percentText);
+   if (queueLabel.tt.tex.w > 0)
+      uiDrawLabelAt(&queueLabel, textX + uiGetDigitsWidth(&percentDigits, " "), uiLabelYForBaseline(&queueLabel, baseline));
+}
+
+// Above the right end of the hint row, inside the safe area. Until v0.13 it sat 6 px from the screen's top
+// right corner - outside the safe area, where a TV's overscan can cut it off. On Home that strip is free: the
+// list pages' cards end well above it. A screen whose content runs down to its hint row places the chip
+// itself (drawDownloadOverlayAt).
+void drawDownloadOverlay(int screenWidth)
+{
+   drawDownloadOverlayAt(screenWidth - UI_SAFE_X, UI_HINTS_BOTTOM_Y - OVERLAY_GAP - OVERLAY_H, UI_ALIGN_RIGHT);
 }
 
 // ---- lifecycle ----
@@ -274,9 +319,14 @@ void initDownloads(void)
    createLock(&dl.mutex);
    // the shared fonts (ui-fonts.h), open since initUiFonts; the digits need gfx, up since initGfx
    uiInitTextLabel(&overlayLabel, OVERLAY_WEIGHT, 0, 0, OVERLAY_TEXT_MAX_W, OVERLAY_TEXT_SIZE, activeTheme->textPrimary, TEXT_NOWRAP_ELLIPSIS, "");
-   uiInitLabel(&queueLabel, OVERLAY_WEIGHT, 0, 0, AUTO, OVERLAY_TEXT_SIZE, activeTheme->textPrimary, TEXT_NOWRAP, "");
-   uiInitDigits(&percentDigits, OVERLAY_WEIGHT, OVERLAY_TEXT_SIZE);
+   // the queue count is secondary to what is downloading now: text-2
+   uiInitLabel(&queueLabel, OVERLAY_WEIGHT, 0, 0, AUTO, OVERLAY_TEXT_SIZE, activeTheme->textSecondary, TEXT_NOWRAP, "");
+   uiInitDigits(&percentDigits, PERCENT_WEIGHT, OVERLAY_TEXT_SIZE);
    strCopy(percentText, sizeof percentText, " 0%");
+   // the icon font is loaded before this (main.c); a glyph that fails to rasterise leaves the arrow out
+   initIcon(&overlayIcon, ICON_DOWNLOAD, OVERLAY_ICON);
+   overlayEdge = interpolateColor(activeTheme->surface, uiWithAlpha(activeTheme->hairline, 0xFF),
+                                  (float)(activeTheme->hairline >> 24) / 255.0f);
    dl.initialized = 1;
 }
 
@@ -290,6 +340,7 @@ void shutdownDownloads(void)
    freeLabel(&overlayLabel);
    freeLabel(&queueLabel);
    uiFreeDigits(&percentDigits);
+   freeIcon(&overlayIcon);   // the texture belongs to the icon font's cache, which main.c frees
    // no closeFont: the fonts are shared (main.c closes them in termUiFonts, after this)
    destroyLock(&dl.mutex);
    dl.initialized = 0;
