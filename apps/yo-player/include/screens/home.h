@@ -12,11 +12,11 @@ void openHome(void);
 extern Screen homeScreen;
 
 // The rail on a screen pushed over Home that shows it (Search, the search field, Settings, Playlists): LEFT opens
-// it there, and it then owns the pad exactly as on Home - UP/DOWN move, X or RIGHT pick, O only closes it. Call it
+// it there, and it then owns the pad exactly as on Home - UP/DOWN move, X picks, O or RIGHT only close it. Call it
 // first in the screen's update and act on what it returns:
 //   RAIL_NOT_OPEN   the rail took nothing this frame: the screen handles its input as usual
-//   RAIL_OPEN       the rail took this frame's input (it opened, moved, or O - or RIGHT on the screen's own entry -
-//                   closed it): the screen does nothing else with the pad this frame
+//   RAIL_OPEN       the rail took this frame's input (it opened, moved, or O or RIGHT closed it): the screen does
+//                   nothing else with the pad this frame
 //   RAIL_PICKED_OWN X on the screen's own entry; the rail is closed again, the screen decides what that means
 //   RAIL_GONE       another entry was picked: Home is back on top and acts on it as on a pick in its own rail. The
 //                   calling screen has been terminated - return from its update at once, touching none of its state.

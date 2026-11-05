@@ -14,8 +14,8 @@ console before being called done. See [CHANGELOG.md](CHANGELOG.md).
 
 **A left icon rail.** Search, Trending, Subscriptions, Continue watching,
 Playlists, Watch Later, History and Settings, all on screen as icons instead of
-behind shoulder buttons you have to remember. LEFT or O opens it, X or RIGHT
-picks. The icons come from the icon font already compiled into the upstream
+behind shoulder buttons you have to remember. LEFT or O opens it, X picks,
+O or RIGHT close it again. The icons come from the icon font already compiled into the upstream
 library — nothing extra is shipped.
 
 **A settings screen.** Upstream has none: the options exist but the only way to

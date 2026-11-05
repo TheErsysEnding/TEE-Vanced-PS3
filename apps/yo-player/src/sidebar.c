@@ -137,10 +137,12 @@ int updateSidebar(void)
    if (isPadButtonPressed(PAD_BTN_DOWN)) picked = step(picked, 1);
    if (isPadButtonPressed(PAD_BTN_UP))   picked = step(picked, -1);
 
-   // O leaves the rail without changing anything - the one gesture that must never commit by accident
-   if (isPadButtonPressed(PAD_BTN_CIRCLE)) { focused = 0; return -1; }
+   // O and RIGHT leave the rail without changing anything: RIGHT points back at the page, and you land where you
+   // were on it. Only X commits the highlighted entry - RIGHT used to as well, so a RIGHT meant as "back" opened
+   // whatever the highlight had been moved to.
+   if (isPadButtonPressed(PAD_BTN_CIRCLE) || isPadButtonPressed(PAD_BTN_RIGHT)) { focused = 0; return -1; }
 
-   if (isPadButtonPressed(PAD_BTN_CROSS) || isPadButtonPressed(PAD_BTN_RIGHT)) return picked;
+   if (isPadButtonPressed(PAD_BTN_CROSS)) return picked;
    return -1;
 }
 

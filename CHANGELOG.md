@@ -3,7 +3,7 @@
 Every release listed here was installed and used on a real PS3 (EVILNAT 4.92 DEX)
 before it was tagged. Anything that had not been is said so plainly.
 
-## v0.14 beta — not released yet
+## v0.9 beta — not released yet
 
 Not yet installed on a console.
 
@@ -45,8 +45,9 @@ live streams.
   over the page with the names and dims the rest. Search, the search field,
   the settings and the playlists (opened from the menu) show it too, and LEFT
   opens it there as on the home screen; picking another page there goes back
-  to the home screen and opens that page. RIGHT on the page you are on closes
-  the menu, as O does, and leaves you where you were.
+  to the home screen and opens that page. RIGHT now closes the menu, as O
+  does, and leaves you where you were; only X opens the highlighted page
+  (RIGHT used to open it too).
 - **Search**: the field and the search history as rows; the results three to
   a page, with the sort shown as a switch (SELECT changes it as before) and
   the page count in the field. UP on the first result moves to the field, and

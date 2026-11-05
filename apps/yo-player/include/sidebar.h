@@ -45,7 +45,7 @@ void setSidebarCurrent(SidebarItem item);
 int  isSidebarFocused(void);
 void setSidebarFocused(int focused);   // entering also parks the highlight on the current entry
 
-// Runs only while focused. UP/DOWN move the highlight, X or RIGHT pick, O leaves without changing anything.
+// Runs only while focused. UP/DOWN move the highlight, X picks, O or RIGHT leave without changing anything.
 // Returns the picked entry, or -1 when nothing was picked this frame.
 int  updateSidebar(void);
 

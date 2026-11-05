@@ -438,8 +438,8 @@ static void updateSearch(void)
    }
 
    // The rail: LEFT opens it here as on Home (home.h), and while it is open the list only keeps loading and
-   // decoding. X on Search in it means a new search, as START does here; RIGHT on it only closes the rail, back
-   // to the result or the field you were on.
+   // decoding. X on Search in it means a new search, as START does here; O or RIGHT only close the rail, back to
+   // the result or the field you were on.
    int rail = updateRailOverScreen(SIDE_SEARCH);
    if (rail == RAIL_GONE) return;   // Home is back on top: this screen is gone, touch nothing of it
    if (rail != RAIL_NOT_OPEN) {

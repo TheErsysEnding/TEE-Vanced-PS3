@@ -646,11 +646,9 @@ int updateRailOverScreen(SidebarItem own)
       return RAIL_OPEN;
    }
    int picked = updateSidebar();
-   if (picked < 0) return RAIL_OPEN;   // still open, or O just closed it: either way the frame was the rail's
+   if (picked < 0) return RAIL_OPEN;   // still open, or O or RIGHT just closed it: the frame was the rail's either way
    setSidebarFocused(0);
-   // RIGHT on the screen's own entry - where the rail opens - is the way back to where you were, as O is: the
-   // screen's focus is left as it was. X on it is the entry's own action, for the screen to decide.
-   if (picked == (int)own) return isPadButtonPressed(PAD_BTN_CROSS) ? RAIL_PICKED_OWN : RAIL_OPEN;
+   if (picked == (int)own) return RAIL_PICKED_OWN;
 
    // Every screen above Home goes, top first, each with its own term and the next one's resume, exactly as O
    // would take them down one by one. Home is the root of the stack, so the loop stops there; the bound only

@@ -20,7 +20,7 @@ static char themesPath[96], themesBackup[96], settingsPath[96];
 
 // TEE: the app's own palette, taken straight from the icon so the console entry and the app are one
 // thing - #ff8a00 orange, the warm near-black ground and the cream text the user's other tools use
-// (TEE Video2Audio, TEEconverter). Since v0.14 these are the "Ember" design tokens (UEBERGABE 3.1/3.2):
+// (TEE Video2Audio, TEEconverter). Since v0.9 these are the "Ember" design tokens (UEBERGABE 3.1/3.2):
 // the same orange, a slightly cooler ground, and helper textures instead of flat rectangles - the focus
 // glow is now a soft texture tinted with focusGlow rather than a second, wider ring.
 static const Theme themeTee = {
@@ -63,7 +63,7 @@ static const Theme themeTee = {
 
 // every colour field by name, so a themes.txt "key=value" line maps straight onto the struct.
 // focusThickness is not user-tunable - a block inherits the built-in's value via the seed copy. The keys
-// added in v0.14 come last, so the lines an older file already had keep their order.
+// added in v0.9 come last, so the lines an older file already had keep their order.
 static const ThemeColorField COLOR_FIELDS[] = {
    { "appBg",            offsetof(Theme, appBg)            },
    { "surface",          offsetof(Theme, surface)          },
@@ -97,7 +97,7 @@ static const ThemeColorField COLOR_FIELDS[] = {
 };
 #define COLOR_FIELD_COUNT ((int)(sizeof COLOR_FIELDS / sizeof COLOR_FIELDS[0]))
 
-// Says a themes.txt was written for the Ember palette. A file without it is from before v0.14 and still
+// Says a themes.txt was written for the Ember palette. A file without it is from before v0.9 and still
 // holds the old [TEE] colours, which would override the new built-in on every launch - the new look would
 // simply never appear. initTheme treats such a file the way it treats one from before the rebrand: copied
 // to themes.txt.bak, then replaced. The marker is on the header's second line because the check only reads
@@ -127,7 +127,7 @@ static const char *THEMES_FILE_HEADER =
    "seekTrack=#FFFFFF66\n"
    "seekNotch=#000000\n"
    "watchedThumbTint=#4D4D4D\n"
-   // the v0.14 keys: without them this block would inherit TEE's orange highlights next to its red
+   // the v0.9 keys: without them this block would inherit TEE's orange highlights next to its red
    "surface1=#181818\n"
    "surface3=#383838\n"
    "textTertiary=#AAAAAA\n"
@@ -178,7 +178,7 @@ void initTheme(void)
    //
    // A file from before the rebrand is a special case: it has no [TEE] block at all, and its selected
    // theme still names the old palette - so an existing install would keep the old skin for ever and the
-   // new one would look like it had failed. A file from before v0.14 is the same problem one step later:
+   // new one would look like it had failed. A file from before v0.9 is the same problem one step later:
    // it HAS a [TEE] block, but with the old palette in it, and that block overrides the built-in - so the
    // Ember colours would never show. Both are told apart by the missing THEMES_FILE_MARKER alone - a file
    // from before the rebrand predates it as well - so a current file is kept even when the user has deleted

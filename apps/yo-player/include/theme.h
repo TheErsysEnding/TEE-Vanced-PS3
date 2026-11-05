@@ -33,7 +33,7 @@ typedef struct {
                                 // Ember timeline)
    uint32_t watchedThumbTint;   // already-watched tiles: opaque darkening applied to the thumbnail
 
-   // ---- Ember tokens (UEBERGABE 3.1) that the struct did not have before v0.14 ----
+   // ---- Ember tokens (UEBERGABE 3.1) that the struct did not have before v0.9 ----
    uint32_t surface1;           // "surface-1": cards, panels, the focused search row
    uint32_t surface3;           // "surface-3": the chosen value while it is not focused ("calmly selected")
    uint32_t textTertiary;       // "text-3": channel . date in cards - only at 20 px or larger (18 px grey
