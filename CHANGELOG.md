@@ -10,7 +10,23 @@ Not yet installed on a console.
 The new look, "Ember": a warm dark ground with TEE orange, the Manrope
 typeface, thumbnails that carry the pages, a focus that can be seen from the
 sofa, and the console's own button symbols. Every button still does what it
-did, apart from LEFT on the home screen (below).
+did, apart from LEFT and UP (below). New: a region for the lists, and a page of
+live streams.
+
+### Added
+
+- **Region**: the country YouTube's lists come from, in the settings under
+  Autoplay. X opens a list of 33 countries - Germany, Austria and Switzerland
+  first, then A-Z, L2/R2 a page at a time - and every list follows it:
+  Trending and Live fully, Search and Trending Sports only partly (part of them
+  follows where the console is). The app stays in English, because it reads
+  YouTube's English text. United States stays the default, as before.
+- **Live**: a page of streams that are on air now, in the menu after
+  Trending, with Popular, Gaming, Sports, Podcasts, News and Music. L1/R1 move
+  between those six only; R3 is gone there, as a live stream cannot be
+  downloaded. Where News has too few streams, a live search for the country's
+  own word for news fills it up. A Live page older than ten minutes reloads
+  when you come back to it, since streams end.
 
 ### Changed
 
@@ -27,11 +43,14 @@ did, apart from LEFT on the home screen (below).
   always undoes it, and DOWN onto a shorter last row lands on its last card.
 - **The menu** is a narrow strip of icons under the TEE tile. Opened, it lies
   over the page with the names and dims the rest. Search, the search field,
-  the settings and the playlists (opened from the menu) show it too, inactive.
+  the settings and the playlists (opened from the menu) show it too, and LEFT
+  opens it there as on the home screen; picking another page there goes back
+  to the home screen and opens that page.
 - **Search**: the field and the search history as rows; the results three to
   a page, with the sort shown as a switch (SELECT changes it as before) and
-  the page count in the field. On the field screen the hints say what X and
-  Square do on the row you are on.
+  the page count in the field. UP on the first result moves to the field, and
+  X there opens the keyboard on your query - no need for START. On the field
+  screen the hints say what X and Square do on the row you are on.
 - **The settings are one list** - Playback, then SponsorBlock with Skip, Ask
   and Keep for each category - beside the About card with the QR code.
 - **The player**: title, channel and views at the top left; quality, audio
@@ -88,6 +107,23 @@ did, apart from LEFT on the home screen (below).
   description is now shortened from the end until it fits, and ends in "...".
 - R3's statistics gave a long video's time in minutes (192:50); they now use
   the hours the timeline shows (3:12:50).
+- **Replay at the end of a video hung.** X sought the finished streams back to
+  the start; they only starved, the time stood at 0:00, and O then froze the
+  app. Replay - and any seek once a video has ended - now reopens the video at
+  that point, as an audio-track switch does. Found in RPCS3.
+- **R1 landed a few seconds before the next chapter**, on the last keyframe
+  before its start, so the previous chapter's name showed. Chapter jumps (L1,
+  R1, the chapter list) now land at or just after the chapter's start.
+- **A channel's Popular and Oldest showed the Latest list.** YouTube moved the
+  three sorts into a menu on one "Latest" chip; the app now reads them there.
+- **Trending cards had no duration**: YouTube gives it there only on the
+  thumbnail, where the app now reads it.
+- **Search never showed LIVE badges**, and R3 queued a live hit for a download
+  that could only fail: search marks a live stream only with a badge the app
+  did not read. Live hits now show LIVE and "... watching", and R3 leaves them.
+- **Names and titles cut by the app's field sizes** ended in the middle of a
+  word, or of a Cyrillic or Japanese character, which showed as a stray letter.
+  They are cut at a whole character now and end in "...".
 
 ## v0.13.1 beta — not released yet
 
