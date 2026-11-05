@@ -9,6 +9,7 @@
 #include "screens/play.h"
 #include "video-grid.h"
 #include "storage.h"
+#include "settings.h"           // the content region: its revision makes the Trending lists stale
 #include "downloads.h"
 #include "ps-button.h"
 #include "ui/console-glyphs.h"
@@ -91,6 +92,7 @@ static int           subsRevisionSeen;         // subscriptions revision the cac
 static int           watchLaterRevisionSeen;   // watch-later revision the cached HOME_WATCHLATER feed was built at
 static int           historyRevisionSeen;      // watch-history revision the cached HOME_HISTORY feed was built at
 static int           playlistRevisionSeen;     // playlists revision the cached HOME_PLAYLIST feed was built at
+static unsigned      regionRevisionSeen;       // content-region revision the cached Trending feeds were fetched at
 static int           openPlaylist;             // which list HOME_PLAYLIST is showing
 
 static struct {
@@ -476,6 +478,7 @@ static void initHome(void)
    watchLaterRevisionSeen = getWatchLaterRevision();
    historyRevisionSeen = getWatchHistoryRevision();
    playlistRevisionSeen = getPlaylistsRevision();
+   regionRevisionSeen = getContentRegionRevision();
    home.category = HOME_SUBS;   // always start on Subscriptions
    loadCategory();
 }
@@ -738,10 +741,24 @@ static void resumeHome(void)
    int playlistStale = getPlaylistsRevision() != playlistRevisionSeen;
    if (playlistStale) categoryCached[HOME_PLAYLIST] = 0;
 
+   // A new content region (Settings > Region) makes every list YouTube chose for the old one stale: the three
+   // Trending feeds are dropped, the one on screen reloads. Unlike the markers above, this one moves on at
+   // once - every regional cache goes in the same breath and the page on screen reloads whatever happens, so
+   // there is no retry to lose. Subscriptions stay: a channel's uploads are the same in every region, and a
+   // refetch costs one request per channel. Continue watching, Watch Later, History and the playlists are kept
+   // on the console.
+   int regionStale = getContentRegionRevision() != regionRevisionSeen;
+   if (regionStale) {
+      regionRevisionSeen = getContentRegionRevision();
+      for (int c = 0; c < TREND_COUNT; c++) categoryCached[c] = 0;
+      logInfo("[home] region now %s: Trending reloads\n", getContentRegionCode());
+   }
+
    int showingStale = (subsStale && home.category == HOME_SUBS) ||
                       (laterStale && home.category == HOME_WATCHLATER) ||
                       (historyStale && (home.category == HOME_HISTORY || home.category == HOME_CONTINUE)) ||
-                      (playlistStale && home.category == HOME_PLAYLIST);
+                      (playlistStale && home.category == HOME_PLAYLIST) ||
+                      (regionStale && home.category < TREND_COUNT);
 
    // Do NOT reload here. Autoplay resumes this screen only to pass straight through it: advanceAutoplay
    // pops the finished player, which lands here, and immediately pushes the next one - and the push calls

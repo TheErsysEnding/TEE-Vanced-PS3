@@ -4,12 +4,15 @@
 // drawn passive: Circle is Back on this pushed screen, so the rail only says where you are. Beside it the
 // title with the version under it, the clock on the right. Below, the About card stands in the column where
 // Bild 3 has its category list, and one panel holds every option, Playback above SponsorBlock. It is still
-// ONE list - UP/DOWN walk all eight rows and wrap, as they always did - so no section needs a way of its own
+// ONE list - UP/DOWN walk all nine rows and wrap, as they always did - so no section needs a way of its own
 // to be reached. The card is where the channel link lives, so the QR code sits in a place that is always on
-// screen rather than behind a modal nobody opens.
+// screen rather than behind a modal nobody opens. The one row that is not a toggle, Region, opens its picker
+// (region-screen.h) on X.
 
 #include "screens/settings-screen.h"
+#include "screens/region-screen.h"   // openRegionScreen: X on the Region row
 #include "storage.h"
+#include "settings.h"            // the content region: its name for the Region row
 #include "app-paths.h"      // APP_VERSION
 #include "sponsorblock.h"        // SponsorCategory + getSponsorCategoryName/Color
 #include "sidebar.h"             // drawSidebarPassive: the rail, collapsed and never focusable
@@ -68,15 +71,17 @@
 #define PANEL_PAD_BOTTOM 24
 #define TEXT_X           (PANEL_X + PANEL_PAD_X)          // 664
 #define TEXT_RIGHT       (UI_SAFE_RIGHT - PANEL_PAD_X)    // 1780
-#define SECTION_DY       52     // the Autoplay row's bottom -> the SponsorBlock title's baseline
+#define SECTION_DY       52     // the Region row's bottom -> the SponsorBlock title's baseline
 #define EXPLAIN_DY       40     // that title's baseline -> its explanation's
 #define ROWS_DY          33     // the explanation's last baseline -> the first category row
 
-// A row as Bild 3 draws it: 72 tall, the focused one on a plate reaching 18 px past the text either side.
-// Bild 3 steps its rows by 82; eight rows under two section titles only fit inside the safe area at 76,
-// which still leaves 4 px between rows - and only the focused row ever has a plate.
-#define ROW_H            72
-#define ROW_PITCH        76
+// A row as Bild 3 draws it, the focused one on a plate reaching 18 px past the text either side. Bild 3 steps
+// its rows by 82 and makes them 72 tall; nine rows under two section titles only fit inside the safe area at
+// a 68-px step, 64 tall - the panel then ends at y 1030, 2 px inside the safe line - which still leaves 4 px
+// between rows, and only the focused row ever has a plate. The 60-px segment group and the switch with its
+// ring stay inside a 64-px row.
+#define ROW_H            64
+#define ROW_PITCH        68
 #define ROW_TEXT         26     // an option's name, 26/700 - 800 on the focused row
 #define ROW_WEIGHT       UI_WEIGHT_BOLD
 #define ROW_FOCUS_WEIGHT UI_WEIGHT_EXTRABOLD
@@ -111,14 +116,21 @@
 #define SWITCH_RING_OUT  6
 #define SWITCH_RING_SCALE (27.0f / 34.0f)
 
+// The Region row's value: the country's name on a single chosen segment, in a group box of its own like the
+// skip categories' - so it reads as a value, the way the lit segment does. The segment is as wide as the
+// longest name needs, so it keeps its width whichever country is in use.
+#define REGION_PAD       24     // the name -> the segment's edges, at the least
+
 // The words on the controls are rendered once in white and tinted when drawn (as the rail's names are):
 // a segment's word takes three colours by state, and re-colouring a label would rasterise it again.
 #define TEXT_TINTABLE    0xFFFFFFFFu
 
-// Row order. The playback option comes first because it is the one changed often; the skip categories are
-// a block of their own, which is also the only place "skip the intro" can be turned on.
+// Row order. The playback options come first because they are the ones changed often; the skip categories
+// are a block of their own, which is also the only place "skip the intro" can be turned on. Region is no
+// toggle: X opens its picker.
 enum {
    ROW_AUTOPLAY,
+   ROW_REGION,
    ROW_SKIP_FIRST,
    ROW_COUNT = ROW_SKIP_FIRST + SPONSOR_CATEGORY_COUNT
 };
@@ -129,6 +141,7 @@ static Label       playbackLabel, sponsorLabel, explainLabel;
 static Label       rowLabels[ROW_COUNT][2];       // each option's name at 700 [0] and, focused, 800 [1]
 static Label       segmentLabels[SEG_COUNT][2];   // Skip / Ask / Keep in white, at 700 [0] and 800 [1]
 static Label       switchLabels[2];               // "Off" [0] / "On" [1] in white
+static Label       regionLabel;                   // the country in use, in white at 800 like a lit segment's word
 static UiHints     hints;
 static ButtonRepeat navigateRepeat;
 
@@ -137,8 +150,9 @@ static struct {
    int selected;
    // the layout, worked out once from the measured text (see layOut)
    int titleY, versionBaseline, clockBaseline;
-   int autoplayY, sponsorBaseline, explainBaseline, categoryY, panelH;
+   int autoplayY, regionY, sponsorBaseline, explainBaseline, categoryY, panelH;
    int linkBaseline, noteBaseline, cardH;
+   int regionSegW;        // the Region value's segment: the longest country name and its padding
    uint32_t boxEdge;      // the hairline blended over surface-1, opaque
 } state;
 
@@ -156,10 +170,11 @@ static int segmentOf(int action)
 // X cycles a skip category Keep -> Skip -> Skip by choice -> Keep. Skip comes first because it is what
 // most people want from a sponsor segment; "by choice" is the deliberate extra press. With the segments in
 // the order Skip | Ask | Keep, every press moves the lit one a step to the right, and Keep comes round to Skip.
+// X on Region opens its picker instead (updateSettings), so it never gets here.
 static void toggleRow(int row)
 {
    if (row == ROW_AUTOPLAY) setAutoplay(!getAutoplay());
-   else {
+   else if (row >= ROW_SKIP_FIRST) {
       int category = skipCategory(row);
       int next;
       switch (getSponsorAction(category)) {
@@ -192,7 +207,8 @@ static void layOut(void)
                            + uiGetTextMetrics(clockFont, CLOCK_SIZE).baseline;
 
    state.autoplayY       = BODY_Y + FIRST_ROW_DY;
-   state.sponsorBaseline = state.autoplayY + ROW_H + SECTION_DY;
+   state.regionY         = state.autoplayY + ROW_PITCH;
+   state.sponsorBaseline = state.regionY + ROW_H + SECTION_DY;
    state.explainBaseline = state.sponsorBaseline + EXPLAIN_DY;
    state.categoryY       = lastBaselineOf(&explainLabel, state.explainBaseline) + ROWS_DY;
    state.panelH          = state.categoryY + (ROW_COUNT - 1 - ROW_SKIP_FIRST) * ROW_PITCH + ROW_H
@@ -207,7 +223,31 @@ static void layOut(void)
 static int rowY(int row)
 {
    if (row == ROW_AUTOPLAY) return state.autoplayY;
+   if (row == ROW_REGION)   return state.regionY;
    return state.categoryY + (row - ROW_SKIP_FIRST) * ROW_PITCH;
+}
+
+// The Region value's segment: wide enough for the longest country name at the lit segment's 22/800, so it
+// does not change size with the country - measured, not rendered, once per opening.
+static int measureRegionSegment(void)
+{
+   Font *font = uiGetFont(ROW_FOCUS_WEIGHT);
+   int widest = 0;
+   for (int i = 0; i < getContentRegionCount(); i++) {
+      const ContentRegion *region = getContentRegionAt(i);
+      int width = region ? (int)measureFontText(font, SEG_TEXT, region->name) + 1 : 0;
+      if (width > widest) widest = width;
+   }
+   int segment = widest + 2 * REGION_PAD;
+   return segment > SEG_W ? segment : SEG_W;
+}
+
+// The name of the country in use. getContentRegionIndex is always an index into the table, so the code (never
+// NULL) only stands in should that ever change.
+static const char *regionName(void)
+{
+   const ContentRegion *region = getContentRegionAt(getContentRegionIndex());
+   return region ? region->name : getContentRegionCode();
 }
 
 static void initSettings(void)
@@ -251,8 +291,9 @@ static void initSettings(void)
    int nameW = GROUP_X - NAME_GAP - (TEXT_X + DOT_SIZE + DOT_GAP);
    for (int row = 0; row < ROW_COUNT; row++) {
       const char *name;
-      if (row == ROW_AUTOPLAY) name = "Autoplay next video";
-      else                     name = getSponsorCategoryName((SponsorCategory)skipCategory(row));
+      if      (row == ROW_AUTOPLAY) name = "Autoplay next video";
+      else if (row == ROW_REGION)   name = "Region";
+      else                          name = getSponsorCategoryName((SponsorCategory)skipCategory(row));
       uiInitLabel(&rowLabels[row][0], ROW_WEIGHT,       0, 0, nameW, ROW_TEXT, activeTheme->textPrimary, TEXT_NOWRAP_ELLIPSIS, name);
       uiInitLabel(&rowLabels[row][1], ROW_FOCUS_WEIGHT, 0, 0, nameW, ROW_TEXT, activeTheme->textPrimary, TEXT_NOWRAP_ELLIPSIS, name);
    }
@@ -265,6 +306,9 @@ static void initSettings(void)
    }
    uiInitLabel(&switchLabels[0], ROW_WEIGHT, 0, 0, AUTO, SEG_TEXT, TEXT_TINTABLE, TEXT_NOWRAP, "Off");
    uiInitLabel(&switchLabels[1], ROW_WEIGHT, 0, 0, AUTO, SEG_TEXT, TEXT_TINTABLE, TEXT_NOWRAP, "On");
+   // the country names are the app's own (English, ASCII): Manrope, like every other word on this page
+   uiInitLabel(&regionLabel, ROW_FOCUS_WEIGHT, 0, 0, AUTO, SEG_TEXT, TEXT_TINTABLE, TEXT_NOWRAP, regionName());
+   state.regionSegW = measureRegionSegment();
 
    uiInitHints(&hints);
    uiAddHint(&hints, GLYPH_CROSS,  "Change");
@@ -272,6 +316,14 @@ static void initSettings(void)
 
    memset(&navigateRepeat, 0, sizeof navigateRepeat);
    layOut();
+}
+
+// Back from the region picker. A direction still held as it closed must wait the normal hold delay here
+// rather than fire on the first frame: a timer last stamped before the picker opened reads as long overdue.
+static void resumeSettings(void)
+{
+   navigateRepeat.timer   = sys_time_get_system_time();
+   navigateRepeat.repeats = 0;
 }
 
 static void updateSettings(void)
@@ -283,7 +335,10 @@ static void updateSettings(void)
    if (state.selected < 0) state.selected = ROW_COUNT - 1;            // wrap: the list is short enough that
    if (state.selected >= ROW_COUNT) state.selected = 0;               // running off an end should come round
 
-   if (isPadButtonPressed(PAD_BTN_CROSS)) toggleRow(state.selected);
+   if (isPadButtonPressed(PAD_BTN_CROSS)) {
+      if (state.selected == ROW_REGION) { openRegionScreen(); return; }   // a list to pick from, not a toggle
+      toggleRow(state.selected);
+   }
 }
 
 // a label rendered in TEXT_TINTABLE, drawn in `color`
@@ -354,6 +409,23 @@ static void drawSwitch(int y, int focused)
               on ? activeTheme->textPrimary : activeTheme->textSecondary);
 }
 
+// The Region value: the country in use as a lit segment in a group of its own, right-aligned like the skip
+// categories' groups - surface-3 at rest, on the focused row the accent with the white ring, which is what X
+// opens. The name is re-read on every draw like the other values; the label only renders when it changes,
+// i.e. on the first frame back from the picker.
+static void drawRegion(int y, int focused)
+{
+   setLabelText(&regionLabel, regionName());
+   int segW   = state.regionSegW;
+   int groupW = segW + 2 * GROUP_PAD, groupX = TEXT_RIGHT - groupW;
+   int groupY = y + (ROW_H - GROUP_H) / 2, segX = groupX + GROUP_PAD, segY = groupY + GROUP_PAD;
+   uiFillRounded(groupX, groupY, groupW, GROUP_H, UI_RADIUS_ROW, activeTheme->appBg);
+   uiFillRounded(segX, segY, segW, SEG_H, SEG_RADIUS, focused ? activeTheme->accent : activeTheme->surface3);
+   drawTinted(&regionLabel, segX + (segW - regionLabel.tt.tex.w) / 2, uiLabelYForCenter(&regionLabel, segY, SEG_H),
+              focused ? activeTheme->onAccent : activeTheme->textPrimary);
+   if (focused) uiDrawFocusRing(segX, segY, segW, SEG_H, UI_RING_SEGMENT, activeTheme->textPrimary);
+}
+
 static void drawRow(int row)
 {
    int y = rowY(row), focused = (row == state.selected);
@@ -362,7 +434,7 @@ static void drawRow(int row)
                     activeTheme->hintFill);
 
    int nameX = TEXT_X;
-   if (row != ROW_AUTOPLAY) {
+   if (row >= ROW_SKIP_FIRST) {
       // the category's colour, the one its segments wear on the player's timeline
       uiFillCircle(TEXT_X, y + (ROW_H - DOT_SIZE) / 2, DOT_SIZE,
                    getSponsorCategoryColor((SponsorCategory)skipCategory(row)));
@@ -371,8 +443,9 @@ static void drawRow(int row)
    const Label *name = &rowLabels[row][focused];
    uiDrawLabelAt(name, nameX, uiLabelYForCenter(name, y, ROW_H));
 
-   if (row == ROW_AUTOPLAY) drawSwitch(y, focused);
-   else                     drawSegments(row, y, focused);
+   if      (row == ROW_AUTOPLAY) drawSwitch(y, focused);
+   else if (row == ROW_REGION)   drawRegion(y, focused);
+   else                          drawSegments(row, y, focused);
 }
 
 static void drawCard(void)
@@ -425,10 +498,12 @@ static void termSettings(void)
    for (int k = 0; k < SEG_COUNT; k++) { freeLabel(&segmentLabels[k][0]); freeLabel(&segmentLabels[k][1]); }
    freeLabel(&switchLabels[0]);
    freeLabel(&switchLabels[1]);
+   freeLabel(&regionLabel);
    // no closeFont: the fonts belong to ui-fonts.c and every other screen is still drawing with them
 }
 
 // Screen vtable order: init, resume, update, draw, suspend, term, status.
-Screen settingsScreen = { initSettings, NULL, updateSettings, drawSettings, NULL, termSettings, SCREEN_TERMINATED };
+Screen settingsScreen = { initSettings, resumeSettings, updateSettings, drawSettings, NULL, termSettings,
+                          SCREEN_TERMINATED };
 
 void openSettingsScreen(void) { pushScreen(&settingsScreen); }

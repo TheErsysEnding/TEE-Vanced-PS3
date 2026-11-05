@@ -11,6 +11,7 @@
 
 #include "extractor.h"
 #include "app-paths.h"
+#include "settings.h"           // getContentRegionCode: the gl of every list request
 #include "http.h"               // fetchHttp
 #include "string-utilities.h"   // strCopy
 #include "dbg.h"                // logInfo (resolve diagnostics)
@@ -43,13 +44,18 @@
 #define VISITOR_URL "https://www.youtube.com/youtubei/v1/visitor_id?key=AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8&prettyPrint=false"
 
 // the VISIONOS client object, without the wrapping braces so visitorData can
-// be appended before the player request closes it.
+// be appended before the player request closes it. Its gl stays "US" whatever the content region: the player
+// answered alike for every gl probed, and this is the one request that decides whether anything plays.
 #define PLAYER_CLIENT \
    "\"clientName\":\"VISIONOS\",\"clientVersion\":\"" PLAYER_VERSION "\"," \
    "\"deviceMake\":\"Apple\",\"deviceModel\":\"RealityDevice17,1\"," \
    "\"osName\":\"visionOS\",\"osVersion\":\"26.5.23O471\",\"hl\":\"en\",\"gl\":\"US\""
-#define WEB_CONTEXT \
-   "{\"context\":{\"client\":{\"clientName\":\"WEB\",\"clientVersion\":\"" WEB_VERSION "\",\"hl\":\"en\",\"gl\":\"US\"}}"
+// The WEB client of every list request: browse, search and their next pages. hl stays "en" - the parsers key on
+// English text (" views", " ago", " watching", "Members only"). gl is the content region (settings.h): every
+// format built on this takes it as its FIRST argument, and a request reads getContentRegionCode() once and passes
+// that one value. The root object is left open for each body's own fields.
+#define WEB_CONTEXT_FMT \
+   "{\"context\":{\"client\":{\"clientName\":\"WEB\",\"clientVersion\":\"" WEB_VERSION "\",\"hl\":\"en\",\"gl\":\"%s\"}}"
 
 static const char *PLAYER_UA =
    "Mozilla/5.0 (Macintosh; Intel Mac OS X 15_7_3) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Safari/605.1.15";
@@ -59,19 +65,26 @@ static const char *WEB_UA =
 // player body: the client + the minted visitorData, then the video id. two %s: visitorData, videoId.
 static const char *PLAYER_BODY_FMT =
    "{\"context\":{\"client\":{" PLAYER_CLIENT ",\"visitorData\":\"%s\"}},\"videoId\":\"%s\",\"contentCheckOk\":true,\"racyCheckOk\":true}";
-static const char *VISITOR_BODY   = WEB_CONTEXT "}";   // WEB_CONTEXT leaves the root object open; close it
+// The visitor-session mint keeps its own fixed client, byte for byte what it always sent: the session it returns
+// records the IP's country whatever gl says, and it is minted once and then reused for months.
+static const char *VISITOR_BODY =
+   "{\"context\":{\"client\":{\"clientName\":\"WEB\",\"clientVersion\":\"" WEB_VERSION "\",\"hl\":\"en\",\"gl\":\"US\"}}}";
 // search params combine the "Videos" filter (drops the Shorts shelf, channels and playlists) with a sort
-// order. index by SortOrder. canonical values from youtube's own filter menu. two %s: escaped query, params.
+// order. index by SortOrder. canonical values from youtube's own filter menu.
 static const char *SEARCH_SORT_PARAMS[SORT_COUNT] = {
    "EgIQAQ==",   // SORT_RELEVANCE (youtube's default)
    "CAMSAhAB",   // SORT_VIEWS (popularity / view count, highest first)
 };
-static const char *SEARCH_BODY_FMT = WEB_CONTEXT ",\"query\":\"%s\",\"params\":\"%s\"}";
+// The list bodies are string literals, not const char pointers, so -Wall's format check sees every snprintf
+// that uses one: a call that forgets the region is a build warning, not a garbage pointer read at run time. The
+// check cannot see the ORDER of the arguments (each is a char *), so every call passes gl straight after the
+// format, where a grep for the format name followed by gl can count them.
+#define SEARCH_BODY_FMT       WEB_CONTEXT_FMT ",\"query\":\"%s\",\"params\":\"%s\"}"      // gl, escaped query, params
 // trending feed. YouTube retired the aggregated Trending page in 2025 (FEtrending now redirects to an empty
 // home feed); NewPipe/FreeTube/Invidious replaced it with per-category channel-tab browses that still work
-// logged-out. two %s: browseId, params. see TRENDING_CATEGORIES for the ids.
-static const char *TRENDING_BODY_FMT = WEB_CONTEXT ",\"browseId\":\"%s\",\"params\":\"%s\"}";
-static const char *CONTINUATION_BODY_FMT = WEB_CONTEXT ",\"continuation\":\"%s\"}";   // next page of any feed
+// logged-out. see TRENDING_FEEDS for the ids.
+#define TRENDING_BODY_FMT     WEB_CONTEXT_FMT ",\"browseId\":\"%s\",\"params\":\"%s\"}"   // gl, browseId, params
+#define CONTINUATION_BODY_FMT WEB_CONTEXT_FMT ",\"continuation\":\"%s\"}"                 // gl, token: any feed's next page
 
 static int hex4(const char *p)
 {
@@ -900,8 +913,37 @@ static void parseVideoResults(const char *resp, int respLen, SearchResults *out)
    }
 }
 
+// YouTube names the country it built a page 1 for in its top bar ("countryCode":"DE", near the end of the reply)
+// and names none for the United States. A code it does not take gets HTTP 200, an empty page and no country,
+// which in the grid looks exactly like an empty list - so the log says which region YouTube really used.
+// Continuation replies have no top bar and are not checked. One line whenever the answer changes, not one per
+// page. The list workers run one at a time; were two ever to overlap, a log line would repeat or go missing.
+static void logRegionEcho(const char *resp, const char *end, const char *sent, int itemCount)
+{
+   static char loggedSent[4], loggedUsed[8];
+   static int  loggedSuspect = -1;
+
+   char named[8] = "";
+   const char *badge = strstr(resp, "\"countryCode\":\"");
+   if (badge && badge < end) jsonString(badge, end, "countryCode", named, sizeof named);
+   int isUs = strcmp(sent, "US") == 0;
+   const char *used = named[0] ? named : isUs ? "US" : "none";   // no badge is the normal answer for the US
+   int mismatch = named[0] && strcmp(named, sent) != 0;
+   int suspect = !named[0] && !isUs && itemCount == 0;
+
+   if (strcmp(loggedSent, sent) == 0 && strcmp(loggedUsed, used) == 0 && loggedSuspect == suspect) return;
+   strCopy(loggedSent, sizeof loggedSent, sent);
+   strCopy(loggedUsed, sizeof loggedUsed, used);
+   loggedSuspect = suspect;
+   if (mismatch)     logWarn("[yt] region: sent %s, YouTube used %s\n", sent, used);
+   else if (suspect) logWarn("[yt] region: sent %s, YouTube used none and sent no items - it may not take this code\n", sent);
+   else              logInfo("[yt] region: sent %s, YouTube used %s\n", sent, used);
+}
+
 // POST a WEB innertube endpoint with a prebuilt json body, then parse videoRenderers from the response.
-static int postAndParse(const char *url, const char *body, int bodyLen, SearchResults *out)
+// pageOneGl: the region a page-1 body was built with, whose reply is checked against it (logRegionEcho); NULL
+// for a continuation.
+static int postAndParse(const char *url, const char *body, int bodyLen, const char *pageOneGl, SearchResults *out)
 {
    memset(out, 0, sizeof *out);
    char *resp = malloc(RESP_CAP);
@@ -923,22 +965,34 @@ static int postAndParse(const char *url, const char *body, int bodyLen, SearchRe
    if (status != 200) { free(resp); return -status; }
 
    parseVideoResults(resp, respLen, out);
+   if (pageOneGl) logRegionEcho(resp, resp + respLen, pageOneGl, out->count);
    free(resp);
    return 0;
 }
 
+// snprintf answers with the length it WOULD have written, and the body is sent bodyLen bytes long: one that did
+// not fit is refused rather than sent cut short (or read past its buffer).
+static int refuseBody(int bodyLen, SearchResults *out)
+{
+   logError("[yt] request body of %d bytes does not fit its buffer, not sent\n", bodyLen);
+   memset(out, 0, sizeof *out);
+   return -1;
+}
+
 static int search(const char *query, SortOrder sort, const char *continuation, SearchResults *out)
 {
+   const char *gl = getContentRegionCode();   // read once: the whole request uses this one value
    char body[MAX_CONTINUATION + 512];
    int bodyLen;
-   if (continuation) bodyLen = snprintf(body, sizeof body, CONTINUATION_BODY_FMT, continuation);
+   if (continuation) bodyLen = snprintf(body, sizeof body, CONTINUATION_BODY_FMT, gl, continuation);
    else {
       char escaped[256];
       jsonEscape(query, escaped, sizeof escaped);
       if (sort < 0 || sort >= SORT_COUNT) sort = SORT_RELEVANCE;
-      bodyLen = snprintf(body, sizeof body, SEARCH_BODY_FMT, escaped, SEARCH_SORT_PARAMS[sort]);
+      bodyLen = snprintf(body, sizeof body, SEARCH_BODY_FMT, gl, escaped, SEARCH_SORT_PARAMS[sort]);
    }
-   return postAndParse(SEARCH_URL, body, bodyLen, out);
+   if (bodyLen < 0 || bodyLen >= (int)sizeof body) return refuseBody(bodyLen, out);
+   return postAndParse(SEARCH_URL, body, bodyLen, continuation ? NULL : gl, out);
 }
 
 // the surviving per-category channel-tab feeds, each a real feed logged-out. order matches TrendingCategory.
@@ -951,11 +1005,13 @@ static const struct { const char *browseId, *params; } TRENDING_FEEDS[TREND_COUN
 static int fetchTrending(TrendingCategory category, const char *continuation, SearchResults *out)
 {
    if (category < 0 || category >= TREND_COUNT) return -1;
+   const char *gl = getContentRegionCode();
    char body[MAX_CONTINUATION + 512];
    int bodyLen;
-   if (continuation) bodyLen = snprintf(body, sizeof body, CONTINUATION_BODY_FMT, continuation);
-   else bodyLen = snprintf(body, sizeof body, TRENDING_BODY_FMT, TRENDING_FEEDS[category].browseId, TRENDING_FEEDS[category].params);
-   return postAndParse(BROWSE_URL, body, bodyLen, out);
+   if (continuation) bodyLen = snprintf(body, sizeof body, CONTINUATION_BODY_FMT, gl, continuation);
+   else bodyLen = snprintf(body, sizeof body, TRENDING_BODY_FMT, gl, TRENDING_FEEDS[category].browseId, TRENDING_FEEDS[category].params);
+   if (bodyLen < 0 || bodyLen >= (int)sizeof body) return refuseBody(bodyLen, out);
+   return postAndParse(BROWSE_URL, body, bodyLen, continuation ? NULL : gl, out);
 }
 
 // a channel's Videos tab (sorted Latest by default). token NULL = first page via the videos-tab params;
@@ -963,11 +1019,13 @@ static int fetchTrending(TrendingCategory category, const char *continuation, Se
 #define CHANNEL_VIDEOS_PARAMS "EgZ2aWRlb3PyBgQKAjoA"
 static int getChannel(const char *channelId, const char *token, SearchResults *out)
 {
+   const char *gl = getContentRegionCode();
    char body[MAX_CONTINUATION + 512];
    int bodyLen;
-   if (token) bodyLen = snprintf(body, sizeof body, CONTINUATION_BODY_FMT, token);
-   else       bodyLen = snprintf(body, sizeof body, TRENDING_BODY_FMT, channelId, CHANNEL_VIDEOS_PARAMS);
-   return postAndParse(BROWSE_URL, body, bodyLen, out);
+   if (token) bodyLen = snprintf(body, sizeof body, CONTINUATION_BODY_FMT, gl, token);
+   else       bodyLen = snprintf(body, sizeof body, TRENDING_BODY_FMT, gl, channelId, CHANNEL_VIDEOS_PARAMS);
+   if (bodyLen < 0 || bodyLen >= (int)sizeof body) return refuseBody(bodyLen, out);
+   return postAndParse(BROWSE_URL, body, bodyLen, token ? NULL : gl, out);
 }
 
 const Extractor youtubeExtractor = { "youtube", matches, extract, search, fetchTrending, getChannel };

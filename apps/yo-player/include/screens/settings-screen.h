@@ -7,6 +7,7 @@
 // the default (ads) leaves it off. A console app whose features can only be reached with an FTP client does
 // not really have those features.
 //
-// Opened with START from the home screen, or from the Settings entry in the left rail; O closes it.
+// Opened with START from the home screen, or from the Settings entry in the left rail; O closes it. X on the
+// Region row opens the region picker (region-screen.h) on top of it.
 
 void openSettingsScreen(void);
