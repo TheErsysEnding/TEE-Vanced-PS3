@@ -124,6 +124,10 @@ live streams.
 - **Names and titles cut by the app's field sizes** ended in the middle of a
   word, or of a Cyrillic or Japanese character, which showed as a stray letter.
   They are cut at a whole character now and end in "...".
+- **A title with small superscript letters lost letters elsewhere**: "ᴴᴰ" sent
+  "SÖZCÜ TV Canlı Yayını ᴴᴰ" to the console font, which has no Turkish dotless
+  i, so it read "Canl  Yay  n". Such letters now read as the plain ones ("HD")
+  and the title stays in Manrope.
 
 ## v0.13.1 beta — not released yet
 

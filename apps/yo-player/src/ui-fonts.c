@@ -306,6 +306,26 @@ static uint32_t plainLetter(uint32_t c)
    return 0;
 }
 
+// The Phonetic Extensions (U+1D00-U+1DBF) as plain letters: the small capitals and the superscript letters
+// that titles use for "ᴴᴰ" or "ᵀᴹ". Neither font has them, yet as letters one of them sent a whole title to
+// FONT_POP - which has no Turkish dotless i, so "SÖZCÜ TV Canlı Yayını ᴴᴰ" came out "Canl  Yay  n" (seen in
+// RPCS3 on the Live page in Germany). 0 for the phonetic symbols proper, which are left out.
+static uint32_t plainPhonetic(uint32_t c)
+{
+   static const uint32_t PHONETIC[][2] = {
+      {0x1D00, 'A'}, {0x1D04, 'C'}, {0x1D05, 'D'}, {0x1D07, 'E'}, {0x1D0A, 'J'}, {0x1D0B, 'K'}, {0x1D0D, 'M'},
+      {0x1D0F, 'O'}, {0x1D18, 'P'}, {0x1D1B, 'T'}, {0x1D1C, 'U'}, {0x1D20, 'V'}, {0x1D21, 'W'}, {0x1D22, 'Z'},
+      {0x1D2C, 'A'}, {0x1D2E, 'B'}, {0x1D30, 'D'}, {0x1D31, 'E'}, {0x1D33, 'G'}, {0x1D34, 'H'}, {0x1D35, 'I'},
+      {0x1D36, 'J'}, {0x1D37, 'K'}, {0x1D38, 'L'}, {0x1D39, 'M'}, {0x1D3A, 'N'}, {0x1D3C, 'O'}, {0x1D3E, 'P'},
+      {0x1D3F, 'R'}, {0x1D40, 'T'}, {0x1D41, 'U'}, {0x1D42, 'W'}, {0x1D43, 'a'}, {0x1D47, 'b'}, {0x1D48, 'd'},
+      {0x1D49, 'e'}, {0x1D4D, 'g'}, {0x1D4F, 'k'}, {0x1D50, 'm'}, {0x1D52, 'o'}, {0x1D56, 'p'}, {0x1D57, 't'},
+      {0x1D58, 'u'}, {0x1D5B, 'v'},
+   };
+   for (int i = 0; i < (int)(sizeof PHONETIC / sizeof PHONETIC[0]); i++)
+      if (PHONETIC[i][0] == c) return PHONETIC[i][1];
+   return 0;
+}
+
 // what uiCleanText does with one character of external text
 typedef enum {
    CHAR_TEXT,        // kept, and it has a say in the font: letters, digits, punctuation outside the symbol blocks
@@ -322,6 +342,11 @@ typedef enum {
 static CharKind classifyChar(uint32_t *code)
 {
    uint32_t c = *code;
+   if (c >= 0x1D00 && c <= 0x1DBF) {   // Phonetic Extensions: a known letter reads as the plain one (plainPhonetic)
+      uint32_t plain = plainPhonetic(c);
+      if (plain) { *code = plain; return CHAR_TEXT; }
+      return CHAR_DROP;
+   }
    if (c < 0x2000) {
       if (c == '\n') return CHAR_TEXT;
       if (c == '\t') { *code = ' '; return CHAR_TEXT; }
