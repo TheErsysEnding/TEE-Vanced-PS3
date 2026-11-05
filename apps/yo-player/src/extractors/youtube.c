@@ -119,6 +119,13 @@ static int jsonString(const char *from, const char *end, const char *key, char *
          default: out[i++] = c; break;              // \/ \\ \" and any other: keep literal
       }
    }
+   // The cap cut the value short: never end on half a UTF-8 character. A Cyrillic, Greek or Japanese title is
+   // 2-3 bytes a character, and a cut one sends the whole label to FONT_POP with a stray letter at its end.
+   // Escapes only ever add ASCII, so they cannot leave a lead byte behind.
+   if (i == cap - 1 && p < end && ((unsigned char)*p & 0xC0) == 0x80) {
+      while (i > 0 && ((unsigned char)out[i - 1] & 0xC0) == 0x80) i--;   // the cut character's continuation bytes
+      if (i > 0 && (unsigned char)out[i - 1] >= 0xC0) i--;               // and its lead byte
+   }
    out[i] = 0;
    return 1;
 }
@@ -757,6 +764,51 @@ static void readChannelId(const char *block, const char *end, char *out, int cap
    else if (cap) out[0] = 0;
 }
 
+// One past the closing brace of the JSON object whose '{' is at `open`, or `end` when it does not close before
+// it. Strings are skipped whole, escapes included, so a brace inside a title cannot end the object early.
+static const char *objectEnd(const char *open, const char *end)
+{
+   int depth = 0, inString = 0;
+   for (const char *p = open; p < end; p++) {
+      char c = *p;
+      if (inString) {
+         if (c == '\\') p++;             // the escaped character, whatever it is
+         else if (c == '"') inString = 0;
+      }
+      else if (c == '"') inString = 1;
+      else if (c == '{') depth++;
+      else if (c == '}' && --depth == 0) return p + 1;
+   }
+   return end;
+}
+
+// The view count, read only inside the item's own "viewCountText" object. A video gives it as one simpleText
+// ("6,100 views"); a live stream gives it as runs ("52,106" + " watching"), which used to leave the field empty
+// - or the scan ran on past the field and took a later simpleText such as the overlay's "PREMIERE".
+static void readViewCount(const char *block, const char *end, char *out, int cap)
+{
+   out[0] = 0;
+   const char *field = findIn(block, end, "\"viewCountText\":{");   // a null count has no object at all
+   if (!field) return;
+   const char *fieldEnd = objectEnd(field + 16, end);              // 16 = strlen("\"viewCountText\":")
+   if (findIn(field, fieldEnd, "\"simpleText\":\"")) { jsonString(field, fieldEnd, "simpleText", out, cap); return; }
+
+   int length = 0;
+   for (const char *run = field; (run = findIn(run, fieldEnd, "\"text\":\"")) != NULL; run += 8) {
+      char part[24];
+      jsonString(run, fieldEnd, "text", part, sizeof part);
+      int partLength = (int)strlen(part), room = cap - 1 - length, cut = partLength > room;
+      if (cut) {   // keep what fits, and never half a character
+         partLength = room;
+         while (partLength > 0 && ((unsigned char)part[partLength] & 0xC0) == 0x80) partLength--;
+      }
+      memcpy(out + length, part, partLength);
+      length += partLength;
+      out[length] = 0;
+      if (cut) break;
+   }
+}
+
 // fill one result from a videoRenderer (search) or gridVideoRenderer (trending) block. 1 if it has a title.
 static int parseRendererItem(const char *block, const char *end, SearchResult *item)
 {
@@ -769,10 +821,12 @@ static int parseRendererItem(const char *block, const char *end, SearchResult *i
    readField(block, end, "\"ownerText\"",         "text",       item->author,    sizeof item->author);
    if (!item->author[0])   // trending items carry the channel in shortBylineText instead
       readField(block, end, "\"shortBylineText\"", "text", item->author, sizeof item->author);
-   readField(block, end, "\"viewCountText\"",     "simpleText", item->views,     sizeof item->views);
+   readViewCount(block, end, item->views, sizeof item->views);
    readField(block, end, "\"publishedTimeText\"", "simpleText", item->published, sizeof item->published);
-   const char *livePos = strstr(block, "\"style\":\"LIVE\"");   // thumbnailOverlayTimeStatusRenderer
-   item->isLive = (livePos && livePos < end);
+   // browse surfaces mark a live stream with the time-status overlay, search and the Gaming live tab only with
+   // a badge. Bounded to the item: an unbounded search ran on through the rest of the reply for every video.
+   item->isLive = findIn(block, end, "\"style\":\"LIVE\"") != NULL ||
+                  findIn(block, end, "\"style\":\"BADGE_STYLE_TYPE_LIVE_NOW\"") != NULL;
    return item->title[0] != 0;
 }
 
