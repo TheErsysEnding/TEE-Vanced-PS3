@@ -43,7 +43,7 @@
 #define HEADER_H         45
 #define CLOCK_SIZE       28     // ui-clock.h's clock is 28/700: needed to centre its capitals on the band
 #define CLOCK_WEIGHT     UI_WEIGHT_BOLD
-#define VERSION_DY       43     // the title's baseline -> the version line's: "TEE Vanced V0.9 Beta", 20/600
+#define VERSION_DY       43     // the title's baseline -> the version line's: "TEE Vanced V1.0", 20/600
                                 // in text-3, as in Bild 3
 #define BODY_Y           192    // the About card and the options panel start side by side here
 #define HEADING_SIZE     34     // the card's and the sections' titles: 34/800, Bild 3's panel title

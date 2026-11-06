@@ -1039,7 +1039,7 @@ static void endCutText(char *text)
 // The renderer refuses a text whose wrapped surface would pass its 16 MB scratch limit (font.c) and leaves
 // the texture empty. At the panel's text width that is about 86 lines of Manrope at 24 px - fewer than
 // FONT_POP fits at the same size, as Manrope's line pitch is taller. So a text Manrope cannot fit is first
-// tried whole in FONT_POP, which shows everything a description showed before v0.9. Only a text too long
+// tried whole in FONT_POP, which shows everything a description showed before v1.0. Only a text too long
 // for FONT_POP as well - which used to leave the overlay blank - loses its last quarter (back to a line
 // break where there is one), ends in "...", and is tried again; a refused attempt costs only the layout pass.
 static void renderDescription(void)

@@ -201,7 +201,7 @@ Build VM ready. Next: ./build.sh
 7. `build-pkg-fromsource.sh`: `PARAM.SFO` from `apps/yo-player/PARAM.SFO.xml`, then `make_fself_npdrm`
    and `make_package_npdrm` on the VM, then the `.pkg` back to the Mac.
 
-The result is `pkg/out/TEE-Vanced-PS3-v0.13-beta.pkg`, with the version taken from `APP_VERSION` in
+The result is `pkg/out/TEE-Vanced-PS3-v1.0.pkg`, with the version taken from `APP_VERSION` in
 `apps/yo-player/include/app-paths.h`, plus its SHA256. `./build.sh --no-pkg` stops after step 6.
 
 ## 10. Onto the console
@@ -209,7 +209,7 @@ The result is `pkg/out/TEE-Vanced-PS3-v0.13-beta.pkg`, with the version taken fr
 With webMAN's FTP server running, from the Mac's terminal (Finder can only read from FTP servers):
 
 ```sh
-curl -T pkg/out/TEE-Vanced-PS3-v0.13-beta.pkg ftp://<ps3-address>/dev_hdd0/packages/
+curl -T pkg/out/TEE-Vanced-PS3-v1.0.pkg ftp://<ps3-address>/dev_hdd0/packages/
 ```
 
 Then on the PS3: **Game → Package Manager → Install Package Files → Standard**. Or copy the `.pkg` to the

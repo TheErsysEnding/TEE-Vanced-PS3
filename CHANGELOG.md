@@ -3,26 +3,27 @@
 Every release listed here was installed and used on a real PS3 (EVILNAT 4.92 DEX)
 before it was tagged. Anything that had not been is said so plainly.
 
-## v0.9 beta — not released yet
+## v1.0 — not released yet
 
 Not yet installed on a console.
 
-The new look, "Ember": a warm dark ground with TEE orange, the Manrope
-typeface, thumbnails that carry the pages, a focus that can be seen from the
-sofa, and the console's own button symbols. Every button still does what it
-did, apart from LEFT and UP (below). New: a region for the lists, a page of
-live streams, and signing in to YouTube.
+The first full release. The new look, "Ember": a warm dark ground with TEE
+orange, the Manrope typeface, thumbnails that carry the pages, a focus that can
+be seen from the sofa, and the console's own button symbols. Every button still
+does what it did, apart from LEFT, UP and RIGHT (below). New: signing in to
+YouTube, a region for the lists, and a page of live streams. It also brings the
+fixes of v0.13.1, which never came out on its own.
 
 ### Added
 
-- **Sign in to YouTube** with **Login**, at the foot of the menu above
-  Settings: the console shows a code and a QR code, you open google.com/device
-  on your phone, sign in to Google there and type the code - the PS3's own
-  YouTube app signed in this way, and the password never touches the console.
-  Signed in, the entry reads **Account** and opens your account's page: For
-  you (your recommendations), Subscriptions, All channels A-Z, Watch Later,
-  History, Liked videos and Playlists, and **Sign out** at its foot. Signed in,
-  the menu's own entries show your account too:
+- **Sign in to YouTube**: **For you**, under Search in the menu, and **Login**,
+  at its foot above Settings, show a code and a QR code; you open
+  google.com/device on your phone, sign in to Google there and type the code -
+  the PS3's own YouTube app signed in this way, and the password never touches
+  the console. Signed in, For you holds your recommendations, and Login reads
+  **Account** and opens your account's page: For you, Subscriptions, All
+  channels A-Z, Watch Later, History, Liked videos and Playlists, and **Sign
+  out** at its foot. The menu's own entries show your account too:
   - **Subscriptions** shows the channels your account follows, one card each
     with its name and its newest video, the ones with something new first; X
     opens a channel, Triangle unsubscribes. **All channels** on the account
@@ -163,9 +164,9 @@ live streams, and signing in to YouTube.
   i, so it read "Canl  Yay  n". Such letters now read as the plain ones ("HD")
   and the title stays in Manrope.
 
-## v0.13.1 beta — not released yet
+## v0.13.1 beta — never released on its own, part of v1.0
 
-Not yet installed on a console.
+Confirmed on the console on 2026-11-05, then released only as part of v1.0.
 
 ### Fixed
 

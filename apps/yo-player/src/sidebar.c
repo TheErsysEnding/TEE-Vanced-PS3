@@ -26,7 +26,8 @@
 #define SLOT_SIZE      64
 #define SLOT_RADIUS    20
 #define SLOT_TOP       158        // the logo's 48 + 60, its 36 below it, and the column's 14 gap
-#define SLOT_STEP      78         // 64 + 14
+#define SLOT_STEP      72         // 64 + 8: eleven entries, two at the foot - at Bild 1's 14 the ninth of the
+                                  // stack (History) ran into the account entry
 #define SLOT_FOOT      54         // Settings' slot ends 54 above the bottom edge (Bild 1 and 3)
 #define ICON_SIZE      30
 #define ICON_CENTER_X  (SLOT_X + SLOT_SIZE / 2)
@@ -47,13 +48,15 @@
 // used to do in the draw path on every move of the highlight.
 #define TEXT_TINTABLE 0xFFFFFFFFu
 
-// Four of the ten have an exact glyph in the embedded set (search, clock, history, cog). The other six
-// have none - there is no play, trending, broadcast, subscription, playlist or person symbol in it - so they borrow
-// the nearest honest reading rather than a made-up one: an up arrow for what is rising, the signal arcs for what is
-// on air, a star for channels you follow, a right arrow for picking a video back up, stacked pages for lists of
-// videos, and a lock for the sign-in - closed for "Login", open once signed in ("Account").
+// Four of the eleven have an exact glyph in the embedded set (search, clock, history, cog). The other seven
+// have none - there is no home, play, trending, broadcast, subscription, playlist or person symbol in it - so they
+// borrow the nearest honest reading rather than a made-up one: a pointing hand for what was picked out for you, an
+// up arrow for what is rising, the signal arcs for what is on air, a star for channels you follow, a right arrow
+// for picking a video back up, stacked pages for lists of videos, and a lock for the sign-in - closed for "Login",
+// open once signed in ("Account").
 static const IconId ITEM_ICONS[SIDE_COUNT] = {
    ICON_SEARCH,      // Search
+   ICON_HAND_POINTER_O,   // For you
    ICON_UP_BIG,      // Trending
    ICON_WIFI,        // Live
    ICON_STAR,        // Subscriptions
@@ -66,7 +69,7 @@ static const IconId ITEM_ICONS[SIDE_COUNT] = {
 };
 
 static const char *ITEM_NAMES[SIDE_COUNT] = {
-   "Search", "Trending", "Live", "Subscriptions", "Continue watching",
+   "Search", "For you", "Trending", "Live", "Subscriptions", "Continue watching",
    "Playlists", "Watch Later", "History", "Login", "Settings",
 };
 
