@@ -10,6 +10,8 @@
 #include "video-grid.h"
 #include "storage.h"
 #include "settings.h"           // the content region: a new one makes the Trending and Live lists stale
+#include "account.h"            // signed in: For you, and Subscriptions / Watch Later / History from the account
+#include "screens/account-screen.h"   // For you picked while signed out leads to the sign-in
 #include "downloads.h"
 #include "ps-button.h"
 #include "ui/console-glyphs.h"
@@ -84,12 +86,18 @@
 static const char *TrendingNames[TREND_COUNT] = { "Gaming", "Sports", "Podcasts" };
 
 // home categories = the trending feeds plus a Subscriptions feed and the Watch Later queue.
+//
+// Signed in (account.h), Subscriptions, Watch Later and History come from the YouTube account instead of the
+// console - Subscriptions then as the newest uploads of the channels followed, as YouTube shows it, not one tile per
+// channel - and For you holds the account's recommendations. Continue watching and the playlists stay the console's.
+// Signed out, For you is left out of the L1/R1 ring, and picking it in the rail leads to the sign-in.
 #define HOME_SUBS        TREND_COUNT
 #define HOME_CONTINUE    (TREND_COUNT + 1)
 #define HOME_WATCHLATER  (TREND_COUNT + 2)
 #define HOME_HISTORY     (TREND_COUNT + 3)
 #define HOME_PLAYLIST    (TREND_COUNT + 4)
-#define HOME_CAT_COUNT   (TREND_COUNT + 5)   // the cached categories - and the ring L1/R1 walk outside Live
+#define HOME_FORYOU      (TREND_COUNT + 5)
+#define HOME_CAT_COUNT   (TREND_COUNT + 6)   // the cached categories - and the ring L1/R1 walk outside Live
 
 // The Live page's six chips are numbered after every cached category, so nothing above moves and the cache
 // arrays keep their eight slots (six more would be about 1 MB that is never used): a live list is out of date
@@ -111,7 +119,11 @@ static int           watchLaterRevisionSeen;   // watch-later revision the cache
 static int           historyRevisionSeen;      // watch-history revision the cached HOME_HISTORY feed was built at
 static int           playlistRevisionSeen;     // playlists revision the cached HOME_PLAYLIST feed was built at
 static unsigned      regionRevisionSeen;       // content-region revision the cached Trending feeds were fetched at
+static unsigned      accountRevisionSeen;      // sign-in revision the cached account pages were fetched at
+static unsigned      accountChangesSeen;       // the account changes (Square, Triangle) the cached pages reflect
 static int           openPlaylist;             // which list HOME_PLAYLIST is showing
+static int           playlistIsAccount;        // ... or a YouTube playlist of the account, this one:
+static char          accountPlaylistId[ACCOUNT_PLAYLIST_ID_CAP], accountPlaylistTitle[96];
 
 static struct {
    VideoGrid grid;
@@ -124,6 +136,7 @@ static struct {
    char      pendingUnsubId[CHANNEL_ID_LEN];   // what the confirmation is about, copied out of the tile
    char      pendingUnsubName[CHANNEL_NAME_LEN];
    uint64_t  liveLoadedUs;                     // when the Live page on screen asked for its first page
+   int       forYouAfterSignIn;                // For you was picked signed out: go there once the sign-in is done
    int       liveChipPad;                      // the Live chips' padding, and the run of them the header
    int       liveChipFirst, liveChipLast;      //   has room for (fitLiveChips)
 } home;
@@ -189,8 +202,18 @@ static int fetchSubscriptionChannels(SearchResults *out)
 // badged it WATCHED, so on that tab the answer is always no.
 static int tileWatched(const char *videoId)
 {
-   return home.category != HOME_SUBS && isWatched(videoId);
+   return (home.category != HOME_SUBS || isAccountSignedIn()) && isWatched(videoId);
 }
+
+// The Watch Later tag on a card: the account's list while signed in, the console's otherwise.
+static int tileInWatchLater(const char *videoId)
+{
+   return isAccountSignedIn() ? isInAccountWatchLater(videoId) : isWatchLater(videoId);
+}
+
+// Subscriptions shows one tile per CHANNEL only while signed out; signed in it lists the account's newest uploads,
+// which are videos like any other page's.
+static int subsAreChannels(void) { return home.category == HOME_SUBS && !isAccountSignedIn(); }
 
 // A source swap (L1/R1, the rail, START) asked the fetch to stop: a Live chip that falls back to a second
 // request asks this before making it, so a switch does not wait for both (getLiveFeed).
@@ -201,12 +224,19 @@ static int homeFetch(const char *token, SearchResults *out, void *user)
    (void)user;
    // This runs on the grid's worker while the UI thread may switch the page, so the category is read ONCE: two
    // reads could fall either side of a switch and ask a Live feed for a category that is not one.
-   int category = home.category;
-   if (category == HOME_SUBS)       return fetchSubscriptionChannels(out);
+   int category = home.category, signedIn = isAccountSignedIn();
+   if (category == HOME_FORYOU)     return getAccountFeed(ACCOUNT_FEED_HOME, token, out);
+   if (category == HOME_SUBS)
+      return signedIn ? getAccountFeed(ACCOUNT_FEED_SUBSCRIPTIONS, token, out) : fetchSubscriptionChannels(out);
    if (category == HOME_CONTINUE)   return getContinueWatching(out) > 0 ? 0 : -1;
-   if (category == HOME_WATCHLATER) return getWatchLater(out) > 0 ? 0 : -1;
-   if (category == HOME_HISTORY)    return getWatchHistory(out) > 0 ? 0 : -1;
-   if (category == HOME_PLAYLIST)   return getPlaylistItems(openPlaylist, out) > 0 ? 0 : -1;
+   if (category == HOME_WATCHLATER)
+      return signedIn ? getAccountFeed(ACCOUNT_FEED_WATCH_LATER, token, out) : getWatchLater(out) > 0 ? 0 : -1;
+   if (category == HOME_HISTORY)
+      return signedIn ? getAccountFeed(ACCOUNT_FEED_HISTORY, token, out) : getWatchHistory(out) > 0 ? 0 : -1;
+   if (category == HOME_PLAYLIST) {
+      if (playlistIsAccount) return getAccountPlaylistVideos(accountPlaylistId, token, out);
+      return getPlaylistItems(openPlaylist, out) > 0 ? 0 : -1;
+   }
    if (isLiveCategory(category)) {
       int rc = getLiveFeed((LiveCategory)(category - HOME_LIVE_FIRST), token, out, homeFetchStopped);
       // As with Subscriptions: a first page cut short by a stop - a News chip whose second request was skipped -
@@ -330,15 +360,19 @@ static void fitLiveChips(void)
 static void setHeading(void)
 {
    char heading[128];
-   if      (home.category == HOME_SUBS)       snprintf(heading, sizeof heading, "Subscriptions");
+   if      (home.category == HOME_FORYOU)     snprintf(heading, sizeof heading, "For you");
+   else if (home.category == HOME_SUBS)       snprintf(heading, sizeof heading, "Subscriptions");
    else if (home.category == HOME_CONTINUE)   snprintf(heading, sizeof heading, "Continue watching");
    else if (home.category == HOME_WATCHLATER) snprintf(heading, sizeof heading, "Watch Later");
    else if (home.category == HOME_HISTORY)    snprintf(heading, sizeof heading, "History");
-   else if (home.category == HOME_PLAYLIST)   snprintf(heading, sizeof heading, "%s", getPlaylistName(openPlaylist));
+   else if (home.category == HOME_PLAYLIST)
+      snprintf(heading, sizeof heading, "%s", playlistIsAccount ? accountPlaylistTitle : getPlaylistName(openPlaylist));
    else if (isLiveCategory(home.category))    snprintf(heading, sizeof heading, "Live");       // the category: a chip
    else                                       snprintf(heading, sizeof heading, "Trending");   // the category: a chip
-   uiSetHintCaption(&hintsTop, CROSS_HINT,    home.category == HOME_SUBS ? "Open channel" : "Play");
-   uiSetHintCaption(&hintsTop, TRIANGLE_HINT, home.category == HOME_SUBS ? "Unsubscribe"  : "Channel");
+   uiSetHintCaption(&hintsTop, CROSS_HINT,    subsAreChannels() ? "Open channel" : "Play");
+   uiSetHintCaption(&hintsTop, TRIANGLE_HINT, subsAreChannels() ? "Unsubscribe"  : "Channel");
+   // YouTube's For you tiles name no channel (no id anywhere in them), so Triangle has nothing to open there
+   uiSetHintShown(&hintsTop, TRIANGLE_HINT, home.category != HOME_FORYOU);
    // A live stream cannot be downloaded, and a Live page holds nothing else: R3 does nothing there (updateHome),
    // so it has no hint either. The bottom row only gets narrower for it.
    uiSetHintShown(&hintsBottom, R3_HINT, !isLiveCategory(home.category));
@@ -366,6 +400,7 @@ static void loadCategory(void)
 static SidebarItem itemForCategory(int category)
 {
    if (isLiveCategory(category))    return SIDE_LIVE;
+   if (category == HOME_FORYOU)     return SIDE_FORYOU;
    if (category == HOME_SUBS)       return SIDE_SUBS;
    if (category == HOME_CONTINUE)   return SIDE_CONTINUE;
    if (category == HOME_WATCHLATER) return SIDE_LATER;
@@ -380,6 +415,7 @@ static int categoryForItem(SidebarItem item)
    switch (item) {
    case SIDE_TRENDING: return home.category < TREND_COUNT ? home.category : 0;   // keep the trending tab you were on
    case SIDE_LIVE:     return isLiveCategory(home.category) ? home.category : HOME_LIVE_FIRST;   // or Popular
+   case SIDE_FORYOU:   return HOME_FORYOU;
    case SIDE_SUBS:     return HOME_SUBS;
    case SIDE_CONTINUE: return HOME_CONTINUE;
    case SIDE_LATER:    return HOME_WATCHLATER;
@@ -487,6 +523,20 @@ static void unsubscribeConfirmed(void)
    loadCategory();
 }
 
+// A video Square just took out of the account's Watch Later leaves the page at once: YouTube is told on a worker,
+// and a refetch this moment could still list it. The page is rebuilt from what is on screen, minus the video.
+static void dropFromPage(const char *videoId)
+{
+   SearchResults *kept = &categoryCache[home.category];
+   *kept = *gridResults(&home.grid);
+   int out = 0;
+   for (int i = 0; i < kept->count; i++)
+      if (strcmp(kept->items[i].videoId, videoId) != 0) kept->items[out++] = kept->items[i];
+   kept->count = out;
+   categoryCached[home.category] = out > 0;   // an empty page is fetched again rather than shown empty (see above)
+   loadCategory();
+}
+
 // X on a subscription tile opens the channel. openChannelFor reads the channel's NAME from author, which on
 // these tiles is "Latest: <newest upload>" - so the channel screen was headed with a video title, and
 // re-subscribing there (the obvious undo after a mis-press) would store that title as the channel's name.
@@ -494,7 +544,7 @@ static void unsubscribeConfirmed(void)
 static void openSelectedChannel(const SearchResult *item)
 {
    cacheCurrent();
-   if (home.category != HOME_SUBS) { openChannelFor(item); return; }
+   if (!subsAreChannels()) { openChannelFor(item); return; }
    SearchResult channel = *item;
    strCopy(channel.author, sizeof channel.author, item->title);
    openChannelFor(&channel);
@@ -508,7 +558,8 @@ static void switchCategory(int delta)
    if (isLiveCategory(home.category))
       home.category = HOME_LIVE_FIRST + (home.category - HOME_LIVE_FIRST + delta + LIVE_COUNT) % LIVE_COUNT;
    else
-      home.category = (home.category + delta + HOME_CAT_COUNT) % HOME_CAT_COUNT;
+      do home.category = (home.category + delta + HOME_CAT_COUNT) % HOME_CAT_COUNT;
+      while (home.category == HOME_FORYOU && !isAccountSignedIn());   // nothing to show there signed out
    loadCategory();
 }
 
@@ -519,8 +570,21 @@ static void onPlaylistOpened(int playlist)
    if (playlist < 0) return;
    cacheCurrent();
    openPlaylist = playlist;
+   playlistIsAccount = 0;
    categoryCached[HOME_PLAYLIST] = 0;
    playlistRevisionSeen = getPlaylistsRevision();
+   home.category = HOME_PLAYLIST;
+   loadCategory();
+}
+
+// A YouTube playlist of the account was chosen: the same slot as a console list, fetched from the account.
+static void onAccountPlaylistOpened(const char *id, const char *title)
+{
+   cacheCurrent();
+   strCopy(accountPlaylistId, sizeof accountPlaylistId, id);
+   strCopy(accountPlaylistTitle, sizeof accountPlaylistTitle, title);
+   playlistIsAccount = 1;
+   categoryCached[HOME_PLAYLIST] = 0;
    home.category = HOME_PLAYLIST;
    loadCategory();
 }
@@ -597,7 +661,7 @@ static void initHome(void)
    pageMaxW = measurePageMaxW();   // needs the grid's page size
    initSidebar();
    setGridWatchedPredicate(&home.grid, tileWatched);
-   setGridWatchLaterPredicate(&home.grid, isWatchLater);
+   setGridWatchLaterPredicate(&home.grid, tileInWatchLater);
    setGridProgressSource(&home.grid, getWatchedPosition);
 
    subsRevisionSeen = getSubscriptionsRevision();
@@ -605,7 +669,10 @@ static void initHome(void)
    historyRevisionSeen = getWatchHistoryRevision();
    playlistRevisionSeen = getPlaylistsRevision();
    regionRevisionSeen = getContentRegionRevision();
-   home.category = HOME_SUBS;   // always start on Subscriptions
+   accountRevisionSeen = getAccountRevision();
+   accountChangesSeen = getAccountChangesRevision();
+   home.forYouAfterSignIn = 0;
+   home.category = isAccountSignedIn() ? HOME_FORYOU : HOME_SUBS;   // the account's own Home, else Subscriptions
    loadCategory();
 }
 
@@ -623,8 +690,12 @@ static int leftOpensRail(void)
 static int actOnRailPick(int picked)
 {
    if      (picked == SIDE_SEARCH)    openSearchInput(NULL, onQueryEntered);
-   else if (picked == SIDE_PLAYLISTS) openPlaylists(onPlaylistOpened);
+   else if (picked == SIDE_PLAYLISTS) openPlaylists(onPlaylistOpened, onAccountPlaylistOpened);
    else if (picked == SIDE_SETTINGS)  openSettingsScreen();
+   else if (picked == SIDE_FORYOU && !isAccountSignedIn()) {   // For you needs the account: sign in first
+      home.forYouAfterSignIn = 1;
+      openAccountScreen(SIDE_FORYOU);
+   }
    else {
       int category = categoryForItem(picked);
       if (category >= 0 && category != home.category) { cacheCurrent(); home.category = category; loadCategory(); return 1; }
@@ -667,6 +738,13 @@ static void updateHome(void)
       return;
    }
    if (home.pendingReload) { home.pendingReload = 0; loadCategory(); }
+
+   // the account's channels and Watch Later, loaded once per sign-in; a change YouTube refused says so here
+   syncAccountLists();
+   if (!home.noticeVisible) {
+      char failure[160];
+      if (takeAccountFailure(failure, sizeof failure)) showNotice(failure);
+   }
 
    updateDownloadOverlay();
    if (oskInputActive()) return;
@@ -739,6 +817,16 @@ static void updateHome(void)
    const SearchResult *selected = gridSelected(&home.grid);
    if (!selected) return;
    if (isPadButtonPressed(PAD_BTN_SQUARE)) {
+      if (isAccountSignedIn()) {   // the account's Watch Later: the tag flips at once, YouTube is told on a worker
+         int inList = isInAccountWatchLater(selected->videoId);
+         char videoId[sizeof selected->videoId];
+         strCopy(videoId, sizeof videoId, selected->videoId);
+         setAccountWatchLater(videoId, !inList);
+         accountChangesSeen = getAccountChangesRevision();   // handled here, not by a reload on the way back
+         if (inList && home.category == HOME_WATCHLATER) dropFromPage(videoId);
+         else categoryCached[HOME_WATCHLATER] = 0;
+         return;
+      }
       toggleWatchLater(selected);
       watchLaterRevisionSeen = getWatchLaterRevision();
       categoryCached[HOME_WATCHLATER] = 0;
@@ -752,18 +840,18 @@ static void updateHome(void)
    }
    // L3 came free when the grid layout did. Filing a video is the thing you want a direct button for -
    // everything else about a playlist happens on its own screen.
-   if (isPadButtonPressed(PAD_BTN_L3) && home.category != HOME_SUBS) { openPlaylistChooser(selected); return; }
+   if (isPadButtonPressed(PAD_BTN_L3) && !subsAreChannels()) { openPlaylistChooser(selected); return; }
    if (isPadButtonPressed(PAD_BTN_TRIANGLE)) {
       // In Subscriptions a tile IS a channel and X already opens it (just below), so Triangle was doing the
       // exact same thing as X here. It is also the button that unsubscribes one level down, inside the
       // channel screen - so this keeps the meaning and only drops the two presses it took to get there.
-      if (home.category == HOME_SUBS) { askUnsubscribe(selected); return; }
-      openSelectedChannel(selected);
+      if (subsAreChannels()) { askUnsubscribe(selected); return; }
+      openSelectedChannel(selected);   // a tile without a channel id (For you) is left alone by openChannelFor
       return;
    }
    if (isPadButtonPressed(PAD_BTN_CROSS)) {
       // in the Subscriptions tab a tile is a channel, so X opens it instead of playing anything
-      if (home.category == HOME_SUBS) { openSelectedChannel(selected); return; }
+      if (subsAreChannels()) { openSelectedChannel(selected); return; }
       markWatchedItem(selected);   // full entry, so History can list it
       stopVideoGrid(&home.grid);   // no per-call http fetch may overlap the http media stream during playback
       // hand over the whole list so autoplay can carry on with what follows
@@ -934,8 +1022,37 @@ static void resumeHome(void)
    if (regionStale) {
       regionRevisionSeen = getContentRegionRevision();
       for (int c = 0; c < TREND_COUNT; c++) categoryCached[c] = 0;
+      categoryCached[HOME_FORYOU] = 0;
       logInfo("[home] region now %s: Trending and Live reload\n", getContentRegionCode());
    }
+
+   // A sign-in or a sign-out changes where Subscriptions, Watch Later and History come from, and whether For you
+   // has anything at all: their copies go, and such a page on screen reloads. Signed out on For you, the page
+   // becomes Subscriptions; signed in after picking For you in the rail, it becomes For you. Moved on at once, as
+   // the region's marker is.
+   // A change made with Square or Triangle somewhere else - on a channel page, in Search - leaves Watch Later and the
+   // subscription feed behind: their copies go, and either page on screen reloads.
+   int changesStale = getAccountChangesRevision() != accountChangesSeen;
+   if (changesStale) {
+      accountChangesSeen = getAccountChangesRevision();
+      categoryCached[HOME_WATCHLATER] = categoryCached[HOME_SUBS] = 0;
+   }
+
+   int accountStale = getAccountRevision() != accountRevisionSeen;
+   if (accountStale) {
+      accountRevisionSeen = getAccountRevision();
+      categoryCached[HOME_SUBS] = categoryCached[HOME_WATCHLATER] = categoryCached[HOME_HISTORY] = 0;
+      categoryCached[HOME_FORYOU] = 0;
+      if (home.category == HOME_FORYOU && !isAccountSignedIn()) home.category = HOME_SUBS;
+      if (playlistIsAccount && !isAccountSignedIn()) {   // a YouTube playlist is gone with the sign-in
+         playlistIsAccount = 0;
+         categoryCached[HOME_PLAYLIST] = 0;
+         if (home.category == HOME_PLAYLIST) home.category = HOME_SUBS;
+      }
+      if (home.forYouAfterSignIn && isAccountSignedIn()) home.category = HOME_FORYOU;
+      logInfo("[home] %s: the account's pages reload\n", isAccountSignedIn() ? "signed in" : "signed out");
+   }
+   home.forYouAfterSignIn = 0;
 
    // A Live page lists what is on air NOW, and streams end: back after ten minutes - a stream watched for a
    // while, say - a good part of it would show LIVE on recordings and on streams that no longer play. Such a
@@ -953,7 +1070,12 @@ static void resumeHome(void)
                       (laterStale && home.category == HOME_WATCHLATER) ||
                       (historyStale && (home.category == HOME_HISTORY || home.category == HOME_CONTINUE)) ||
                       (playlistStale && home.category == HOME_PLAYLIST) ||
-                      (regionStale && (home.category < TREND_COUNT || isLiveCategory(home.category))) ||
+                      (regionStale && (home.category < TREND_COUNT || isLiveCategory(home.category) ||
+                                       home.category == HOME_FORYOU)) ||
+                      (changesStale && isAccountSignedIn() &&
+                       (home.category == HOME_SUBS || home.category == HOME_WATCHLATER)) ||
+                      (accountStale && (home.category == HOME_SUBS || home.category == HOME_WATCHLATER ||
+                                        home.category == HOME_HISTORY || home.category == HOME_FORYOU)) ||
                       liveStale;
 
    // Do NOT reload here. Autoplay resumes this screen only to pass straight through it: advanceAutoplay

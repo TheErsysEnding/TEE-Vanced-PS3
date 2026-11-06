@@ -18,6 +18,14 @@ behind shoulder buttons you have to remember. LEFT or O opens it, X picks,
 O or RIGHT close it again. The icons come from the icon font already compiled into the upstream
 library — nothing extra is shipped.
 
+**Your YouTube account, optionally.** Settings > Account shows a code; type it
+at google.com/device on your phone and the app brings your recommendations
+(For you), your subscriptions feed, Watch Later, history and playlists, and
+Square/Triangle change your account. It signs in the way YouTube's own TV app
+does - the password stays on Google's page - and keeps the sign-in as plain text
+in `account.txt`, so keep the console's FTP to yourself. Playback never needs
+the account.
+
 **A settings screen.** Upstream has none: the options exist but the only way to
 reach them is editing `settings.txt` over FTP. Autoplay and all seven
 SponsorBlock categories are now switchable on the console, each showing its

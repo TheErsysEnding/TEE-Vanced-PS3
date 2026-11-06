@@ -12,6 +12,7 @@
 #include "extractor.h"
 #include "app-paths.h"
 #include "settings.h"           // getContentRegionCode: the gl of every list request
+#include "account.h"            // the signed-in account's lists: its token, and YouTube's TV client they go out as
 #include "http.h"               // fetchHttp
 #include "string-utilities.h"   // strCopy
 #include "dbg.h"                // logInfo (resolve diagnostics)
@@ -1122,6 +1123,390 @@ static int getChannel(const char *channelId, const char *token, SearchResults *o
    return postAndParse(BROWSE_URL, body, bodyLen, token ? NULL : gl, out);
 }
 
+// ---- the signed-in account's lists (account.h) ----
+//
+// YouTube answers a request carrying the sign-in only for its TV client (probed in Nov 2026: the WEB client gets
+// HTTP 400 with the same token), so these go out as the TV app and come back in its format. Whatever the page
+// around them - shelves on the home feed, a grid in the history, a playlist's list - every item is a "tileRenderer",
+// a video, a Short, a channel or a playlist by its contentType; the home feed's ad is one with none. Only videos are
+// kept, as everywhere in the app. Playback stays anonymous (extract): nothing that plays depends on the sign-in.
+
+#define TV_CONTEXT_FMT \
+   "{\"context\":{\"client\":{\"clientName\":\"TVHTML5\",\"clientVersion\":\"" ACCOUNT_TV_CLIENT_VERSION "\"," \
+   "\"hl\":\"en\",\"gl\":\"%s\"}}"
+#define TV_BROWSE_BODY_FMT       TV_CONTEXT_FMT ",\"browseId\":\"%s\"}"       // gl, browseId
+#define TV_CONTINUATION_BODY_FMT TV_CONTEXT_FMT ",\"continuation\":\"%s\"}"   // gl, token
+#define AUTHORIZATION_CAP        3072                                         // "Bearer " and an access token
+
+// in AccountFeed order (extractor.h)
+static const char *ACCOUNT_BROWSE_IDS[ACCOUNT_FEED_COUNT] = {
+   "FEwhat_to_watch",   // ACCOUNT_FEED_HOME
+   "FEsubscriptions",   // ACCOUNT_FEED_SUBSCRIPTIONS
+   "FEhistory",         // ACCOUNT_FEED_HISTORY
+   "VLWL",              // ACCOUNT_FEED_WATCH_LATER
+   "FEchannels",        // ACCOUNT_FEED_CHANNELS
+};
+
+// text into a field of its own size; one that does not fit ends in "..." at a whole character
+static void copyText(char *out, int cap, const char *text)
+{
+   int length = (int)strlen(text);
+   if (length < cap) { memcpy(out, text, length + 1); return; }
+   memcpy(out, text, cap - 1);
+   out[cap - 1] = 0;
+   markCut(out, cap);
+}
+
+static int endsWith(const char *text, const char *suffix)
+{
+   int length = (int)strlen(text), suffixLength = (int)strlen(suffix);
+   return length >= suffixLength && strcmp(text + length - suffixLength, suffix) == 0;
+}
+
+// A TV text object's words: its "simpleText", or its "runs" joined. Every probe stays inside [object, end): an
+// unbounded search would run on through the rest of a reply that can pass 700 KB, once per field of every tile.
+static void readTextObject(const char *object, const char *end, char *out, int cap)
+{
+   out[0] = 0;
+   if (findIn(object, end, "\"simpleText\":\"")) {
+      if (jsonString(object, end, "simpleText", out, cap) == 2) markCut(out, cap);
+      return;
+   }
+   int length = 0;
+   for (const char *run = object; (run = findIn(run, end, "\"text\":\"")) != NULL; run += 8) {
+      char part[160];
+      int cut = jsonString(run, end, "text", part, sizeof part) == 2;
+      int partLength = (int)strlen(part), room = cap - 1 - length;
+      if (partLength > room) {   // keep what fits, and never half a character
+         partLength = room;
+         cut = 1;
+         while (partLength > 0 && ((unsigned char)part[partLength] & 0xC0) == 0x80) partLength--;
+      }
+      memcpy(out + length, part, partLength);
+      length += partLength;
+      out[length] = 0;
+      if (cut) { markCut(out, cap); break; }
+   }
+}
+
+// One video tile. Its lines under the title are the channel, then the counts: a badge or two ("4K"), "199K views",
+// "•", "3 weeks ago" - just "23 views" in the history, "1.2K watching" for a stream on air. 1 when it has a title.
+static int parseTileItem(const char *tile, const char *end, SearchResult *item)
+{
+   if (!jsonString(tile, end, "contentId", item->videoId, sizeof item->videoId) || strlen(item->videoId) != 11) return 0;
+   const char *channel = findIn(tile, end, "\"browseId\":\"UC");   // the long-press menu's "Go to channel"; none on
+   if (channel) jsonString(channel, end, "browseId", item->channelId, sizeof item->channelId);   // home tiles
+
+   static const char META[] = "\"tileMetadataRenderer\":{";
+   const char *meta = findIn(tile, end, META);
+   if (!meta) return 0;
+   const char *metaEnd = objectEnd(meta + sizeof META - 2, end);
+   static const char TITLE[] = "\"title\":{";
+   const char *title = findIn(meta, metaEnd, TITLE);
+   if (title) readTextObject(title, objectEnd(title + sizeof TITLE - 2, metaEnd), item->title, sizeof item->title);
+
+   static const char LINE[] = "\"lineRenderer\":{", TEXT[] = "\"text\":{";
+   int line = 0;
+   for (const char *at = meta; (at = findIn(at, metaEnd, LINE)) != NULL; line++) {
+      const char *lineEnd = objectEnd(at + sizeof LINE - 2, metaEnd);
+      for (const char *text = at; (text = findIn(text, lineEnd, TEXT)) != NULL; ) {
+         const char *textEnd = objectEnd(text + sizeof TEXT - 2, lineEnd);
+         char words[96];
+         readTextObject(text, textEnd, words, sizeof words);
+         if (line == 0) { if (!item->author[0]) copyText(item->author, sizeof item->author, words); }
+         else if (endsWith(words, " views") || endsWith(words, " view")) copyText(item->views, sizeof item->views, words);
+         else if (endsWith(words, " watching")) { copyText(item->views, sizeof item->views, words); item->isLive = 1; }
+         else if (endsWith(words, " ago") || strncmp(words, "Streamed ", 9) == 0)
+            copyText(item->published, sizeof item->published, words);
+         text = textEnd;
+      }
+      at = lineEnd;
+   }
+
+   // the time on the thumbnail: a plain duration ("style":"DEFAULT"), or LIVE - never UPCOMING's word
+   static const char OVERLAY[] = "\"thumbnailOverlayTimeStatusRenderer\":{";
+   const char *overlay = findIn(tile, end, OVERLAY);
+   if (overlay) {
+      const char *open = overlay + sizeof OVERLAY - 2, *close = objectEnd(open, end);
+      if (findIn(open, close, "\"style\":\"DEFAULT\"") && findIn(open, close, "\"simpleText\":\""))
+         jsonString(open, close, "simpleText", item->duration, sizeof item->duration);
+      else if (findIn(open, close, "\"style\":\"LIVE\"")) item->isLive = 1;
+   }
+   if (item->isLive) item->duration[0] = 0;
+   return item->title[0] != 0;
+}
+
+// A channel tile (the account's channel list): its id and its name, nothing else.
+static int parseChannelTile(const char *tile, const char *end, SearchResult *item)
+{
+   if (!jsonString(tile, end, "contentId", item->channelId, sizeof item->channelId) ||
+       strncmp(item->channelId, "UC", 2) != 0) return 0;
+   static const char META[] = "\"tileMetadataRenderer\":{", TITLE[] = "\"title\":{";
+   const char *meta = findIn(tile, end, META);
+   const char *metaEnd = meta ? objectEnd(meta + sizeof META - 2, end) : NULL;
+   const char *title = meta ? findIn(meta, metaEnd, TITLE) : NULL;
+   if (title) readTextObject(title, objectEnd(title + sizeof TITLE - 2, metaEnd), item->title, sizeof item->title);
+   return 1;
+}
+
+// channels: keep the channel tiles (ACCOUNT_FEED_CHANNELS) instead of the videos
+static void parseTileResults(const char *resp, int respLen, int channels, SearchResults *out)
+{
+   const char *end = resp + respLen;
+   static const char TILE[] = "\"tileRenderer\":{";
+   for (const char *at = resp; out->count < MAX_SEARCH_RESULTS && (at = findIn(at, end, TILE)) != NULL; ) {
+      const char *open = at + sizeof TILE - 2, *close = objectEnd(open, end);
+      at = close;
+      if (channels) {
+         SearchResult *item = &out->items[out->count];
+         memset(item, 0, sizeof *item);
+         if (findIn(open, close, "\"contentType\":\"TILE_CONTENT_TYPE_CHANNEL\"") && parseChannelTile(open, close, item))
+            out->count++;
+         continue;
+      }
+      if (!findIn(open, close, "\"contentType\":\"TILE_CONTENT_TYPE_VIDEO\"")) continue;   // Shorts, channels, the ad
+      if (findIn(open, close, "Members only")) continue;   // unplayable for the anonymous player, as in parseVideoResults
+      SearchResult *item = &out->items[out->count];
+      memset(item, 0, sizeof *item);
+      if (parseTileItem(open, close, item) && !isDuplicate(out, item->videoId)) out->count++;
+   }
+   // The next page is the reply's LAST nextContinuationData: on the home feed each shelf carries one for its own row
+   // and the list of shelves its own after all of them; everywhere else there is just the one.
+   static const char NEXT[] = "\"nextContinuationData\":{";
+   const char *last = NULL;
+   for (const char *at = resp; (at = findIn(at, end, NEXT)) != NULL; at += sizeof NEXT - 1) last = at;
+   if (last) jsonString(last, end, "continuation", out->continuation, sizeof out->continuation);
+}
+
+// POST a signed-in TV browse and parse its tiles. A 401 - the access token refused before its time - is answered
+// once with a fresh one.
+// POST a signed-in TV request. The reply's body comes back in a buffer of its own (the caller frees it), NULL on any
+// failure. A 401 - the access token refused before its time - is answered once with a fresh one.
+static char *postAccountRaw(const char *url, const char *body, int bodyLen, const char *what, int cap, int *respLen)
+{
+   char *authorization = (char *)malloc(AUTHORIZATION_CAP);
+   char *resp = (char *)malloc(cap);
+   if (!authorization || !resp) { free(authorization); free(resp); return NULL; }
+   int ok = 0;
+   for (int attempt = 0; attempt < 2; attempt++) {
+      if (getAccountAuthorization(authorization, AUTHORIZATION_CAP) != 0) {
+         logWarn("[yt] account %s: not signed in, or the sign-in could not be renewed\n", what);
+         break;
+      }
+      HttpHeader headers[6] = {
+         { "Content-Type", "application/json" },
+         { "User-Agent", ACCOUNT_TV_USER_AGENT },
+         { "X-YouTube-Client-Name", "7" },
+         { "X-YouTube-Client-Version", ACCOUNT_TV_CLIENT_VERSION },
+         { "Authorization", authorization },
+         { "Accept-Encoding", "identity" },
+      };
+      int status = 0;
+      int rc = fetchHttp("POST", url, headers, 6, body, bodyLen, resp, cap, respLen, &status);
+      if (rc < 0) { logError("[yt] account %s: no answer (rc=%d)\n", what, rc); break; }
+      if (status == 401 && attempt == 0) { dropAccountAccess(); continue; }
+      if (status != 200) { logError("[yt] account %s: HTTP %d\n", what, status); break; }
+      ok = 1;
+      break;
+   }
+   memset(authorization, 0, AUTHORIZATION_CAP);
+   free(authorization);
+   if (!ok) { free(resp); return NULL; }
+   return resp;
+}
+
+static int postAccountBrowse(const char *body, int bodyLen, const char *what, int nextPage, int channels,
+                             SearchResults *out)
+{
+   int respLen = 0;
+   char *resp = postAccountRaw(BROWSE_URL, body, bodyLen, what, RESP_CAP, &respLen);
+   if (!resp) return -1;
+   parseTileResults(resp, respLen, channels, out);
+   logInfo("[yt] account %s %s: %d %s, next page %s\n", what, nextPage ? "next page" : "page 1", out->count,
+           channels ? "channels" : "videos", out->continuation[0] ? "yes" : "no");
+   free(resp);
+   return 0;
+}
+
+static int fetchAccountFeed(AccountFeed feed, const char *continuation, SearchResults *out)
+{
+   memset(out, 0, sizeof *out);
+   if (feed < 0 || feed >= ACCOUNT_FEED_COUNT) return -1;
+   const char *gl = getContentRegionCode();
+   char body[MAX_CONTINUATION + 512];
+   int bodyLen = continuation ? snprintf(body, sizeof body, TV_CONTINUATION_BODY_FMT, gl, continuation)
+                              : snprintf(body, sizeof body, TV_BROWSE_BODY_FMT, gl, ACCOUNT_BROWSE_IDS[feed]);
+   if (bodyLen < 0 || bodyLen >= (int)sizeof body) return refuseBody(bodyLen, out);
+   return postAccountBrowse(body, bodyLen, ACCOUNT_BROWSE_IDS[feed], continuation != NULL,
+                            feed == ACCOUNT_FEED_CHANNELS, out);
+}
+
+// ---- the account's playlists ----
+
+#define PLAYLIST_PAGES 5   // the Library's playlist list is read this many pages deep at the most
+
+// an id as it goes into "VL<id>" and a JSON string: letters, digits, '-' and '_' only, with room for the "VL"
+static int isPlaylistId(const char *id)
+{
+   int length = (int)strlen(id);
+   if (length < 2 || length > ACCOUNT_PLAYLIST_ID_CAP - 3) return 0;
+   for (const char *p = id; *p; p++) if (!isIdChar(*p)) return 0;
+   return 1;
+}
+
+// The playlists of one reply of FEplaylist_aggregation, from index `count` on. Returns the new count.
+static int parsePlaylistTiles(const char *resp, int respLen, AccountPlaylistInfo *out, int count, int cap)
+{
+   const char *end = resp + respLen;
+   static const char TILE[] = "\"tileRenderer\":{", META[] = "\"tileMetadataRenderer\":{", TITLE[] = "\"title\":{";
+   static const char OVERLAY[] = "\"thumbnailOverlayTimeStatusRenderer\":{";
+   for (const char *at = resp; count < cap && (at = findIn(at, end, TILE)) != NULL; ) {
+      const char *open = at + sizeof TILE - 2, *close = objectEnd(open, end);
+      at = close;
+      if (!findIn(open, close, "\"contentType\":\"TILE_CONTENT_TYPE_PLAYLIST\"")) continue;
+      AccountPlaylistInfo *list = &out[count];
+      memset(list, 0, sizeof *list);
+      if (!jsonString(open, close, "contentId", list->id, sizeof list->id) || !isPlaylistId(list->id)) continue;
+      if (strcmp(list->id, "WL") == 0) continue;   // Watch Later has a page of its own
+      int known = 0;
+      for (int i = 0; i < count; i++) if (strcmp(out[i].id, list->id) == 0) known = 1;
+      if (known) continue;
+      const char *meta = findIn(open, close, META);
+      if (meta) {
+         const char *metaEnd = objectEnd(meta + sizeof META - 2, close);
+         const char *title = findIn(meta, metaEnd, TITLE);
+         if (title) readTextObject(title, objectEnd(title + sizeof TITLE - 2, metaEnd), list->title, sizeof list->title);
+      }
+      const char *overlay = findIn(open, close, OVERLAY);
+      if (overlay) {
+         const char *overlayOpen = overlay + sizeof OVERLAY - 2;
+         readTextObject(overlayOpen, objectEnd(overlayOpen, close), list->count, sizeof list->count);
+      }
+      if (!list->title[0]) strCopy(list->title, sizeof list->title, strcmp(list->id, "LL") == 0 ? "Liked videos" : list->id);
+      count++;
+   }
+   return count;
+}
+
+static int fetchAccountPlaylists(AccountPlaylistInfo *out, int cap)
+{
+   const char *gl = getContentRegionCode();
+   char *body = (char *)malloc(MAX_CONTINUATION + 512), *token = (char *)malloc(MAX_CONTINUATION);
+   if (!body || !token) { free(body); free(token); return -1; }
+   int count = 0, failed = 0;
+   token[0] = 0;
+   for (int page = 0; page < PLAYLIST_PAGES && count < cap; page++) {
+      int bodyLen = token[0] ? snprintf(body, MAX_CONTINUATION + 512, TV_CONTINUATION_BODY_FMT, gl, token)
+                             : snprintf(body, MAX_CONTINUATION + 512, TV_BROWSE_BODY_FMT, gl, "FEplaylist_aggregation");
+      if (bodyLen < 0 || bodyLen >= MAX_CONTINUATION + 512) break;
+      int respLen = 0;
+      char *resp = postAccountRaw(BROWSE_URL, body, bodyLen, "playlists", RESP_CAP, &respLen);
+      if (!resp) { failed = page == 0; break; }
+      count = parsePlaylistTiles(resp, respLen, out, count, cap);
+      token[0] = 0;
+      static const char NEXT[] = "\"nextContinuationData\":{";
+      const char *last = NULL;
+      for (const char *at = resp; (at = findIn(at, resp + respLen, NEXT)) != NULL; at += sizeof NEXT - 1) last = at;
+      if (last) jsonString(last, resp + respLen, "continuation", token, MAX_CONTINUATION);
+      free(resp);
+      if (!token[0]) break;
+   }
+   free(body);
+   free(token);
+   if (failed) return -1;
+   logInfo("[yt] account playlists: %d\n", count);
+   return count;
+}
+
+static int fetchAccountPlaylistVideos(const char *playlistId, const char *continuation, SearchResults *out)
+{
+   memset(out, 0, sizeof *out);
+   if (!continuation && !isPlaylistId(playlistId)) return -1;
+   const char *gl = getContentRegionCode();
+   char body[MAX_CONTINUATION + 512], browseId[ACCOUNT_PLAYLIST_ID_CAP + 2];
+   snprintf(browseId, sizeof browseId, "VL%s", playlistId);
+   int bodyLen = continuation ? snprintf(body, sizeof body, TV_CONTINUATION_BODY_FMT, gl, continuation)
+                              : snprintf(body, sizeof body, TV_BROWSE_BODY_FMT, gl, browseId);
+   if (bodyLen < 0 || bodyLen >= (int)sizeof body) return refuseBody(bodyLen, out);
+   return postAccountBrowse(body, bodyLen, "playlist", continuation != NULL, 0, out);
+}
+
+// ---- changes to the signed-in account ----
+//
+// What the TV app sends for the same buttons: its Watch Later entries are a playlist edit of "WL" (the tiles' own
+// long-press menu carries exactly that playlistEditEndpoint), a subscription is subscription/subscribe with the
+// channel's id. YouTube answers both with "STATUS_SUCCEEDED" when it took them.
+
+#define EDIT_PLAYLIST_URL "https://www.youtube.com/youtubei/v1/browse/edit_playlist?prettyPrint=false"
+#define SUBSCRIBE_URL     "https://www.youtube.com/youtubei/v1/subscription/subscribe?prettyPrint=false"
+#define UNSUBSCRIBE_URL   "https://www.youtube.com/youtubei/v1/subscription/unsubscribe?prettyPrint=false"
+#define ACTION_REPLY_CAP  (256 * 1024)
+
+static int isChannelId(const char *id)
+{
+   if (strncmp(id, "UC", 2) != 0 || strlen(id) != 24) return 0;
+   for (const char *p = id; *p; p++) if (!isIdChar(*p)) return 0;
+   return 1;
+}
+
+static int changeAccountOnYouTube(AccountAction action, const char *id)
+{
+   int isVideo = action == ACCOUNT_ADD_WATCH_LATER || action == ACCOUNT_REMOVE_WATCH_LATER;
+   char videoId[16];
+   if (isVideo ? !extractVideoId(id, videoId, sizeof videoId) : !isChannelId(id)) {
+      logError("[yt] account change refused: not a %s id\n", isVideo ? "video" : "channel");
+      return -1;
+   }
+   const char *gl = getContentRegionCode(), *url, *what;
+   char body[1024];
+   if (action == ACCOUNT_ADD_WATCH_LATER) {
+      url = EDIT_PLAYLIST_URL; what = "Watch Later add";
+      snprintf(body, sizeof body, TV_CONTEXT_FMT ",\"playlistId\":\"WL\",\"actions\":[{\"action\":\"ACTION_ADD_VIDEO\","
+               "\"addedVideoId\":\"%s\"}]}", gl, videoId);
+   } else if (action == ACCOUNT_REMOVE_WATCH_LATER) {
+      url = EDIT_PLAYLIST_URL; what = "Watch Later remove";
+      snprintf(body, sizeof body, TV_CONTEXT_FMT ",\"playlistId\":\"WL\",\"actions\":[{\"action\":"
+               "\"ACTION_REMOVE_VIDEO_BY_VIDEO_ID\",\"removedVideoId\":\"%s\"}]}", gl, videoId);
+   } else {
+      url = action == ACCOUNT_SUBSCRIBE ? SUBSCRIBE_URL : UNSUBSCRIBE_URL;
+      what = action == ACCOUNT_SUBSCRIBE ? "subscribe" : "unsubscribe";
+      snprintf(body, sizeof body, TV_CONTEXT_FMT ",\"channelIds\":[\"%s\"]}", gl, id);
+   }
+
+   char *authorization = (char *)malloc(AUTHORIZATION_CAP);
+   char *resp = (char *)malloc(ACTION_REPLY_CAP);
+   if (!authorization || !resp) { free(authorization); free(resp); return -1; }
+   int rc = -1;
+   for (int attempt = 0; attempt < 2; attempt++) {
+      if (getAccountAuthorization(authorization, AUTHORIZATION_CAP) != 0) {
+         logWarn("[yt] account %s: not signed in, or the sign-in could not be renewed\n", what);
+         break;
+      }
+      HttpHeader headers[6] = {
+         { "Content-Type", "application/json" },
+         { "User-Agent", ACCOUNT_TV_USER_AGENT },
+         { "X-YouTube-Client-Name", "7" },
+         { "X-YouTube-Client-Version", ACCOUNT_TV_CLIENT_VERSION },
+         { "Authorization", authorization },
+         { "Accept-Encoding", "identity" },
+      };
+      int respLen = 0, status = 0;
+      rc = fetchHttp("POST", url, headers, 6, body, (int)strlen(body), resp, ACTION_REPLY_CAP, &respLen, &status);
+      if (rc < 0) { logError("[yt] account %s: no answer (rc=%d)\n", what, rc); break; }
+      if (status == 401 && attempt == 0) { dropAccountAccess(); continue; }
+      int took = status == 200 && findIn(resp, resp + respLen, "STATUS_SUCCEEDED") != NULL;
+      // a subscribe answers with the button's new state rather than a status: 200 without an error is taken
+      if (status == 200 && !took && !isVideo && !findIn(resp, resp + respLen, "\"error\"")) took = 1;
+      logInfo("[yt] account %s: HTTP %d, %s\n", what, status, took ? "done" : "not taken");
+      rc = took ? 0 : -1;
+      break;
+   }
+   memset(authorization, 0, AUTHORIZATION_CAP);
+   free(authorization);
+   free(resp);
+   return rc;
+}
+
 // ---- the Live page ----
 
 #define LIVE_BROWSE_ID     "UC4R8DWoMoI7CAwX8_LjQHig"   // YouTube's own Live destination, what youtube.com/live shows
@@ -1326,4 +1711,6 @@ static int fetchLive(LiveCategory category, const char *continuation, SearchResu
    return 0;
 }
 
-const Extractor youtubeExtractor = { "youtube", matches, extract, search, fetchTrending, getChannel, fetchLive };
+const Extractor youtubeExtractor = { "youtube", matches, extract, search, fetchTrending, getChannel, fetchLive,
+                                     fetchAccountFeed, changeAccountOnYouTube, fetchAccountPlaylists,
+                                     fetchAccountPlaylistVideos };

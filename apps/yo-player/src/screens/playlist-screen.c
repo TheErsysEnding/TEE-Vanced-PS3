@@ -5,6 +5,7 @@
 
 #include "screens/playlist-screen.h"
 #include "storage.h"
+#include "account.h"            // signed in: the account's playlists above the console's
 #include "sidebar.h"            // the rail, when the screen was opened from it: collapsed, or open over it
 #include "screens/home.h"       // updateRailOverScreen: LEFT opens the rail here as on Home
 #include "ui-hints.h"           // UiHints; brings ui-draw.h (UI_SAFE_*) and ui-fonts.h (uiInitLabel, metrics)
@@ -34,9 +35,11 @@
 #define HEADER_Y       67
 #define HEADER_H       45
 #define LIST_TOP       160
-// The list never scrolls, so the pitch is what CHOOSE mode's 13 rows (12 lists + "New playlist...") allow:
-// the last plate ends at y 958 and its ring at 967, clear of the hint row at 998. The 54-px plate still keeps
-// 24-px text and its descenders well inside.
+// The pitch is what CHOOSE mode's 13 rows (12 lists + "New playlist...") allow: the last plate ends at y 958 and
+// its ring at 967, clear of the hint row at 998. The 54-px plate still keeps 24-px text and its descenders well
+// inside. Signed in, the account's playlists come on top, and a window of rows follows the selection.
+#define LIST_CLEAR     30       // the last plate ends at least this far above the hint row
+#define MAX_ACCOUNT_ROWS 24     // the account's playlists shown at the most: two labels each, rendered at once
 #define ROW_H          62
 #define PLATE_H        (ROW_H - 8)
 #define LIST_W         1152     // the settings rows' width (Bild 3): a count stays within reach of its name
@@ -62,9 +65,12 @@ typedef enum { MODE_BROWSE, MODE_CHOOSE } PlaylistMode;
 // and START makes a new one. Keeping the extra row out of BROWSE means the common case - open a list - has
 // nothing in front of it.
 #define CHOOSE_NEW_ROW 0
+#define DELETE_HINT    3        // Square's slot in Browse's hint row: hidden on a YouTube playlist
 
 static Label       titleLabel, emptyLabel;
 static Label       rowLabels[MAX_PLAYLISTS], countLabels[MAX_PLAYLISTS], newLabel;
+static Label       accountRowLabels[MAX_ACCOUNT_ROWS], accountCountLabels[MAX_ACCOUNT_ROWS];
+static AccountPlaylistInfo accountRows[MAX_ACCOUNT_ROWS];
 static Label       noticeLabel;
 static Icon        rowIcon, newIcon;
 static UiHints     hints;
@@ -74,9 +80,11 @@ static ButtonRepeat navigateRepeat;
 static PlaylistMode  mode;
 static SearchResult  pendingItem;                 // MODE_CHOOSE: what is being filed
 static void        (*openCallback)(int playlist);
+static void        (*openAccountCallback)(const char *id, const char *title);
 static PlaylistMode  pendingMode;
 static SearchResult  pendingItemIn;
 static void        (*pendingCallback)(int playlist);
+static void        (*pendingAccountCallback)(const char *id, const char *title);
 
 static struct {
    int screenW, screenH;
@@ -85,17 +93,34 @@ static struct {
    int confirmDelete;      // the notice is asking whether to delete `deleteTarget`
    int deleteTarget;
    int renderedCount;      // playlists the row labels were built for
+   int accountCount;       // the account's playlists on the page (Browse, signed in)
+   unsigned listsSeen;     // the account lists' revision the rows were built from
+   int top, visible;       // the window of rows on screen
    uint32_t plateFill;     // the focused plate: hintFill over the page, opaque (see initPlaylistScreen)
 } state;
 
+// Browse lists the account's playlists first; the chooser files into the console's lists only
+static int accountRowCount(void) { return mode == MODE_BROWSE ? state.accountCount : 0; }
+static int isAccountRow(int row) { return row >= 0 && row < accountRowCount(); }
+
 static int rowCount(void)
 {
-   return getPlaylistCount() + (mode == MODE_CHOOSE ? 1 : 0);
+   return accountRowCount() + getPlaylistCount() + (mode == MODE_CHOOSE ? 1 : 0);
 }
 
 static int playlistForRow(int row)
 {
-   return mode == MODE_CHOOSE ? row - 1 : row;
+   return mode == MODE_CHOOSE ? row - 1 : row - accountRowCount();
+}
+
+// the window moves as little as it takes to keep the selection on screen
+static void followSelection(void)
+{
+   if (state.selected < state.top) state.top = state.selected;
+   if (state.selected >= state.top + state.visible) state.top = state.selected - state.visible + 1;
+   int maxTop = rowCount() - state.visible;
+   if (state.top > maxTop) state.top = maxTop;
+   if (state.top < 0) state.top = 0;
 }
 
 static void showNotice(const char *text, int isConfirm)
@@ -119,7 +144,26 @@ static void refreshRows(void)
       setLabelText(&countLabels[i], counted);
    }
    state.renderedCount = count;
+
+   // the account's playlists: names from YouTube in any script (raw, FONT_POP when Manrope lacks a letter), and
+   // their count as YouTube words it, marked as YouTube's - there is no Delete on them
+   state.accountCount = 0;
+   if (mode == MODE_BROWSE && isAccountSignedIn()) {
+      int available = getAccountPlaylistCount();
+      for (int i = 0; i < available && state.accountCount < MAX_ACCOUNT_ROWS; i++) {
+         AccountPlaylistInfo *list = &accountRows[state.accountCount];
+         if (!getAccountPlaylistAt(i, list)) break;
+         uiSetTextLabel(&accountRowLabels[state.accountCount], ROW_WEIGHT, list->title);
+         char counted[48];
+         snprintf(counted, sizeof counted, list->count[0] ? "YouTube \xC2\xB7 %s" : "YouTube", list->count);
+         uiSetTextLabel(&accountCountLabels[state.accountCount], UI_META_WEIGHT, counted);
+         state.accountCount++;
+      }
+   }
+   state.listsSeen = getAccountListsRevision();
    if (state.selected >= rowCount()) state.selected = rowCount() > 0 ? rowCount() - 1 : 0;
+   followSelection();
+   if (mode == MODE_BROWSE) uiSetHintShown(&hints, DELETE_HINT, !isAccountRow(state.selected));   // CHOOSE has no Square
 }
 
 static void onNameTyped(const char *text)
@@ -141,6 +185,14 @@ static void activateRow(void)
 {
    if (mode == MODE_CHOOSE && state.selected == CHOOSE_NEW_ROW) {
       oskInputBegin("Name the playlist", "", onNameTyped);
+      return;
+   }
+
+   if (isAccountRow(state.selected)) {   // a YouTube playlist: Home opens it from the account
+      AccountPlaylistInfo list = accountRows[state.selected];
+      void (*accountCallback)(const char *, const char *) = openAccountCallback;
+      popScreen();
+      if (accountCallback) accountCallback(list.id, list.title);
       return;
    }
 
@@ -174,6 +226,10 @@ static void initPlaylistScreen(void)
    mode = pendingMode;
    pendingItem = pendingItemIn;
    openCallback = pendingCallback;
+   openAccountCallback = pendingAccountCallback;
+   state.accountCount = state.top = 0;
+   state.visible = (UI_HINTS_BOTTOM_Y - LIST_CLEAR - LIST_TOP - PLATE_H) / ROW_H + 1;
+   if (state.visible < 1) state.visible = 1;
 
    // Fonts are shared app-wide (ui-fonts.h): nothing is opened here and nothing may be closed in term.
    int textW = LIST_W - 2 * ROW_PAD - ICON_SIZE - ICON_GAP - COUNT_GAP - COUNT_W;
@@ -192,6 +248,14 @@ static void initPlaylistScreen(void)
    for (int i = 0; i < MAX_PLAYLISTS; i++) {
       uiInitTextLabel(&rowLabels[i], ROW_WEIGHT,     0, 0, textW, ROW_TEXT,     activeTheme->textPrimary,   TEXT_NOWRAP_ELLIPSIS, "");
       uiInitLabel(&countLabels[i],   UI_META_WEIGHT, 0, 0, AUTO,  UI_META_SIZE, activeTheme->textSecondary, TEXT_NOWRAP,          "");
+   }
+   // a YouTube playlist's count reads "YouTube · 48 videos", about 100 px more than a console list's: its name
+   // stops that much sooner
+   for (int i = 0; i < MAX_ACCOUNT_ROWS; i++) {
+      uiInitTextLabel(&accountRowLabels[i], ROW_WEIGHT, 0, 0, textW - 100, ROW_TEXT, activeTheme->textPrimary,
+                      TEXT_NOWRAP_ELLIPSIS, "");
+      uiInitTextLabel(&accountCountLabels[i], UI_META_WEIGHT, 0, 0, AUTO, UI_META_SIZE, activeTheme->textSecondary,
+                      TEXT_NOWRAP, "");
    }
    uiInitTextLabel(&noticeLabel, UI_BODY_WEIGHT, 0, 0, state.screenW * 2 / 3 - 2 * NOTICE_PAD_X, NOTICE_TEXT,
                    activeTheme->textPrimary, TEXT_WRAP, "");
@@ -215,12 +279,17 @@ static void initPlaylistScreen(void)
    }
 
    memset(&navigateRepeat, 0, sizeof navigateRepeat);
+   if (mode == MODE_BROWSE && isAccountSignedIn()) refreshAccountLists();   // made on the phone meanwhile, say
    refreshRows();
 }
 
 static void updatePlaylistScreen(void)
 {
    if (oskInputActive()) return;
+
+   // the account's lists load while this page is up (Home, which normally asks, is underneath): new rows then
+   syncAccountLists();
+   if (mode == MODE_BROWSE && getAccountListsRevision() != state.listsSeen) refreshRows();
 
    if (state.noticeVisible) {   // modal: nothing underneath sees the pad until it is dismissed
       if (isPadButtonPressed(PAD_BTN_CROSS)) {
@@ -257,6 +326,8 @@ static void updatePlaylistScreen(void)
       else if (isRepeatDue(&navigateRepeat, getPadButtonState(PAD_BTN_UP)))   state.selected--;
       if (state.selected < 0)     state.selected = rows - 1;
       if (state.selected >= rows) state.selected = 0;
+      followSelection();
+      if (mode == MODE_BROWSE) uiSetHintShown(&hints, DELETE_HINT, !isAccountRow(state.selected));
    }
 
    if (mode == MODE_BROWSE && isPadButtonPressed(PAD_BTN_START)) {
@@ -265,6 +336,7 @@ static void updatePlaylistScreen(void)
    }
 
    if (mode == MODE_BROWSE && isPadButtonPressed(PAD_BTN_SQUARE)) {
+      if (isAccountRow(state.selected)) return;   // a YouTube playlist is not deleted from here
       int playlist = playlistForRow(state.selected);
       if (playlist >= 0 && playlist < getPlaylistCount()) {
          char message[160];
@@ -322,6 +394,12 @@ static void drawRow(int row, int y)
       uiDrawLabelAt(&newLabel, textX, uiLabelYForBaseline(&newLabel, baseline));
       return;
    }
+   if (isAccountRow(row)) {
+      const Label *name = &accountRowLabels[row], *count = &accountCountLabels[row];
+      uiDrawLabelAt(name, textX, uiLabelYForBaseline(name, baseline));
+      uiDrawLabelAt(count, CONTENT_X + LIST_W - ROW_PAD - count->tt.tex.w, uiLabelYForBaseline(count, baseline));
+      return;
+   }
    uiDrawLabelAt(&rowLabels[playlist], textX, uiLabelYForBaseline(&rowLabels[playlist], baseline));
    uiDrawLabelAt(&countLabels[playlist], CONTENT_X + LIST_W - ROW_PAD - countLabels[playlist].tt.tex.w,
                  uiLabelYForBaseline(&countLabels[playlist], baseline));
@@ -355,9 +433,10 @@ static void drawPlaylistScreen(void)
    // a step inside the page it came from, which the rail cannot mark.
    if (mode == MODE_BROWSE && !isSidebarFocused()) drawSidebarPassive(state.screenH, SIDE_PLAYLISTS);
 
-   int rows = rowCount();
-   if (rows > 0) drawFocusPlate(LIST_TOP + state.selected * ROW_H);
-   for (int row = 0; row < rows; row++) drawRow(row, LIST_TOP + row * ROW_H);
+   int rows = rowCount(), end = state.top + state.visible;
+   if (end > rows) end = rows;
+   if (state.selected >= state.top && state.selected < end) drawFocusPlate(LIST_TOP + (state.selected - state.top) * ROW_H);
+   for (int row = state.top; row < end; row++) drawRow(row, LIST_TOP + (row - state.top) * ROW_H);
    if (rows == 0) {
       // on the line where the first list will appear
       uiPlaceLabelBaseline(&emptyLabel, CONTENT_X, rowBaseline(LIST_TOP));
@@ -388,6 +467,7 @@ static void termPlaylistScreen(void)
    freeLabel(&newLabel);
    freeLabel(&noticeLabel);
    for (int i = 0; i < MAX_PLAYLISTS; i++) { freeLabel(&rowLabels[i]); freeLabel(&countLabels[i]); }
+   for (int i = 0; i < MAX_ACCOUNT_ROWS; i++) { freeLabel(&accountRowLabels[i]); freeLabel(&accountCountLabels[i]); }
    // no closeFont: the fonts belong to ui-fonts.c and every other screen is still drawing with them
 }
 
@@ -395,10 +475,11 @@ static void termPlaylistScreen(void)
 static Screen playlistScreen = { initPlaylistScreen, NULL, updatePlaylistScreen, drawPlaylistScreen,
                                  NULL, termPlaylistScreen, SCREEN_TERMINATED };
 
-void openPlaylists(void (*onOpen)(int playlist))
+void openPlaylists(void (*onOpen)(int playlist), void (*onOpenAccount)(const char *id, const char *title))
 {
    pendingMode = MODE_BROWSE;
    pendingCallback = onOpen;
+   pendingAccountCallback = onOpenAccount;
    memset(&pendingItemIn, 0, sizeof pendingItemIn);
    pushScreen(&playlistScreen);
 }
@@ -407,6 +488,7 @@ void openPlaylistChooser(const SearchResult *item)
 {
    pendingMode = MODE_CHOOSE;
    pendingCallback = NULL;
+   pendingAccountCallback = NULL;
    pendingItemIn = *item;
    pushScreen(&playlistScreen);
 }

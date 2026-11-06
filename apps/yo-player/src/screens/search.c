@@ -13,6 +13,7 @@
 #include "screens/playlist-screen.h"
 #include "screens/play.h"
 #include "screens/home.h"       // the rail over this screen (updateRailOverScreen)
+#include "account.h"            // signed in: Square and Triangle act on the YouTube account
 #include "video-grid.h"
 #include "storage.h"
 #include "downloads.h"
@@ -168,11 +169,23 @@ static void fitHintRow(UiHints *row)
    }
 }
 
+// Followed: by the YouTube account while signed in (account.h), by the console's own list otherwise.
+static int followsChannel(const char *channelId)
+{
+   return isAccountSignedIn() ? isAccountFollowing(channelId) : isSubscribed(channelId);
+}
+
+// the Watch Later tag on a result, from the same list Square changes
+static int tileInWatchLater(const char *videoId)
+{
+   return isAccountSignedIn() ? isInAccountWatchLater(videoId) : isWatchLater(videoId);
+}
+
 // in channel mode Triangle toggles the subscription (you're already in the channel); elsewhere it drills in.
 static void updateTriangleHint(void)
 {
    const char *caption = "Channel";
-   if (search.channelId[0]) caption = isSubscribed(search.channelId) ? "Unsubscribe" : "Subscribe";
+   if (search.channelId[0]) caption = followsChannel(search.channelId) ? "Unsubscribe" : "Subscribe";
    uiSetHintCaption(&hints, TRIANGLE_HINT, caption);
    fitHintRow(&hints);   // the row's width follows its captions
 }
@@ -246,6 +259,12 @@ static void setHeading(void)
 
 static void toggleSubscription(void)
 {
+   // the account: the hint flips at once; YouTube is told on a worker, and a refusal comes back as a notice
+   if (isAccountSignedIn()) {
+      setAccountFollowing(search.channelId, !isAccountFollowing(search.channelId));
+      updateTriangleHint();
+      return;
+   }
    int wantOn = !isSubscribed(search.channelId);
    int rc = setSubscribed(search.channelId, search.channelName, wantOn);
 
@@ -411,7 +430,7 @@ static void initSearch(void)
                  CONTENT_W, GRID_BOTTOM - GRID_TOP);
    setGridView(&search.grid, GRID_VIEW_LIST);   // results are rows (Bild 5), three to a page
    setGridWatchedPredicate(&search.grid, isWatched);
-   setGridWatchLaterPredicate(&search.grid, isWatchLater);
+   setGridWatchLaterPredicate(&search.grid, tileInWatchLater);
    setGridProgressSource(&search.grid, getWatchedPosition);
    reload();
 }
@@ -431,6 +450,16 @@ static void updateSearch(void)
 {
    updateDownloadOverlay();
    if (oskInputActive()) return;
+
+   // The account's lists may arrive while a channel page is up (the first load after a sign-in): the Triangle hint
+   // then says what Triangle really does. A change YouTube refused says so in the notice box.
+   syncAccountLists();
+   static unsigned listsSeen;
+   if (getAccountListsRevision() != listsSeen) { listsSeen = getAccountListsRevision(); updateTriangleHint(); }
+   if (!search.noticeVisible) {
+      char failure[160];
+      if (takeAccountFailure(failure, sizeof failure)) showNotice(failure);
+   }
 
    if (search.noticeVisible) {   // modal: nothing underneath sees the pad until it is dismissed
       if (isPadButtonPressed(PAD_BTN_CROSS) || isPadButtonPressed(PAD_BTN_CIRCLE)) search.noticeVisible = 0;
@@ -497,7 +526,11 @@ static void updateSearch(void)
 
    const SearchResult *selected = gridSelected(&search.grid);
    if (!selected) return;
-   if (isPadButtonPressed(PAD_BTN_SQUARE)) { toggleWatchLater(selected); return; }
+   if (isPadButtonPressed(PAD_BTN_SQUARE)) {
+      if (isAccountSignedIn()) setAccountWatchLater(selected->videoId, !isInAccountWatchLater(selected->videoId));
+      else toggleWatchLater(selected);
+      return;
+   }
    if (isPadButtonPressed(PAD_BTN_R3)) { if (!selected->isLive) enqueueDownload(selected); return; }
    if (isPadButtonPressed(PAD_BTN_L3)) { openPlaylistChooser(selected); return; }   // L3 came free with the grid layout   // live can't be downloaded
    if (isPadButtonPressed(PAD_BTN_TRIANGLE)) { enterChannel(selected); return; }   // channel mode handled above

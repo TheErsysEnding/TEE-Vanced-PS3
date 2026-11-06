@@ -40,6 +40,38 @@ int getChannelVideos(const char *channelId, const char *token, SearchResults *ou
    return -1;
 }
 
+int getAccountFeed(AccountFeed feed, const char *continuation, SearchResults *out)
+{
+   for (unsigned i = 0; i < sizeof registry / sizeof registry[0]; i++)
+      if (registry[i]->getAccount)
+         return registry[i]->getAccount(feed, continuation, out);
+   return -1;
+}
+
+int changeAccount(AccountAction action, const char *id)
+{
+   for (unsigned i = 0; i < sizeof registry / sizeof registry[0]; i++)
+      if (registry[i]->changeAccount)
+         return registry[i]->changeAccount(action, id);
+   return -1;
+}
+
+int getAccountPlaylists(AccountPlaylistInfo *out, int cap)
+{
+   for (unsigned i = 0; i < sizeof registry / sizeof registry[0]; i++)
+      if (registry[i]->getAccountPlaylists)
+         return registry[i]->getAccountPlaylists(out, cap);
+   return -1;
+}
+
+int getAccountPlaylistVideos(const char *playlistId, const char *continuation, SearchResults *out)
+{
+   for (unsigned i = 0; i < sizeof registry / sizeof registry[0]; i++)
+      if (registry[i]->getAccountPlaylist)
+         return registry[i]->getAccountPlaylist(playlistId, continuation, out);
+   return -1;
+}
+
 int getLiveFeed(LiveCategory category, const char *continuation, SearchResults *out, int (*stopped)(void))
 {
    for (unsigned i = 0; i < sizeof registry / sizeof registry[0]; i++)

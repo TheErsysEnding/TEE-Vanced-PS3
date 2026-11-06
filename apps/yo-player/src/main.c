@@ -20,6 +20,7 @@
 #include "storage.h"
 #include "app-paths.h"
 #include "settings.h"
+#include "account.h"
 #include "downloads.h"
 #include "video-export.h"
 #include "ui/console-glyphs.h"
@@ -65,6 +66,7 @@ int main(int argc, char **argv)
    loadSettings();         // user-editable settings.txt (created with defaults on first launch)
    initStorage();          // prefs + watch history; seeds the skip categories from the settings above, so
                            // it has to run AFTER loadSettings, not before
+   initAccount();          // the YouTube sign-in kept from an earlier start, if any (account.txt)
    loadConsoleGlyphs();    // decode the console's own button glyphs for the on-screen hints
    initUiDraw();           // the Ember helper textures - never before initGfx, whose VRAM setup an earlier
                            // upload breaks

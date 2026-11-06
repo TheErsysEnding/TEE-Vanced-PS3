@@ -8,13 +8,15 @@
 //   CHOOSE - reached with L3 on a video. The same names plus "New playlist...", and picking one files the
 //            video there. Closes itself afterwards, so it never sits between you and what you were doing.
 //
-// A playlist here is not a YouTube playlist: without a signed-in account there is no such thing to read or
-// write. These are yours, kept on the console, and nothing outside the app can change them.
+// These playlists are kept on the console. Signed in to YouTube (account.h), Browse lists the account's own
+// playlists above them - Liked videos and the ones made on YouTube - which open the same way; changing those is
+// YouTube's business for now (no Delete on them, and the chooser files into the console's lists only).
 
 #include "extractor.h"   // SearchResult
 
-// Browse: the callback receives the chosen playlist index, after the screen has popped itself.
-void openPlaylists(void (*onOpen)(int playlist));
+// Browse: onOpen receives the chosen playlist's index, onOpenAccount the chosen YouTube playlist's id and title -
+// either after the screen has popped itself.
+void openPlaylists(void (*onOpen)(int playlist), void (*onOpenAccount)(const char *id, const char *title));
 
 // Choose: files `item` into whichever list is picked. Takes a copy - the caller's entry may be gone by the
 // time the pick happens.
