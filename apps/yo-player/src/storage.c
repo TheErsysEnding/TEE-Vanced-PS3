@@ -694,7 +694,7 @@ void setAutoplay(int value)
 // result is predictable no matter how copyTree treats its destination.
 static const char *LEGACY_FILES[] = {
    "history.txt", "subscriptions.txt", "watchlater.txt", "prefs.txt", "searches.txt",
-   "watched.txt", "settings.txt", "themes.txt", "visitor.txt", "playlists.txt",
+   "watched.txt", "settings.txt", "themes.txt", "visitor.txt", "playlists.txt", "account.txt",
 };
 #define MIGRATE_BUFFER_BYTES (64 * 1024)
 
@@ -738,9 +738,19 @@ int isStorageWritable(void) { return dataDirWritable; }
 //   3. the app's own folder - always writable, but the console deletes it when the package is removed
 static const char *CANDIDATE_DIRS[] = {
    YO_DATA_DIR,                             // survives uninstall and reboot
-   "/dev_hdd0/home/00000001/yo-player",     // the user profile; also survives both
-   "/dev_hdd0/game/YOPLAYER1/USRDIR/data",  // always writable, but the console deletes it on uninstall
+   "/dev_hdd0/home/00000001/tee-vanced",    // the user profile; also survives both
+   "/dev_hdd0/game/TEEV00001/USRDIR/data",  // always writable, but the console deletes it on uninstall
    YO_LEGACY_DIR,                           // last resort: works, but the console clears it
+};
+
+// Where v1.0 and earlier kept everything: they used Yo! Player's title id YOPLAYER1 and its folder names,
+// so installing TEE Vanced replaced Yo! Player. Read once, on the first start with the new folders, and
+// never written - the files stay where they are, for Yo! Player or for going back.
+static const char *OLD_DIRS[] = {
+   "/dev_hdd0/yo-player",
+   "/dev_hdd0/home/00000001/yo-player",
+   "/dev_hdd0/game/YOPLAYER1/USRDIR/data",
+   "/dev_hdd0/tmp/yo-player",
 };
 
 // creates `dir` and proves it accepts a write. 0 if usable.
@@ -780,15 +790,19 @@ void migrateAppData(void)
 
    if (fileExists(migrateMarker)) return;   // already done on an earlier run
 
-   // bring across whatever an older build left in the other candidates
+   // bring across whatever an older build left in the other candidates, then in the folders of v1.0 and
+   // earlier (OLD_DIRS). A file already here is never overwritten, so the first folder holding it wins.
    void *buffer = malloc(MIGRATE_BUFFER_BYTES);
    if (!buffer) return;
    int moved = 0;
-   for (unsigned d = 0; d < sizeof CANDIDATE_DIRS / sizeof CANDIDATE_DIRS[0]; d++) {
+   const unsigned candidates = sizeof CANDIDATE_DIRS / sizeof CANDIDATE_DIRS[0];
+   const unsigned sources = candidates + sizeof OLD_DIRS / sizeof OLD_DIRS[0];
+   for (unsigned d = 0; d < sources; d++) {
       if ((int)d == chosen) continue;
+      const char *source = d < candidates ? CANDIDATE_DIRS[d] : OLD_DIRS[d - candidates];
       for (unsigned i = 0; i < sizeof LEGACY_FILES / sizeof LEGACY_FILES[0]; i++) {
          char from[128], to[128];
-         snprintf(from, sizeof from, "%s/%s", CANDIDATE_DIRS[d], LEGACY_FILES[i]);
+         snprintf(from, sizeof from, "%s/%s", source, LEGACY_FILES[i]);
          snprintf(to,   sizeof to,   "%s/%s", dataDir,            LEGACY_FILES[i]);
          if (!fileExists(from) || fileExists(to)) continue;
          if (copyFile(from, to, buffer, MIGRATE_BUFFER_BYTES) == 0) moved++;

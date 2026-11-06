@@ -8,11 +8,14 @@
 // the whole lot vanished whenever the package was removed to install a newer build. Updating the app cost
 // the user everything they had built up, which is not a trade anyone would agree to.
 //
-// /dev_hdd0/yo-player is outside the game folder, so uninstalling the package does not touch it either.
-#define YO_DATA_DIR   "/dev_hdd0/yo-player"
+// /dev_hdd0/tee-vanced is outside the game folder, so uninstalling the package does not touch it either.
+// Up to v1.0 the app used Yo! Player's title id and folder names (yo-player, YOPLAYER1), so installing it
+// replaced Yo! Player and both would have shared one set of files; since v1.0.1 it has its own (TEEV00001,
+// tee-vanced) and brings the old files over once (storage.c, OLD_DIRS).
+#define YO_DATA_DIR   "/dev_hdd0/tee-vanced"
 
 // where those files used to live; copied across once, on the first run of a build that knows about it.
-#define YO_LEGACY_DIR "/dev_hdd0/tmp/yo-player"
+#define YO_LEGACY_DIR "/dev_hdd0/tmp/tee-vanced"
 
 // creates YO_DATA_DIR and, on the first run only, brings the old files over from YO_LEGACY_DIR.
 // Must run before anything reads a file from either place - i.e. before initTheme/initStorage.
@@ -28,4 +31,4 @@ const char *getAppDataDir(void);
 // The version shown in the app and on its settings card. BUILD_STAMP is a git count+hash and stays
 // identical between builds while the tree is uncommitted, so it cannot tell two packages apart - which
 // is exactly what made a shipped-but-stale build hard to identify from a screenshot.
-#define APP_VERSION "V1.0"
+#define APP_VERSION "V1.0.1"
