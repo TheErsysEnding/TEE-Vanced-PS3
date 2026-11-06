@@ -158,7 +158,7 @@ cp build.env.example build.env
 and set at least these two:
 
 ```sh
-PS3_BUILD_VM="<account>@<vm-address>"      # e.g. tee@192.168.64.5
+PS3_BUILD_VM="<account>@<vm-address>"      # e.g. builder@192.168.64.5
 PS3_BUILD_KEY="$HOME/.ssh/ps3vm"
 ```
 
