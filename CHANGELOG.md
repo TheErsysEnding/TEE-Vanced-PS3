@@ -3,9 +3,7 @@
 Every release listed here was installed and used on a real PS3 (EVILNAT 4.92 DEX)
 before it was tagged. Anything that had not been is said so plainly.
 
-## v1.0.1 — not released yet
-
-Not yet installed on a console.
+## v1.0.1 — 2026-11-06
 
 ### Changed
 
