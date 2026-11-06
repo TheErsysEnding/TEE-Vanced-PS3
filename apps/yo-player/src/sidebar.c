@@ -10,6 +10,7 @@
 #include "ui/icon-font.h"
 #include "ui-fonts.h"         // uiInitLabel / uiLabelYForCenter: the entry names are Manrope like all UI text
 #include "ui-draw.h"          // rounded fills, uiWithAlpha, UI_SCREEN_W
+#include "account.h"          // signed in or not: the account entry's name and icon
 #include <string.h>
 
 // Ember's rail at 1920x1080. Collapsed (Bild 1 and 3) it is a 112-px column with no surface of its own: the
@@ -47,13 +48,12 @@
 #define TEXT_TINTABLE 0xFFFFFFFFu
 
 // Four of the ten have an exact glyph in the embedded set (search, clock, history, cog). The other six
-// have none - there is no home, play, trending, broadcast, subscription or playlist symbol in it - so they borrow
-// the nearest honest reading rather than a made-up one: a pointing hand for what was picked out for you, an up
-// arrow for what is rising, the signal arcs for what is on air, a star for channels you follow, a right arrow for
-// picking a video back up, stacked pages for lists of videos.
+// have none - there is no play, trending, broadcast, subscription, playlist or person symbol in it - so they borrow
+// the nearest honest reading rather than a made-up one: an up arrow for what is rising, the signal arcs for what is
+// on air, a star for channels you follow, a right arrow for picking a video back up, stacked pages for lists of
+// videos, and a lock for the sign-in - closed for "Login", open once signed in ("Account").
 static const IconId ITEM_ICONS[SIDE_COUNT] = {
    ICON_SEARCH,      // Search
-   ICON_HAND_POINTER_O,   // For you
    ICON_UP_BIG,      // Trending
    ICON_WIFI,        // Live
    ICON_STAR,        // Subscriptions
@@ -61,16 +61,19 @@ static const IconId ITEM_ICONS[SIDE_COUNT] = {
    ICON_DOCS,        // Playlists
    ICON_CLOCK,       // Watch Later
    ICON_HISTORY,     // History
+   ICON_LOCK,        // Login (signed in: accountIcon, the open lock)
    ICON_COG,         // Settings
 };
 
 static const char *ITEM_NAMES[SIDE_COUNT] = {
-   "Search", "For you", "Trending", "Live", "Subscriptions", "Continue watching",
-   "Playlists", "Watch Later", "History", "Settings",
+   "Search", "Trending", "Live", "Subscriptions", "Continue watching",
+   "Playlists", "Watch Later", "History", "Login", "Settings",
 };
 
 static Icon  icons[SIDE_COUNT];
 static Label labels[SIDE_COUNT];
+static Icon  accountIcon;      // SIDE_ACCOUNT while signed in: the open lock ...
+static Label accountLabel;     // ... and "Account"
 static Label logoLabel, wordmarkLabel;
 static int   current = SIDE_SUBS;   // what the content is showing
 static int   picked  = SIDE_SUBS;   // where the highlight sits while focused
@@ -80,8 +83,13 @@ static int   panelWidth = PANEL_MIN_W;   // PANEL_MIN_W, or wider when the longe
 int isSidebarItemEnabled(SidebarItem item) { (void)item; return 1; }   // every entry leads somewhere now
 const char *sidebarItemName(SidebarItem item)
 {
+   if (item == SIDE_ACCOUNT && isAccountSignedIn()) return "Account";
    return (item >= 0 && item < SIDE_COUNT) ? ITEM_NAMES[item] : "";
 }
+
+// the account entry follows the sign-in; every other entry is what it always is
+static Icon  *entryIcon(int index)  { return index == SIDE_ACCOUNT && isAccountSignedIn() ? &accountIcon : &icons[index]; }
+static Label *entryLabel(int index) { return index == SIDE_ACCOUNT && isAccountSignedIn() ? &accountLabel : &labels[index]; }
 
 void initSidebar(void)
 {
@@ -99,11 +107,15 @@ void initSidebar(void)
       int needed = LABEL_X + labels[i].tt.tex.w + ROW_PAD_R + ROW_X;
       if (needed > panelWidth) panelWidth = needed;
    }
+   initIcon(&accountIcon, ICON_LOCK_OPEN, ICON_SIZE);
+   uiInitLabel(&accountLabel, LABEL_WEIGHT, 0, 0, AUTO, LABEL_SIZE, TEXT_TINTABLE, TEXT_NOWRAP, "Account");
 }
 
 void termSidebar(void)
 {
    for (int i = 0; i < SIDE_COUNT; i++) { freeIcon(&icons[i]); freeLabel(&labels[i]); }
+   freeIcon(&accountIcon);
+   freeLabel(&accountLabel);
    freeLabel(&logoLabel);
    freeLabel(&wordmarkLabel);
 }
@@ -148,10 +160,11 @@ int updateSidebar(void)
 }
 
 // the top of an entry's slot - the same in both states, so the icons stay put when the panel opens. Settings
-// is pinned to the foot of the rail, the rest stack under the logo.
+// is pinned to the foot of the rail and the account entry sits on top of it; the rest stack under the logo.
 static int slotY(int index, int screenH)
 {
    if (index == SIDE_COUNT - 1) return screenH - SLOT_FOOT - SLOT_SIZE;
+   if (index == SIDE_ACCOUNT)   return screenH - SLOT_FOOT - SLOT_SIZE - SLOT_STEP;
    return SLOT_TOP + index * SLOT_STEP;
 }
 
@@ -167,7 +180,7 @@ static void drawTinted(const Label *label, int x, int y, uint32_t color)
 // glyph does not fill that box, so the box's middle is not the icon's.
 static void drawEntryIcon(int index, int slotTop, uint32_t color)
 {
-   Icon *icon = &icons[index];
+   Icon *icon = entryIcon(index);
    if (!icon->tex || icon->tex->h <= 0) return;
    if (!isSidebarItemEnabled((SidebarItem)index)) color = uiWithAlpha(color, DISABLED_ALPHA);
    drawIconCentered(icon, ICON_CENTER_X, slotTop + (SLOT_SIZE - icon->tex->h) / 2 - icon->offsetY, color);
@@ -212,7 +225,8 @@ static void drawExpanded(int screenH)
       uint32_t nameColor = isPicked ? activeTheme->accentText : isCurrent ? activeTheme->textPrimary : activeTheme->textSecondary;
       if (!isSidebarItemEnabled((SidebarItem)i)) nameColor = uiWithAlpha(nameColor, DISABLED_ALPHA);
       drawEntryIcon(i, y, iconColor);
-      drawTinted(&labels[i], LABEL_X, uiLabelYForCenter(&labels[i], y, SLOT_SIZE), nameColor);
+      const Label *name = entryLabel(i);
+      drawTinted(name, LABEL_X, uiLabelYForCenter(name, y, SLOT_SIZE), nameColor);
    }
 }
 

@@ -11,9 +11,6 @@
 
 #include "screens/settings-screen.h"
 #include "screens/region-screen.h"   // openRegionScreen: X on the Region row
-#include "screens/account-screen.h"  // openAccountScreen: X on the Account card's row while signed out
-#include "account.h"                 // signed in or not, and signing out
-#include "dbg.h"                     // logWarn: the Account card would reach the hint row
 #include "storage.h"
 #include "settings.h"            // the content region: its name for the Region row
 #include "app-paths.h"      // APP_VERSION
@@ -66,13 +63,6 @@
 #define LINK_GAP         38     // the QR code's bottom -> the link's baseline
 #define NOTE_GAP         33     // the link's baseline -> the note's first baseline
 #define LINK_SIZE        22
-// The Account card under About: the YouTube sign-in. The options panel has no room left for a row, and the card
-// column has it below About; its one row is the last of the list (UP from Autoplay wraps to it).
-#define ACCOUNT_GAP      24     // the About card -> the Account card
-#define ACCOUNT_STATUS_DY 38    // the heading's baseline -> the status line's ("Not signed in", 20/600)
-#define ACCOUNT_ROW_DY   22     // the status line's baseline -> the row's top
-#define ACCOUNT_ROW_IN   24     // the card's edge -> the row's plate: 18 px short of the text, as in the panel
-#define ACCOUNT_BOTTOM   20     // the row's bottom -> the card's
 
 // The options panel, where Bild 3 has its SponsorBlock panel: from x 620 to the safe edge, 44 px of padding
 // left and right.
@@ -144,8 +134,7 @@ enum {
    ROW_REGION,
    ROW_SKIP_FIRST,
    ROW_SKIP_END = ROW_SKIP_FIRST + SPONSOR_CATEGORY_COUNT,   // one past the last skip category
-   ROW_ACCOUNT = ROW_SKIP_END,                               // the Account card's row, last in the list
-   ROW_COUNT
+   ROW_COUNT = ROW_SKIP_END
 };
 
 static Label       titleLabel, versionLabel;
@@ -155,9 +144,6 @@ static Label       rowLabels[ROW_COUNT][2];       // each option's name at 700 [
 static Label       segmentLabels[SEG_COUNT][2];   // Skip / Ask / Keep in white, at 700 [0] and 800 [1]
 static Label       switchLabels[2];               // "Off" [0] / "On" [1] in white
 static Label       regionLabel;                   // the country in use, in white at 800 like a lit segment's word
-static Label       accountLabel;                  // the card's heading, "Account"
-static Label       accountStatusLabels[2];        // "Not signed in" [0] / "Signed in to YouTube" [1]
-static Label       accountRowLabels[2][2];        // "Sign in to YouTube" [0] / "Sign out" [1], at 700 and 800
 static UiHints     hints;
 static ButtonRepeat navigateRepeat;
 
@@ -168,7 +154,6 @@ static struct {
    int titleY, versionBaseline, clockBaseline;
    int autoplayY, regionY, sponsorBaseline, explainBaseline, categoryY, panelH;
    int linkBaseline, noteBaseline, cardH;
-   int accountY, accountStatusBaseline, accountRowY, accountH;   // the Account card under About
    int regionSegW;        // the Region value's segment: the longest country name and its padding
    uint32_t boxEdge;      // the hairline blended over surface-1, opaque
 } state;
@@ -237,20 +222,12 @@ static void layOut(void)
    state.noteBaseline = state.linkBaseline + NOTE_GAP;
    state.cardH        = lastBaselineOf(&noteLabel, state.noteBaseline) + CARD_PAD_BOTTOM - BODY_Y;
 
-   state.accountY              = BODY_Y + state.cardH + ACCOUNT_GAP;
-   state.accountStatusBaseline = state.accountY + HEADING_DY + ACCOUNT_STATUS_DY;
-   state.accountRowY           = state.accountStatusBaseline + ACCOUNT_ROW_DY;
-   state.accountH              = state.accountRowY + ROW_H + ACCOUNT_BOTTOM - state.accountY;
-   if (state.accountY + state.accountH > UI_HINTS_BOTTOM_Y - 16)
-      logWarn("[settings] the Account card ends at y %d, into the hint row at %d\n", state.accountY + state.accountH,
-              UI_HINTS_BOTTOM_Y);
 }
 
 static int rowY(int row)
 {
    if (row == ROW_AUTOPLAY) return state.autoplayY;
    if (row == ROW_REGION)   return state.regionY;
-   if (row == ROW_ACCOUNT)  return state.accountRowY;
    return state.categoryY + (row - ROW_SKIP_FIRST) * ROW_PITCH;
 }
 
@@ -337,22 +314,6 @@ static void initSettings(void)
    uiInitLabel(&regionLabel, ROW_FOCUS_WEIGHT, 0, 0, AUTO, SEG_TEXT, TEXT_TINTABLE, TEXT_NOWRAP, regionName());
    state.regionSegW = measureRegionSegment();
 
-   // the Account card: both states rendered once and picked at draw time - signing in happens on the account
-   // screen and signing out with one press, and the card follows on the next frame either way
-   int accountTextW = CARD_W - 2 * CARD_PAD_X;
-   uiInitLabel(&accountLabel, HEADING_WEIGHT, 0, 0, AUTO, HEADING_SIZE, activeTheme->textPrimary, TEXT_NOWRAP, "Account");
-   uiInitLabel(&accountStatusLabels[0], UI_META_WEIGHT, 0, 0, accountTextW, UI_META_SIZE, activeTheme->textSecondary,
-               TEXT_NOWRAP_ELLIPSIS, "Not signed in");
-   uiInitLabel(&accountStatusLabels[1], UI_META_WEIGHT, 0, 0, accountTextW, UI_META_SIZE, activeTheme->accentText,
-               TEXT_NOWRAP_ELLIPSIS, "Signed in to YouTube");
-   static const char *ACCOUNT_ROW_NAMES[2] = { "Sign in to YouTube", "Sign out" };
-   for (int signedIn = 0; signedIn < 2; signedIn++) {
-      uiInitLabel(&accountRowLabels[signedIn][0], ROW_WEIGHT, 0, 0, accountTextW, ROW_TEXT, activeTheme->textPrimary,
-                  TEXT_NOWRAP_ELLIPSIS, ACCOUNT_ROW_NAMES[signedIn]);
-      uiInitLabel(&accountRowLabels[signedIn][1], ROW_FOCUS_WEIGHT, 0, 0, accountTextW, ROW_TEXT, activeTheme->textPrimary,
-                  TEXT_NOWRAP_ELLIPSIS, ACCOUNT_ROW_NAMES[signedIn]);
-   }
-
    uiInitHints(&hints);
    uiAddHint(&hints, GLYPH_CROSS,  "Change");
    uiAddHint(&hints, GLYPH_CIRCLE, "Back");
@@ -388,18 +349,8 @@ static void updateSettings(void)
    if (state.selected < 0) state.selected = ROW_COUNT - 1;            // wrap: the list is short enough that
    if (state.selected >= ROW_COUNT) state.selected = 0;               // running off an end should come round
 
-   // X's word says what it does on the row: the Account row signs in or out, every other one changes its value
-   static const char *crossCaption = "Change";
-   const char *caption = state.selected != ROW_ACCOUNT ? "Change" : isAccountSignedIn() ? "Sign out" : "Sign in";
-   if (caption != crossCaption) { uiSetHintCaption(&hints, 0, caption); crossCaption = caption; }
-
    if (isPadButtonPressed(PAD_BTN_CROSS)) {
       if (state.selected == ROW_REGION) { openRegionScreen(); return; }   // a list to pick from, not a toggle
-      if (state.selected == ROW_ACCOUNT) {
-         if (isAccountSignedIn()) signOutAccount();   // at once; signing in again is one code away
-         else openAccountScreen(SIDE_SETTINGS);
-         return;
-      }
       toggleRow(state.selected);
    }
 }
@@ -511,22 +462,6 @@ static void drawRow(int row)
    else                          drawSegments(row, y, focused);
 }
 
-// The Account card: whether the console is signed in to YouTube, and the one row that changes it - on a plate like
-// the panel's rows when it has the focus.
-static void drawAccountCard(void)
-{
-   int x = CARD_X + CARD_PAD_X, signedIn = isAccountSignedIn() ? 1 : 0, focused = state.selected == ROW_ACCOUNT;
-   drawBox(CARD_X, state.accountY, CARD_W, state.accountH);
-   uiDrawLabelAt(&accountLabel, x, uiLabelYForBaseline(&accountLabel, state.accountY + HEADING_DY));
-   const Label *status = &accountStatusLabels[signedIn];
-   uiDrawLabelAt(status, x, uiLabelYForBaseline(status, state.accountStatusBaseline));
-   if (focused)
-      uiFillRounded(CARD_X + ACCOUNT_ROW_IN, state.accountRowY, CARD_W - 2 * ACCOUNT_ROW_IN, ROW_H, UI_RADIUS_ROW,
-                    activeTheme->hintFill);
-   const Label *name = &accountRowLabels[signedIn][focused];
-   uiDrawLabelAt(name, x, uiLabelYForCenter(name, state.accountRowY, ROW_H));
-}
-
 static void drawCard(void)
 {
    int x = CARD_X + CARD_PAD_X;
@@ -557,7 +492,6 @@ static void drawSettings(void)
    uiDrawClock(UI_SAFE_RIGHT, state.clockBaseline);
 
    drawCard();
-   drawAccountCard();
    drawPanel();
    // bottom left, under the About card, where the Ember settings design (Bild 3) puts this screen's hints
    uiDrawHints(&hints, CONTENT_X, UI_HINTS_BOTTOM_Y, UI_ALIGN_LEFT);
@@ -578,12 +512,6 @@ static void termSettings(void)
    freeLabel(&sponsorLabel);
    freeLabel(&explainLabel);
    for (int row = 0; row < ROW_SKIP_END; row++) { freeLabel(&rowLabels[row][0]); freeLabel(&rowLabels[row][1]); }
-   freeLabel(&accountLabel);
-   for (int i = 0; i < 2; i++) {
-      freeLabel(&accountStatusLabels[i]);
-      freeLabel(&accountRowLabels[i][0]);
-      freeLabel(&accountRowLabels[i][1]);
-   }
    for (int k = 0; k < SEG_COUNT; k++) { freeLabel(&segmentLabels[k][0]); freeLabel(&segmentLabels[k][1]); }
    freeLabel(&switchLabels[0]);
    freeLabel(&switchLabels[1]);

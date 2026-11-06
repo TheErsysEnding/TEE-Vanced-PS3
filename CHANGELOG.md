@@ -15,27 +15,35 @@ live streams, and signing in to YouTube.
 
 ### Added
 
-- **Sign in to YouTube** (Settings, the Account card under About): the console
-  shows a code and a QR code, you open google.com/device on your phone, sign in
-  to Google there and type the code - the PS3's own YouTube app signed in this
-  way, and the password never touches the console. Signed in:
-  - **For you**, a new menu entry under Search, holds your recommendations,
-    and the app starts on it. Signed out, it leads to the sign-in.
-  - **Subscriptions** lists the newest videos of the channels your account
-    follows (as YouTube does), **Watch Later** and **History** are your
-    account's, and **Playlists** lists your YouTube playlists (Liked videos and
-    your own) above the ones kept on the console; X opens them.
-  - **Square** puts a video in or out of your account's Watch Later, and
-    **Triangle** on a channel page subscribes or unsubscribes your account.
-    YouTube is told at once; should it refuse, the change is undone and a box
-    says so.
+- **Sign in to YouTube** with **Login**, at the foot of the menu above
+  Settings: the console shows a code and a QR code, you open google.com/device
+  on your phone, sign in to Google there and type the code - the PS3's own
+  YouTube app signed in this way, and the password never touches the console.
+  Signed in, the entry reads **Account** and opens your account's page: For
+  you (your recommendations), Subscriptions, All channels A-Z, Watch Later,
+  History, Liked videos and Playlists, and **Sign out** at its foot. Signed in,
+  the menu's own entries show your account too:
+  - **Subscriptions** shows the channels your account follows, one card each
+    with its name and its newest video, the ones with something new first; X
+    opens a channel, Triangle unsubscribes. **All channels** on the account
+    page lists every one of them A to Z, with its subscriber count.
+  - **Watch Later** and **History** are your account's, and **Playlists**
+    lists your YouTube playlists (Liked videos and your own) above the ones
+    kept on the console; X opens them.
+  - A channel page has a real **Subscribe** button beside its sorts - orange
+    "Subscribe", or "Subscribed" with a check. UP from the first video reaches
+    it, X toggles; Triangle still does from anywhere on the page. Signed out it
+    works on the console's own subscriptions, as Triangle always did.
+  - **Square** puts a video in or out of your account's Watch Later. YouTube
+    is told at once; should it refuse a change, it is undone and a box says
+    so.
   - Continue watching, the console's playlists and playback stay as they were:
     videos play without the account, so a sign-in YouTube stops accepting can
     never stop a video. Editing your YouTube playlists comes later.
   - The sign-in is kept in `account.txt` in the data folder, as plain text:
     whoever can read the console's disk - webMAN's FTP has no password unless
     you set one - can use your YouTube account with it (not your Google
-    password). **Sign out** in the Account card withdraws it at Google and
+    password). **Sign out** on the account page withdraws it at Google and
     deletes the file. The app signs in as YouTube's TV app does, which is not
     an official way for other apps; Google may stop accepting it one day.
 

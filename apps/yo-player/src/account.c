@@ -521,6 +521,24 @@ int isInAccountWatchLater(const char *videoId)
 
 unsigned getAccountListsRevision(void)   { return listsRevision; }
 
+int getAccountFollowingCount(void)
+{
+   if (!listsReady) return 0;
+   lock(&listsLock);
+   int count = listsCurrent() ? followedCount : 0;
+   unlock(&listsLock);
+   return count;
+}
+
+int getAccountWatchLaterCount(void)
+{
+   if (!listsReady) return -1;
+   lock(&listsLock);
+   int count = listsCurrent() ? laterCount : -1;
+   unlock(&listsLock);
+   return count;
+}
+
 int getAccountPlaylistCount(void)
 {
    if (!listsReady) return 0;

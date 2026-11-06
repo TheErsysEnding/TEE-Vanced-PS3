@@ -105,6 +105,14 @@
 #define L2_HINT           8
 #define R2_HINT           9
 #define SORT_OPTIONS_MAX  (CHANNEL_SORT_COUNT > SORT_COUNT ? CHANNEL_SORT_COUNT : SORT_COUNT)
+// A channel page's Subscribe button: a pill on the sort segment's row, just left of it - the solid accent with
+// "Subscribe", or surface-3 with a check and "Subscribed". UP from the first video reaches it (UP again the field),
+// X toggles; Triangle still does from anywhere on the page.
+#define BUTTON_GAP        16      // the button -> the sort segment
+#define BUTTON_PAD_X      26
+#define BUTTON_TEXT       20
+#define BUTTON_ICON       22
+#define BUTTON_ICON_GAP   10
 
 static const char *SortNames[SORT_COUNT]                = { "Relevance", "Views" };
 static const char *ChannelSortNames[CHANNEL_SORT_COUNT] = { "Latest", "Popular", "Oldest" };
@@ -127,12 +135,15 @@ static struct {
    int       noticeVisible;      // a modal confirmation is up and owns the pad
    int       noticePanelW;
    int       fieldFocused;       // the field at the top has the focus, not the list (UP on the first result)
+   int       buttonFocused;      // a channel page's Subscribe button has it (UP on the first video)
 } search;
 
 static Label    fieldLabel, statusLabel, pageWordLabel, pagePlusLabel;
 static Label    sortLabels[SORT_OPTIONS_MAX];
 static Label    noticeLabel;
 static UiDigits pageDigits;
+static Label    subscribeLabels[2];   // "Subscribe" [0] in on-accent, "Subscribed" [1] in text-1
+static Icon     subscribedIcon;       // the check in front of "Subscribed"
 static Icon     fieldIcon;
 static UiHints  hints, noticeHints;
 
@@ -257,18 +268,22 @@ static void setHeading(void)
    updateTriangleHint();
 }
 
+static void setHeaderFocus(int field, int button);
+
 static void toggleSubscription(void)
 {
    // the account: the hint flips at once; YouTube is told on a worker, and a refusal comes back as a notice
    if (isAccountSignedIn()) {
       setAccountFollowing(search.channelId, !isAccountFollowing(search.channelId));
       updateTriangleHint();
+      if (search.buttonFocused) setHeaderFocus(0, 1);   // X's word on the button follows
       return;
    }
    int wantOn = !isSubscribed(search.channelId);
    int rc = setSubscribed(search.channelId, search.channelName, wantOn);
 
    updateTriangleHint();
+   if (search.buttonFocused) setHeaderFocus(0, 1);
    if (rc == SUBSCRIBE_OK) return;   // the hint flipping to Unsubscribe IS the confirmation; a box on top of
                                      // a working button is just something else to dismiss
 
@@ -331,12 +346,16 @@ static void cycleChannelSort(void)
 // The field at the top takes the focus from the list (UP on the first result) and gives it back (DOWN, or a new
 // search). While it has it, the list's own focus is not drawn and the pad does not reach the list, and the hints
 // of the buttons that act on a result are hidden - they would do nothing.
-static void setFieldFocused(int focused)
+// The header's focus - the field, or a channel page's Subscribe button - or none, the list's. Either one in the
+// header mutes the list and hides the hints of the buttons that act on a result; X says what it does there.
+static void setHeaderFocus(int field, int button)
 {
-   search.fieldFocused = focused;
+   search.fieldFocused  = field;
+   search.buttonFocused = button;
+   int focused = field || button;
    setGridInputSuppressed(&search.grid, focused || isSidebarFocused());
    setGridFocusHidden(&search.grid, focused);
-   uiSetHintCaption(&hints, CROSS_HINT, focused ? "Type" : "Play");
+   uiSetHintCaption(&hints, CROSS_HINT, field ? "Type" : button ? (followsChannel(search.channelId) ? "Unsubscribe" : "Subscribe") : "Play");
    uiSetHintShown(&hints, SQUARE_HINT, !focused);
    uiSetHintShown(&hints, TRIANGLE_HINT, !focused);
    uiSetHintShown(&hints, R3_HINT, !focused);
@@ -345,6 +364,9 @@ static void setFieldFocused(int focused)
    uiSetHintShown(&hints, R2_HINT, !focused);
    fitHintRow(&hints);
 }
+
+static void setFieldFocused(int focused)  { setHeaderFocus(focused, 0); }
+static void setButtonFocused(int focused) { setHeaderFocus(0, focused); }
 
 static void onQueryEntered(const char *text)
 {
@@ -406,6 +428,10 @@ static void initSearch(void)
    initIcon(&fieldIcon, ICON_SEARCH, FIELD_ICON_SIZE);
    search.noticeVisible = 0;
    search.fieldFocused  = 0;
+   search.buttonFocused = 0;
+   uiInitLabel(&subscribeLabels[0], UI_WEIGHT_EXTRABOLD, 0, 0, AUTO, BUTTON_TEXT, activeTheme->onAccent, TEXT_NOWRAP, "Subscribe");
+   uiInitLabel(&subscribeLabels[1], UI_WEIGHT_EXTRABOLD, 0, 0, AUTO, BUTTON_TEXT, activeTheme->textPrimary, TEXT_NOWRAP, "Subscribed");
+   initIcon(&subscribedIcon, ICON_OK, BUTTON_ICON);
    search.noticePanelW  = search.screenW * 2 / 3;
    uiInitTextLabel(&noticeLabel, UI_BODY_WEIGHT, 0, 0, search.noticePanelW - 2 * NOTICE_PAD_X, NOTICE_TEXT, activeTheme->textPrimary, TEXT_WRAP, "");
    // the box's own line: the console's cross, where the old text spelled "Press X to close"
@@ -474,7 +500,7 @@ static void updateSearch(void)
    if (rail != RAIL_NOT_OPEN) {
       setGridInputSuppressed(&search.grid, 1);
       updateVideoGrid(&search.grid);
-      if (!isSidebarFocused()) setGridInputSuppressed(&search.grid, search.fieldFocused);
+      if (!isSidebarFocused()) setGridInputSuppressed(&search.grid, search.fieldFocused || search.buttonFocused);
       if (rail == RAIL_PICKED_OWN) openSearchInput(search.query, onQueryEntered);
       return;
    }
@@ -494,11 +520,21 @@ static void updateSearch(void)
       return;
    }
 
+   // A channel page's Subscribe button has the focus: X toggles, UP goes on to the field, DOWN back to the videos.
+   if (search.buttonFocused) {
+      updateVideoGrid(&search.grid);
+      if (isPadButtonPressed(PAD_BTN_DOWN)) { setButtonFocused(0); return; }
+      if (isPadButtonPressed(PAD_BTN_UP))   { setFieldFocused(1); return; }
+      if (isPadButtonPressed(PAD_BTN_CROSS) || isPadButtonPressed(PAD_BTN_TRIANGLE)) toggleSubscription();
+      return;
+   }
+
    // The field has the focus: X opens the keyboard at once - on the query to edit it, or empty in a channel,
-   // which has no query - and DOWN hands the focus back to the list. The list keeps loading meanwhile.
+   // which has no query - and DOWN hands the focus back to the list (on a channel page, to its Subscribe button
+   // first). The list keeps loading meanwhile.
    if (search.fieldFocused) {
       updateVideoGrid(&search.grid);
-      if (isPadButtonPressed(PAD_BTN_DOWN)) { setFieldFocused(0); return; }
+      if (isPadButtonPressed(PAD_BTN_DOWN)) { if (search.channelId[0]) setButtonFocused(1); else setFieldFocused(0); return; }
       if (isPadButtonPressed(PAD_BTN_CROSS))
          oskInputBegin("Search YouTube", search.channelId[0] ? "" : search.query, onFieldTyped);
       return;
@@ -508,7 +544,8 @@ static void updateSearch(void)
    // without START. Only a press: a held UP that scrolls the list to its top stops there.
    if (isPadButtonPressed(PAD_BTN_UP) &&
        (gridStage(&search.grid) != GRID_READY || gridSelectedIndex(&search.grid) == 0)) {
-      setFieldFocused(1);
+      if (search.channelId[0]) setButtonFocused(1);   // a channel page: its Subscribe button first
+      else setFieldFocused(1);
       updateVideoGrid(&search.grid);
       return;
    }
@@ -601,6 +638,30 @@ static void drawSortSegment(void)
    }
 }
 
+static int subscribeButtonWidth(int following)
+{
+   int width = 2 * BUTTON_PAD_X + subscribeLabels[following].tt.tex.w;
+   if (following && subscribedIcon.tex) width += BUTTON_ICON + BUTTON_ICON_GAP;
+   return width;
+}
+
+// a channel page's Subscribe button, left of the sort segment on its row; the state re-read on every draw
+static void drawSubscribeButton(void)
+{
+   int following = followsChannel(search.channelId) ? 1 : 0;
+   int width = subscribeButtonWidth(following), x = CONTENT_RIGHT - sortSegmentWidth() - BUTTON_GAP - width;
+   if (search.buttonFocused) uiDrawFocusGlow(x, SEGMENT_Y, width, SEGMENT_H, activeTheme->focusGlow);
+   uiFillPill(x, SEGMENT_Y, width, SEGMENT_H, following ? activeTheme->surface3 : activeTheme->accent);
+   int textX = x + BUTTON_PAD_X;
+   if (following && subscribedIcon.tex) {
+      drawIconInBox(&subscribedIcon, textX, SEGMENT_Y, BUTTON_ICON, SEGMENT_H, activeTheme->textPrimary);
+      textX += BUTTON_ICON + BUTTON_ICON_GAP;
+   }
+   const Label *word = &subscribeLabels[following];
+   uiDrawLabelAt(word, textX, uiLabelYForCenter(word, SEGMENT_Y, SEGMENT_H));
+   if (search.buttonFocused) uiDrawFocusRing(x, SEGMENT_Y, width, SEGMENT_H, UI_RING_ROW, activeTheme->focusBorder);
+}
+
 // Bild 5's header: the field with what the results are for and the page count, the sort segment under it
 // and, at the other end of the segment's row, a running download's chip. Drawn after the list, as the
 // focused row's glow reaches 81 px up into it.
@@ -616,6 +677,7 @@ static void drawHeader(void)
    if (gridStage(&search.grid) == GRID_READY) drawPageCount();
    if (search.fieldFocused) uiDrawFocusRing(CONTENT_X, FIELD_Y, CONTENT_W, FIELD_H, UI_RING_ROW, activeTheme->focusBorder);
    drawSortSegment();
+   if (search.channelId[0]) drawSubscribeButton();
    drawDownloadOverlayAt(CONTENT_X, DOWNLOAD_CHIP_Y, UI_ALIGN_LEFT);   // nothing while no download runs
 }
 
@@ -671,6 +733,9 @@ static void termSearch(void)
    freeLabel(&pagePlusLabel);
    for (int i = 0; i < SORT_OPTIONS_MAX; i++) freeLabel(&sortLabels[i]);
    freeLabel(&noticeLabel);
+   freeLabel(&subscribeLabels[0]);
+   freeLabel(&subscribeLabels[1]);
+   freeIcon(&subscribedIcon);
    uiFreeDigits(&pageDigits);
    freeIcon(&fieldIcon);   // the texture belongs to the icon font's shared cache; this only lets go of it
    // no closeFont: the fonts are shared, and closing one would blank every label on every screen

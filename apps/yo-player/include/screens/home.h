@@ -25,3 +25,15 @@ extern Screen homeScreen;
 #define RAIL_PICKED_OWN 2
 #define RAIL_GONE       3
 int updateRailOverScreen(SidebarItem own);
+
+// The account page's picks (account-page.c): Home is brought back on top - every screen above it goes, as for a
+// pick in the rail of a screen over it - and shows the section.
+typedef enum {
+   HOME_SECTION_FOR_YOU,
+   HOME_SECTION_SUBSCRIPTIONS,
+   HOME_SECTION_WATCH_LATER,
+   HOME_SECTION_HISTORY,
+   HOME_SECTION_LIKED,
+   HOME_SECTION_PLAYLISTS,
+} HomeSection;
+void showHomeSection(HomeSection section);

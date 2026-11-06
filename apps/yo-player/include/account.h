@@ -67,6 +67,8 @@ void signOutAccount(void);
 
 void syncAccountLists(void);                          // UI thread, every frame: starts the load when one is due
 int  isAccountFollowing(const char *channelId);
+int  getAccountFollowingCount(void);                  // channels followed, as far as loaded; 0 before
+int  getAccountWatchLaterCount(void);                 // videos in Watch Later as far as loaded; -1 before
 int  isInAccountWatchLater(const char *videoId);
 void setAccountFollowing(const char *channelId, int follow);
 void setAccountWatchLater(const char *videoId, int add);

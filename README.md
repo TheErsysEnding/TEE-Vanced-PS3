@@ -18,10 +18,11 @@ behind shoulder buttons you have to remember. LEFT or O opens it, X picks,
 O or RIGHT close it again. The icons come from the icon font already compiled into the upstream
 library — nothing extra is shipped.
 
-**Your YouTube account, optionally.** Settings > Account shows a code; type it
-at google.com/device on your phone and the app brings your recommendations
-(For you), your subscriptions feed, Watch Later, history and playlists, and
-Square/Triangle change your account. It signs in the way YouTube's own TV app
+**Your YouTube account, optionally.** Login, at the foot of the rail, shows a
+code; type it at google.com/device on your phone and the app brings your
+subscriptions, Watch Later, history, playlists and recommendations - on the
+Account page and in the rail's own entries - and Subscribe buttons and Square
+change your account. It signs in the way YouTube's own TV app
 does - the password stays on Google's page - and keeps the sign-in as plain text
 in `account.txt`, so keep the console's FTP to yourself. Playback never needs
 the account.

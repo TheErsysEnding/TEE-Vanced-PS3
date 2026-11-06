@@ -1236,16 +1236,31 @@ static int parseTileItem(const char *tile, const char *end, SearchResult *item)
    return item->title[0] != 0;
 }
 
-// A channel tile (the account's channel list): its id and its name, nothing else.
+// A channel tile (the account's channel list): its id and name, its handle ("@217ae") in author and its subscriber
+// count ("4.6M subscribers") in views - the tile's two lines.
 static int parseChannelTile(const char *tile, const char *end, SearchResult *item)
 {
    if (!jsonString(tile, end, "contentId", item->channelId, sizeof item->channelId) ||
        strncmp(item->channelId, "UC", 2) != 0) return 0;
    static const char META[] = "\"tileMetadataRenderer\":{", TITLE[] = "\"title\":{";
+   static const char LINE[] = "\"lineRenderer\":{", TEXT[] = "\"text\":{";
    const char *meta = findIn(tile, end, META);
-   const char *metaEnd = meta ? objectEnd(meta + sizeof META - 2, end) : NULL;
-   const char *title = meta ? findIn(meta, metaEnd, TITLE) : NULL;
+   if (!meta) return 1;
+   const char *metaEnd = objectEnd(meta + sizeof META - 2, end);
+   const char *title = findIn(meta, metaEnd, TITLE);
    if (title) readTextObject(title, objectEnd(title + sizeof TITLE - 2, metaEnd), item->title, sizeof item->title);
+   int line = 0;
+   for (const char *at = meta; line < 2 && (at = findIn(at, metaEnd, LINE)) != NULL; line++) {
+      const char *lineEnd = objectEnd(at + sizeof LINE - 2, metaEnd);
+      const char *text = findIn(at, lineEnd, TEXT);
+      if (text) {
+         char words[96];
+         readTextObject(text, objectEnd(text + sizeof TEXT - 2, lineEnd), words, sizeof words);
+         if (endsWith(words, " subscribers") || endsWith(words, " subscriber")) copyText(item->views, sizeof item->views, words);
+         else if (words[0] == '@') copyText(item->author, sizeof item->author, words);
+      }
+      at = lineEnd;
+   }
    return 1;
 }
 

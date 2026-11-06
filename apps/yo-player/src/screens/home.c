@@ -11,7 +11,8 @@
 #include "storage.h"
 #include "settings.h"           // the content region: a new one makes the Trending and Live lists stale
 #include "account.h"            // signed in: For you, and Subscriptions / Watch Later / History from the account
-#include "screens/account-screen.h"   // For you picked while signed out leads to the sign-in
+#include "screens/account-screen.h"   // Login in the rail while signed out: the sign-in
+#include "screens/account-page.h"     // Account in the rail while signed in: the account's page
 #include "downloads.h"
 #include "ps-button.h"
 #include "ui/console-glyphs.h"
@@ -89,8 +90,8 @@ static const char *TrendingNames[TREND_COUNT] = { "Gaming", "Sports", "Podcasts"
 //
 // Signed in (account.h), Subscriptions, Watch Later and History come from the YouTube account instead of the
 // console - Subscriptions then as the newest uploads of the channels followed, as YouTube shows it, not one tile per
-// channel - and For you holds the account's recommendations. Continue watching and the playlists stay the console's.
-// Signed out, For you is left out of the L1/R1 ring, and picking it in the rail leads to the sign-in.
+// channel - and For you holds the account's recommendations (reached from the account page). Continue watching and
+// the console's playlists stay the console's. Signed out, For you is left out of the L1/R1 ring.
 #define HOME_SUBS        TREND_COUNT
 #define HOME_CONTINUE    (TREND_COUNT + 1)
 #define HOME_WATCHLATER  (TREND_COUNT + 2)
@@ -136,7 +137,6 @@ static struct {
    char      pendingUnsubId[CHANNEL_ID_LEN];   // what the confirmation is about, copied out of the tile
    char      pendingUnsubName[CHANNEL_NAME_LEN];
    uint64_t  liveLoadedUs;                     // when the Live page on screen asked for its first page
-   int       forYouAfterSignIn;                // For you was picked signed out: go there once the sign-in is done
    int       liveChipPad;                      // the Live chips' padding, and the run of them the header
    int       liveChipFirst, liveChipLast;      //   has room for (fitLiveChips)
 } home;
@@ -202,7 +202,56 @@ static int fetchSubscriptionChannels(SearchResults *out)
 // badged it WATCHED, so on that tab the answer is always no.
 static int tileWatched(const char *videoId)
 {
-   return (home.category != HOME_SUBS || isAccountSignedIn()) && isWatched(videoId);
+   return home.category != HOME_SUBS && isWatched(videoId);
+}
+
+// Signed in, Subscriptions is a channel per tile as well, built from the account's subscription feed - the newest
+// uploads of every channel it follows, newest first. A channel's first video there is its latest upload, which
+// gives the tile its picture, and the feed's order puts the channels with something new first, as YouTube's own
+// list of them does; a feed that just mixed every upload together read as a jumble (TEE, on the PS3). There is no
+// request per channel - an account may follow hundreds. Feed pages are read until there are two screens of
+// channels; the next page carries on down the feed, and a channel already shown is never shown again.
+#define SUBS_FEED_PAGES 4
+static char subsShown[MAX_SEARCH_RESULTS][CHANNEL_ID_LEN];   // the grid worker's: one fetch runs at a time
+static int  subsShownCount;
+
+static int fetchAccountSubscriptionChannels(const char *token, SearchResults *out)
+{
+   memset(out, 0, sizeof *out);
+   if (!token) subsShownCount = 0;   // page 1: nothing is on screen yet
+   SearchResults *page = (SearchResults *)malloc(sizeof *page);
+   char *next = (char *)malloc(MAX_CONTINUATION);
+   if (!page || !next) { free(page); free(next); return -1; }
+   strCopy(next, MAX_CONTINUATION, token ? token : "");
+   int rc = 0, wanted = 2 * home.grid.cols * home.grid.visibleRows;
+   for (int read = 0; read < SUBS_FEED_PAGES && out->count < wanted; read++) {
+      if (gridStopRequested(&home.grid)) { rc = -1; break; }   // cut short counts as failed, as above
+      if (getAccountFeed(ACCOUNT_FEED_SUBSCRIPTIONS, next[0] ? next : NULL, page) != 0) {
+         if (read == 0) rc = -1;   // a later page that fails just ends the list here
+         next[0] = 0;
+         break;
+      }
+      for (int i = 0; i < page->count && out->count < MAX_SEARCH_RESULTS; i++) {
+         const SearchResult *video = &page->items[i];
+         if (!video->channelId[0]) continue;
+         int seen = 0;
+         for (int s = 0; s < subsShownCount && !seen; s++) seen = strcmp(subsShown[s], video->channelId) == 0;
+         if (seen) continue;
+         if (subsShownCount < MAX_SEARCH_RESULTS) strCopy(subsShown[subsShownCount++], CHANNEL_ID_LEN, video->channelId);
+         SearchResult *tile = &out->items[out->count++];
+         memset(tile, 0, sizeof *tile);
+         strCopy(tile->channelId, sizeof tile->channelId, video->channelId);
+         strCopy(tile->title, sizeof tile->title, video->author[0] ? video->author : video->channelId);
+         strCopy(tile->videoId, sizeof tile->videoId, video->videoId);   // tile art: the latest upload
+         snprintf(tile->author, sizeof tile->author, "Latest: %s", video->title);
+      }
+      strCopy(next, MAX_CONTINUATION, page->continuation);
+      if (!next[0]) break;
+   }
+   strCopy(out->continuation, sizeof out->continuation, next);
+   free(page);
+   free(next);
+   return rc;
 }
 
 // The Watch Later tag on a card: the account's list while signed in, the console's otherwise.
@@ -211,9 +260,8 @@ static int tileInWatchLater(const char *videoId)
    return isAccountSignedIn() ? isInAccountWatchLater(videoId) : isWatchLater(videoId);
 }
 
-// Subscriptions shows one tile per CHANNEL only while signed out; signed in it lists the account's newest uploads,
-// which are videos like any other page's.
-static int subsAreChannels(void) { return home.category == HOME_SUBS && !isAccountSignedIn(); }
+// Subscriptions shows one tile per CHANNEL, signed in or not: X opens it, Triangle unsubscribes.
+static int subsAreChannels(void) { return home.category == HOME_SUBS; }
 
 // A source swap (L1/R1, the rail, START) asked the fetch to stop: a Live chip that falls back to a second
 // request asks this before making it, so a switch does not wait for both (getLiveFeed).
@@ -227,7 +275,7 @@ static int homeFetch(const char *token, SearchResults *out, void *user)
    int category = home.category, signedIn = isAccountSignedIn();
    if (category == HOME_FORYOU)     return getAccountFeed(ACCOUNT_FEED_HOME, token, out);
    if (category == HOME_SUBS)
-      return signedIn ? getAccountFeed(ACCOUNT_FEED_SUBSCRIPTIONS, token, out) : fetchSubscriptionChannels(out);
+      return signedIn ? fetchAccountSubscriptionChannels(token, out) : fetchSubscriptionChannels(out);
    if (category == HOME_CONTINUE)   return getContinueWatching(out) > 0 ? 0 : -1;
    if (category == HOME_WATCHLATER)
       return signedIn ? getAccountFeed(ACCOUNT_FEED_WATCH_LATER, token, out) : getWatchLater(out) > 0 ? 0 : -1;
@@ -400,7 +448,7 @@ static void loadCategory(void)
 static SidebarItem itemForCategory(int category)
 {
    if (isLiveCategory(category))    return SIDE_LIVE;
-   if (category == HOME_FORYOU)     return SIDE_FORYOU;
+   if (category == HOME_FORYOU)     return SIDE_ACCOUNT;   // reached from the account page
    if (category == HOME_SUBS)       return SIDE_SUBS;
    if (category == HOME_CONTINUE)   return SIDE_CONTINUE;
    if (category == HOME_WATCHLATER) return SIDE_LATER;
@@ -415,7 +463,6 @@ static int categoryForItem(SidebarItem item)
    switch (item) {
    case SIDE_TRENDING: return home.category < TREND_COUNT ? home.category : 0;   // keep the trending tab you were on
    case SIDE_LIVE:     return isLiveCategory(home.category) ? home.category : HOME_LIVE_FIRST;   // or Popular
-   case SIDE_FORYOU:   return HOME_FORYOU;
    case SIDE_SUBS:     return HOME_SUBS;
    case SIDE_CONTINUE: return HOME_CONTINUE;
    case SIDE_LATER:    return HOME_WATCHLATER;
@@ -482,6 +529,23 @@ static void askUnsubscribe(const SearchResult *item)
 // exactly what a refetch would return.
 static void unsubscribeConfirmed(void)
 {
+   // Signed in, the account unsubscribes: its tile goes at once and YouTube is told on a worker (a refusal puts the
+   // channel back and says so). The page keeps what is on screen, minus the channel, rather than asking the feed
+   // again this very moment, when it might still list it.
+   if (isAccountSignedIn()) {
+      setAccountFollowing(home.pendingUnsubId, 0);
+      accountChangesSeen = getAccountChangesRevision();   // this page already shows it
+      SearchResults *kept = &categoryCache[HOME_SUBS];
+      *kept = *gridResults(&home.grid);
+      int out = 0;
+      for (int i = 0; i < kept->count; i++)
+         if (strcmp(kept->items[i].channelId, home.pendingUnsubId) != 0) kept->items[out++] = kept->items[i];
+      kept->count = out;
+      categoryCached[HOME_SUBS] = out > 0;   // an empty page is fetched again rather than shown empty
+      loadCategory();
+      return;
+   }
+
    int revisionBefore = getSubscriptionsRevision();
    int rc = setSubscribed(home.pendingUnsubId, NULL, 0);
 
@@ -671,8 +735,7 @@ static void initHome(void)
    regionRevisionSeen = getContentRegionRevision();
    accountRevisionSeen = getAccountRevision();
    accountChangesSeen = getAccountChangesRevision();
-   home.forYouAfterSignIn = 0;
-   home.category = isAccountSignedIn() ? HOME_FORYOU : HOME_SUBS;   // the account's own Home, else Subscriptions
+   home.category = HOME_SUBS;   // always start on Subscriptions - the account's, while signed in
    loadCategory();
 }
 
@@ -692,9 +755,9 @@ static int actOnRailPick(int picked)
    if      (picked == SIDE_SEARCH)    openSearchInput(NULL, onQueryEntered);
    else if (picked == SIDE_PLAYLISTS) openPlaylists(onPlaylistOpened, onAccountPlaylistOpened);
    else if (picked == SIDE_SETTINGS)  openSettingsScreen();
-   else if (picked == SIDE_FORYOU && !isAccountSignedIn()) {   // For you needs the account: sign in first
-      home.forYouAfterSignIn = 1;
-      openAccountScreen(SIDE_FORYOU);
+   else if (picked == SIDE_ACCOUNT) {   // signed out the sign-in, signed in the account's page
+      if (isAccountSignedIn()) openAccountPage();
+      else openAccountScreen(SIDE_ACCOUNT);
    }
    else {
       int category = categoryForItem(picked);
@@ -729,8 +792,44 @@ int updateRailOverScreen(SidebarItem own)
    return RAIL_GONE;
 }
 
+// The account page's pick, for Home's next update to act on (as pendingRailPick: not during the pop that brings
+// Home back).
+static int pendingSection = -1;
+
+void showHomeSection(HomeSection section)
+{
+   pendingSection = section;
+   for (int i = 0; i < 16 && homeScreen.status != SCREEN_ACTIVE; i++) popScreen();
+}
+
+// 1 when it loaded another page
+static int actOnSection(int section)
+{
+   int category = -1;
+   switch (section) {
+   case HOME_SECTION_FOR_YOU:       category = HOME_FORYOU;     break;
+   case HOME_SECTION_SUBSCRIPTIONS: category = HOME_SUBS;       break;
+   case HOME_SECTION_WATCH_LATER:   category = HOME_WATCHLATER; break;
+   case HOME_SECTION_HISTORY:       category = HOME_HISTORY;    break;
+   case HOME_SECTION_LIKED:         onAccountPlaylistOpened("LL", "Liked videos"); return 1;
+   case HOME_SECTION_PLAYLISTS:     openPlaylists(onPlaylistOpened, onAccountPlaylistOpened); return 0;
+   default: return 0;
+   }
+   if (category == home.category) return 0;   // already on it: a stale one still reloads (pendingReload)
+   cacheCurrent();
+   home.category = category;
+   loadCategory();
+   return 1;
+}
+
 static void updateHome(void)
 {
+   if (pendingSection >= 0) {   // a pick from the account page (showHomeSection)
+      int section = pendingSection;
+      pendingSection = -1;
+      if (actOnSection(section)) home.pendingReload = 0;
+      return;
+   }
    if (pendingRailPick >= 0) {   // a pick from the rail of a screen that was over Home (updateRailOverScreen)
       int picked = pendingRailPick;
       pendingRailPick = -1;
@@ -1028,8 +1127,7 @@ static void resumeHome(void)
 
    // A sign-in or a sign-out changes where Subscriptions, Watch Later and History come from, and whether For you
    // has anything at all: their copies go, and such a page on screen reloads. Signed out on For you, the page
-   // becomes Subscriptions; signed in after picking For you in the rail, it becomes For you. Moved on at once, as
-   // the region's marker is.
+   // becomes Subscriptions. Moved on at once, as the region's marker is.
    // A change made with Square or Triangle somewhere else - on a channel page, in Search - leaves Watch Later and the
    // subscription feed behind: their copies go, and either page on screen reloads.
    int changesStale = getAccountChangesRevision() != accountChangesSeen;
@@ -1049,10 +1147,8 @@ static void resumeHome(void)
          categoryCached[HOME_PLAYLIST] = 0;
          if (home.category == HOME_PLAYLIST) home.category = HOME_SUBS;
       }
-      if (home.forYouAfterSignIn && isAccountSignedIn()) home.category = HOME_FORYOU;
       logInfo("[home] %s: the account's pages reload\n", isAccountSignedIn() ? "signed in" : "signed out");
    }
-   home.forYouAfterSignIn = 0;
 
    // A Live page lists what is on air NOW, and streams end: back after ten minutes - a stream watched for a
    // while, say - a good part of it would show LIVE on recordings and on streams that no longer play. Such a
