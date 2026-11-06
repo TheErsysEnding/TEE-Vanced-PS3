@@ -3,6 +3,27 @@
 Every release listed here was installed and used on a real PS3 (EVILNAT 4.92 DEX)
 before it was tagged. Anything that had not been is said so plainly.
 
+## v1.0.1 — 2026-11-06
+
+### Changed
+
+**TEE Vanced installs beside Yo! Player instead of over it.** Up to v1.0 the
+package used Yo! Player's title id (`YOPLAYER1`) and its folder names, so
+installing TEE Vanced replaced mohasi's Yo! Player, and the two would have
+shared one set of files. It now has its own title id, `TEEV00001`, and its own
+icon on the XMB.
+
+Its data moves to folders of its own as well (`tee-vanced` instead of
+`yo-player`, for example `/dev_hdd0/home/00000001/tee-vanced` or
+`/dev_hdd0/game/TEEV00001/USRDIR/data`). On the first start the app copies
+subscriptions, playlists, Watch Later, history, settings, themes and the
+YouTube sign-in over from the old folders; the old files are left as they were.
+
+**Start the new version once before you delete the old icon.** On some
+consoles the data of v1.0 lives inside the old app's own folder, and the
+console deletes that folder together with the app. After the first start the
+old "TEE Vanced PS3" icon (the one that replaced Yo! Player) can be deleted.
+
 ## v1.0 — 2026-11-06
 
 The first full release. The new look, "Ember": a warm dark ground with TEE

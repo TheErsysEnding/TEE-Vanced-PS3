@@ -14,7 +14,7 @@
 # the two SDK tools run on the VM.
 #
 # usage: build-pkg-fromsource.sh [<pkg-name-without-extension>] [<xmb title>]
-#        both default to the version in app-paths.h: TEE-Vanced-PS3-v1.0 / "TEE Vanced PS3 V1.0"
+#        both default to the version in app-paths.h: TEE-Vanced-PS3-v1.0.1 / "TEE Vanced PS3 V1.0.1"
 set -euo pipefail
 
 
@@ -28,10 +28,10 @@ OUT_DIR="$PKG_DIR/out"
 SDK_BIN="$VM_SDK\\host-win32\\bin"
 VM_ELF='C:\ps3-dev\apps\yo-player\bin\Release\yo-player.ppu.elf'
 STAGE='C:\pkgbuild'
-CONTENT_ID="HB0001-YOPLAYER1_00-YOPLAYERHB000001"
+CONTENT_ID="HB0001-TEEV00001_00-TEEVANCEDPS30001"
 
-VERSION="$(app_version)"                                       # V1.0
-VERSION_SLUG="$(printf '%s' "$VERSION" | tr 'A-Z ' 'a-z-')"    # v1.0
+VERSION="$(app_version)"                                       # V1.0.1
+VERSION_SLUG="$(printf '%s' "$VERSION" | tr 'A-Z ' 'a-z-')"    # v1.0.1
 PKG_NAME="${1:-TEE-Vanced-PS3-${VERSION_SLUG:-fromsource}}"
 PKG_TITLE="${2:-TEE Vanced PS3${VERSION:+ $VERSION}}"
 export PKG_TITLE
