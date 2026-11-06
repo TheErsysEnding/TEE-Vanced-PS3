@@ -14,3 +14,21 @@ typedef enum {
 void loadSettings(void);   // reads settings.txt, creating it with defaults when missing
 
 SponsorblockMode getSponsorblockMode(void);
+
+// ---- content region ----
+// Which country's YouTube the lists come from: the "gl" of every WEB request (Trending, Live, Search, channel
+// pages and their next pages). The language ("hl") stays English whatever the region, because the parsers read
+// English text (" views", " ago", " watching", "Members only"). Kept in settings.txt as region=<code>, changed
+// in Settings > Region. The default is the United States, which is what every earlier build sent. Only codes
+// from the fixed table are ever sent: YouTube answers an unknown or lower-case gl with an empty page, not an
+// error.
+
+// One country the lists come from: code = YouTube's gl (upper case), name = English display name.
+typedef struct { const char *code; const char *name; } ContentRegion;
+int  getContentRegionCount(void);
+const ContentRegion *getContentRegionAt(int index);   // the fixed table in display order; NULL out of range
+int  getContentRegionIndex(void);                     // the current region's index into that table
+const char *getContentRegionCode(void);               // the current gl, e.g. "DE"; never NULL, always from the table
+int  setContentRegionIndex(int index);                // UI thread only, while no list is loading; saves region= in
+                                                      // settings.txt; 0 saved, -1 not saved (the region still changes)
+unsigned getContentRegionRevision(void);              // +1 on every change, for caches to notice

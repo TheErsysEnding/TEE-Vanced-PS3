@@ -11,6 +11,8 @@
 
 #include "extractor.h"
 #include "app-paths.h"
+#include "settings.h"           // getContentRegionCode: the gl of every list request
+#include "account.h"            // the signed-in account's lists: its token, and YouTube's TV client they go out as
 #include "http.h"               // fetchHttp
 #include "string-utilities.h"   // strCopy
 #include "dbg.h"                // logInfo (resolve diagnostics)
@@ -43,13 +45,18 @@
 #define VISITOR_URL "https://www.youtube.com/youtubei/v1/visitor_id?key=AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8&prettyPrint=false"
 
 // the VISIONOS client object, without the wrapping braces so visitorData can
-// be appended before the player request closes it.
+// be appended before the player request closes it. Its gl stays "US" whatever the content region: the player
+// answered alike for every gl probed, and this is the one request that decides whether anything plays.
 #define PLAYER_CLIENT \
    "\"clientName\":\"VISIONOS\",\"clientVersion\":\"" PLAYER_VERSION "\"," \
    "\"deviceMake\":\"Apple\",\"deviceModel\":\"RealityDevice17,1\"," \
    "\"osName\":\"visionOS\",\"osVersion\":\"26.5.23O471\",\"hl\":\"en\",\"gl\":\"US\""
-#define WEB_CONTEXT \
-   "{\"context\":{\"client\":{\"clientName\":\"WEB\",\"clientVersion\":\"" WEB_VERSION "\",\"hl\":\"en\",\"gl\":\"US\"}}"
+// The WEB client of every list request: browse, search and their next pages. hl stays "en" - the parsers key on
+// English text (" views", " ago", " watching", "Members only"). gl is the content region (settings.h): every
+// format built on this takes it as its FIRST argument, and a request reads getContentRegionCode() once and passes
+// that one value. The root object is left open for each body's own fields.
+#define WEB_CONTEXT_FMT \
+   "{\"context\":{\"client\":{\"clientName\":\"WEB\",\"clientVersion\":\"" WEB_VERSION "\",\"hl\":\"en\",\"gl\":\"%s\"}}"
 
 static const char *PLAYER_UA =
    "Mozilla/5.0 (Macintosh; Intel Mac OS X 15_7_3) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Safari/605.1.15";
@@ -59,19 +66,26 @@ static const char *WEB_UA =
 // player body: the client + the minted visitorData, then the video id. two %s: visitorData, videoId.
 static const char *PLAYER_BODY_FMT =
    "{\"context\":{\"client\":{" PLAYER_CLIENT ",\"visitorData\":\"%s\"}},\"videoId\":\"%s\",\"contentCheckOk\":true,\"racyCheckOk\":true}";
-static const char *VISITOR_BODY   = WEB_CONTEXT "}";   // WEB_CONTEXT leaves the root object open; close it
+// The visitor-session mint keeps its own fixed client, byte for byte what it always sent: the session it returns
+// records the IP's country whatever gl says, and it is minted once and then reused for months.
+static const char *VISITOR_BODY =
+   "{\"context\":{\"client\":{\"clientName\":\"WEB\",\"clientVersion\":\"" WEB_VERSION "\",\"hl\":\"en\",\"gl\":\"US\"}}}";
 // search params combine the "Videos" filter (drops the Shorts shelf, channels and playlists) with a sort
-// order. index by SortOrder. canonical values from youtube's own filter menu. two %s: escaped query, params.
+// order. index by SortOrder. canonical values from youtube's own filter menu.
 static const char *SEARCH_SORT_PARAMS[SORT_COUNT] = {
    "EgIQAQ==",   // SORT_RELEVANCE (youtube's default)
    "CAMSAhAB",   // SORT_VIEWS (popularity / view count, highest first)
 };
-static const char *SEARCH_BODY_FMT = WEB_CONTEXT ",\"query\":\"%s\",\"params\":\"%s\"}";
+// The list bodies are string literals, not const char pointers, so -Wall's format check sees every snprintf
+// that uses one: a call that forgets the region is a build warning, not a garbage pointer read at run time. The
+// check cannot see the ORDER of the arguments (each is a char *), so every call passes gl straight after the
+// format, where a grep for the format name followed by gl can count them.
+#define SEARCH_BODY_FMT       WEB_CONTEXT_FMT ",\"query\":\"%s\",\"params\":\"%s\"}"      // gl, escaped query, params
 // trending feed. YouTube retired the aggregated Trending page in 2025 (FEtrending now redirects to an empty
 // home feed); NewPipe/FreeTube/Invidious replaced it with per-category channel-tab browses that still work
-// logged-out. two %s: browseId, params. see TRENDING_CATEGORIES for the ids.
-static const char *TRENDING_BODY_FMT = WEB_CONTEXT ",\"browseId\":\"%s\",\"params\":\"%s\"}";
-static const char *CONTINUATION_BODY_FMT = WEB_CONTEXT ",\"continuation\":\"%s\"}";   // next page of any feed
+// logged-out. see TRENDING_FEEDS for the ids.
+#define TRENDING_BODY_FMT     WEB_CONTEXT_FMT ",\"browseId\":\"%s\",\"params\":\"%s\"}"   // gl, browseId, params
+#define CONTINUATION_BODY_FMT WEB_CONTEXT_FMT ",\"continuation\":\"%s\"}"                 // gl, token: any feed's next page
 
 static int hex4(const char *p)
 {
@@ -89,7 +103,8 @@ static int hex4(const char *p)
 
 // copy the json string value of "key" found within [from,end), unescaping the
 // usual escapes plus \uXXXX (ascii only - urls and titles are ascii; higher
-// code points are dropped). returns 1 if the key was found.
+// code points are dropped). returns 0 if the key was not found, 1 if it was, and 2 if its value did not fit
+// `cap` and was cut (readField marks such a text with "...").
 static int jsonString(const char *from, const char *end, const char *key, char *out, int cap)
 {
    char pat[48];
@@ -119,8 +134,27 @@ static int jsonString(const char *from, const char *end, const char *key, char *
          default: out[i++] = c; break;              // \/ \\ \" and any other: keep literal
       }
    }
+   // The cap cut the value short: never end on half a UTF-8 character. A Cyrillic, Greek or Japanese title is
+   // 2-3 bytes a character, and a cut one sends the whole label to FONT_POP with a stray letter at its end.
+   // Escapes only ever add ASCII, so they cannot leave a lead byte behind.
+   int cut = i == cap - 1 && p < end && *p && *p != '"';
+   if (cut && ((unsigned char)*p & 0xC0) == 0x80) {
+      while (i > 0 && ((unsigned char)out[i - 1] & 0xC0) == 0x80) i--;   // the cut character's continuation bytes
+      if (i > 0 && (unsigned char)out[i - 1] >= 0xC0) i--;               // and its lead byte
+   }
    out[i] = 0;
-   return 1;
+   return cut ? 2 : 1;
+}
+
+// A text the viewer reads that its field's size cut short ends in "..." - "The Colin Cowherd Podcast and The Herd
+// with Col" read as if the channel were called that. The dots replace the end, at a whole character.
+static void markCut(char *out, int cap)
+{
+   if (cap < 4) return;
+   int i = (int)strlen(out);
+   if (i > cap - 4) i = cap - 4;                                     // room for "..." and the terminator
+   while (i > 0 && ((unsigned char)out[i] & 0xC0) == 0x80) i--;      // never inside a character
+   memcpy(out + i, "...", 4);
 }
 
 // read the (possibly quoted) integer value of "key" within [from,end). 1 if found.
@@ -406,25 +440,38 @@ static void parseFormats(const char *resp, const char *end, StreamInfo *out)
 // The anonymous visitor session. Without it a logged-out player request gets LOGIN_REQUIRED. Minting
 // a fresh one every launch is itself a bot signal that re-triggers the wall, so it persists to disk:
 // we reuse a saved session and only mint (and save) when there's none, or a saved one goes stale.
-#define VISITOR_CACHE_PATH YO_DATA_DIR "/visitor.txt"
+//
+// The file lives in the directory migrateAppData settled on (see app-paths.h). It used to be built from
+// YO_DATA_DIR, which pointed it at /dev_hdd0/yo-player even on a console that refuses that folder: there
+// nothing was ever saved, and every launch minted a fresh session - the very thing this cache exists to avoid.
+static void visitorCachePath(char *out, int cap)
+{
+   snprintf(out, cap, "%s/visitor.txt", getAppDataDir());
+}
 
 static char visitorData[192];
 static int  visitorFromDisk;   // the current session was loaded from the cache (vs minted this launch)
 
 static int loadVisitorData(void)
 {
-   return readFile(VISITOR_CACHE_PATH, visitorData, sizeof visitorData) > 0 && visitorData[0] != 0;
+   char path[128];
+   visitorCachePath(path, sizeof path);
+   return readFile(path, visitorData, sizeof visitorData) > 0 && visitorData[0] != 0;
 }
 
 static void saveVisitorData(void)
 {
-   writeFile(VISITOR_CACHE_PATH, visitorData, strlen(visitorData));
+   char path[128];
+   visitorCachePath(path, sizeof path);
+   writeFile(path, visitorData, strlen(visitorData));
 }
 
 // a saved session that hit LOGIN_REQUIRED is stale: forget it so the next play mints a fresh one once.
 static void dropVisitorData(void)
 {
-   deleteFile(VISITOR_CACHE_PATH);
+   char path[128];
+   visitorCachePath(path, sizeof path);
+   deleteFile(path);
    visitorData[0] = 0;
    visitorFromDisk = 0;
 }
@@ -695,7 +742,8 @@ static void jsonEscape(const char *src, char *out, int cap)
 static void readField(const char *block, const char *end, const char *container, const char *key, char *out, int cap)
 {
    const char *pos = strstr(block, container);
-   if (pos && pos < end) jsonString(pos, end, key, out, cap);
+   // every field read here is text on screen (title, channel, duration, date): a cut one says so
+   if (pos && pos < end && jsonString(pos, end, key, out, cap) == 2) markCut(out, cap);
 }
 
 // the next feed item at or after `from`. search uses "videoRenderer", trending shelves "gridVideoRenderer",
@@ -744,6 +792,51 @@ static void readChannelId(const char *block, const char *end, char *out, int cap
    else if (cap) out[0] = 0;
 }
 
+// One past the closing brace of the JSON object whose '{' is at `open`, or `end` when it does not close before
+// it. Strings are skipped whole, escapes included, so a brace inside a title cannot end the object early.
+static const char *objectEnd(const char *open, const char *end)
+{
+   int depth = 0, inString = 0;
+   for (const char *p = open; p < end; p++) {
+      char c = *p;
+      if (inString) {
+         if (c == '\\') p++;             // the escaped character, whatever it is
+         else if (c == '"') inString = 0;
+      }
+      else if (c == '"') inString = 1;
+      else if (c == '{') depth++;
+      else if (c == '}' && --depth == 0) return p + 1;
+   }
+   return end;
+}
+
+// The view count, read only inside the item's own "viewCountText" object. A video gives it as one simpleText
+// ("6,100 views"); a live stream gives it as runs ("52,106" + " watching"), which used to leave the field empty
+// - or the scan ran on past the field and took a later simpleText such as the overlay's "PREMIERE".
+static void readViewCount(const char *block, const char *end, char *out, int cap)
+{
+   out[0] = 0;
+   const char *field = findIn(block, end, "\"viewCountText\":{");   // a null count has no object at all
+   if (!field) return;
+   const char *fieldEnd = objectEnd(field + 16, end);              // 16 = strlen("\"viewCountText\":")
+   if (findIn(field, fieldEnd, "\"simpleText\":\"")) { jsonString(field, fieldEnd, "simpleText", out, cap); return; }
+
+   int length = 0;
+   for (const char *run = field; (run = findIn(run, fieldEnd, "\"text\":\"")) != NULL; run += 8) {
+      char part[24];
+      jsonString(run, fieldEnd, "text", part, sizeof part);
+      int partLength = (int)strlen(part), room = cap - 1 - length, cut = partLength > room;
+      if (cut) {   // keep what fits, and never half a character
+         partLength = room;
+         while (partLength > 0 && ((unsigned char)part[partLength] & 0xC0) == 0x80) partLength--;
+      }
+      memcpy(out + length, part, partLength);
+      length += partLength;
+      out[length] = 0;
+      if (cut) break;
+   }
+}
+
 // fill one result from a videoRenderer (search) or gridVideoRenderer (trending) block. 1 if it has a title.
 static int parseRendererItem(const char *block, const char *end, SearchResult *item)
 {
@@ -753,13 +846,28 @@ static int parseRendererItem(const char *block, const char *end, SearchResult *i
    if (!item->title[0])   // gridVideoRenderer (trending) uses a plain simpleText title
       readField(block, end, "\"title\"", "simpleText", item->title, sizeof item->title);
    readField(block, end, "\"lengthText\"",        "simpleText", item->duration,  sizeof item->duration);
+   // A trending item (gridVideoRenderer) has no lengthText: its duration is only the thumbnail's time overlay, so
+   // the Trending cards showed none. It is taken from there when the overlay is a plain duration ("style":
+   // "DEFAULT"), never from a LIVE or UPCOMING one, whose text is a word rather than a time.
+   if (!item->duration[0]) {
+      static const char OVERLAY[] = "\"thumbnailOverlayTimeStatusRenderer\":{";
+      const char *overlay = findIn(block, end, OVERLAY);
+      if (overlay) {
+         const char *open  = overlay + sizeof OVERLAY - 2;   // its '{'
+         const char *close = objectEnd(open, end);
+         if (findIn(open, close, "\"style\":\"DEFAULT\""))
+            jsonString(open, close, "simpleText", item->duration, sizeof item->duration);
+      }
+   }
    readField(block, end, "\"ownerText\"",         "text",       item->author,    sizeof item->author);
    if (!item->author[0])   // trending items carry the channel in shortBylineText instead
       readField(block, end, "\"shortBylineText\"", "text", item->author, sizeof item->author);
-   readField(block, end, "\"viewCountText\"",     "simpleText", item->views,     sizeof item->views);
+   readViewCount(block, end, item->views, sizeof item->views);
    readField(block, end, "\"publishedTimeText\"", "simpleText", item->published, sizeof item->published);
-   const char *livePos = strstr(block, "\"style\":\"LIVE\"");   // thumbnailOverlayTimeStatusRenderer
-   item->isLive = (livePos && livePos < end);
+   // browse surfaces mark a live stream with the time-status overlay, search and the Gaming live tab only with
+   // a badge. Bounded to the item: an unbounded search ran on through the rest of the reply for every video.
+   item->isLive = findIn(block, end, "\"style\":\"LIVE\"") != NULL ||
+                  findIn(block, end, "\"style\":\"BADGE_STYLE_TYPE_LIVE_NOW\"") != NULL;
    return item->title[0] != 0;
 }
 
@@ -822,25 +930,106 @@ static void parseVideoResults(const char *resp, int respLen, SearchResults *out)
    const char *channelMeta = strstr(resp, "\"channelMetadataRenderer\":{");
    if (channelMeta && channelMeta < end) jsonString(channelMeta, end, "title", out->channelName, sizeof out->channelName);
 
-   // channel Videos feeds carry Latest/Popular/Oldest sort chips; each chipViewModel holds a continuation
-   // token the screen re-browses with to re-sort. absent in search/trending responses (left empty).
+   // channel Videos feeds sort by Latest, Popular or Oldest, each with a continuation token the screen re-browses
+   // with. YouTube used to send them as three chips (chipViewModel with the text, the token after it); it now sends
+   // ONE drop-down chip, "Latest", whose sheet lists the three as listItemViewModel entries, each with its token -
+   // so only Latest was found, and Popular and Oldest loaded the plain first page: the Latest list again (seen in
+   // RPCS3, Nov 2026; the sheet's tokens answer with their own order, no session needed). The sheet is read first,
+   // from the drop-down chip on, and the old chips stay as the fallback. Absent in search/trending (left empty).
    static const char *SORT_CHIP_LABELS[3] = { "Latest", "Popular", "Oldest" };
+   const char *sheet = strstr(resp, "\"CHIP_VIEW_MODEL_DISPLAY_TYPE_DROP_DOWN\"");
    for (int chip = 0; chip < 3; chip++) {
-      char pat[48];
-      snprintf(pat, sizeof pat, "\"chipViewModel\":{\"text\":\"%s\"", SORT_CHIP_LABELS[chip]);
-      const char *found = strstr(resp, pat);
+      char pat[64];
+      const char *found = NULL;
+      if (sheet && sheet < end) {
+         snprintf(pat, sizeof pat, "\"listItemViewModel\":{\"title\":{\"content\":\"%s\"", SORT_CHIP_LABELS[chip]);
+         found = strstr(sheet, pat);
+      }
+      if (!found || found >= end) {
+         snprintf(pat, sizeof pat, "\"chipViewModel\":{\"text\":\"%s\"", SORT_CHIP_LABELS[chip]);
+         found = strstr(resp, pat);
+      }
       if (found && found < end) jsonString(found, end, "token", out->sortTokens[chip], MAX_SORT_TOKEN);
    }
 }
 
-// POST a WEB innertube endpoint with a prebuilt json body, then parse videoRenderers from the response.
-static int postAndParse(const char *url, const char *body, int bodyLen, SearchResults *out)
+// YouTube names the country it built a page 1 for in its top bar ("countryCode":"DE", near the end of the reply)
+// and names none for the United States. A code it does not take gets HTTP 200, an empty page and no country,
+// which in the grid looks exactly like an empty list - so the log says which region YouTube really used.
+// Continuation replies have no top bar and are not checked. One line whenever the answer changes, not one per
+// page. The list workers run one at a time; were two ever to overlap, a log line would repeat or go missing.
+static void logRegionEcho(const char *resp, const char *end, const char *sent, int itemCount)
 {
-   memset(out, 0, sizeof *out);
+   static char loggedSent[4], loggedUsed[8];
+   static int  loggedSuspect = -1;
+
+   char named[8] = "";
+   const char *badge = strstr(resp, "\"countryCode\":\"");
+   if (badge && badge < end) jsonString(badge, end, "countryCode", named, sizeof named);
+   int isUs = strcmp(sent, "US") == 0;
+   const char *used = named[0] ? named : isUs ? "US" : "none";   // no badge is the normal answer for the US
+   int mismatch = named[0] && strcmp(named, sent) != 0;
+   int suspect = !named[0] && !isUs && itemCount == 0;
+
+   if (strcmp(loggedSent, sent) == 0 && strcmp(loggedUsed, used) == 0 && loggedSuspect == suspect) return;
+   strCopy(loggedSent, sizeof loggedSent, sent);
+   strCopy(loggedUsed, sizeof loggedUsed, used);
+   loggedSuspect = suspect;
+   if (mismatch)     logWarn("[yt] region: sent %s, YouTube used %s\n", sent, used);
+   else if (suspect) logWarn("[yt] region: sent %s, YouTube used none and sent no items - it may not take this code\n", sent);
+   else              logInfo("[yt] region: sent %s, YouTube used %s\n", sent, used);
+}
+
+// a character of a session as YouTube hands it out: base64, url-safe or not
+static int isSessionChar(char c)
+{
+   return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') ||
+          c == '-' || c == '_' || c == '+' || c == '/' || c == '=';
+}
+
+// A whole session, and nothing else. It goes out again as a header line, so a malformed reply must never be able
+// to smuggle a CR or LF into the next request.
+static int isSessionToken(const char *text)
+{
+   int length = 0;
+   while (isSessionChar(text[length])) length++;
+   return length > 0 && text[length] == 0;
+}
+
+// The reply's own session: its first "visitorData", which is responseContext's (it leads every reply), percent-
+// decoded as ensureVisitorData does. "" when there is none, or nothing that passes for one whole.
+static void captureSession(const char *resp, const char *end, char *out, int cap)
+{
+   char raw[128];
+   out[0] = 0;
+   if (!jsonString(resp, end, "visitorData", raw, sizeof raw) || (int)strlen(raw) >= (int)sizeof raw - 1) return;
+   // as it comes, percent-encoded ("%3D"): nothing but session characters and '%', so that urlDecode - which stops
+   // at a blank, '?' or CR - reads it whole instead of leaving a cut-off start that would pass the check below
+   for (const char *c = raw; *c; c++) if (!isSessionChar(*c) && *c != '%') return;
+   if (urlDecode(raw, out, cap) < 0 || (int)strlen(out) >= cap - 1 || !isSessionToken(out)) out[0] = 0;
+}
+
+// What a WEB list request needs beyond its body. Search, Trending and channel pages use none of it (postAndParse);
+// the Live page uses the session parts and the append.
+typedef struct {
+   const char *pageOneGl;      // the region a page-1 body was built with, checked against the reply (logRegionEcho);
+                               // NULL for a continuation, whose reply names no country
+   const char *visitorId;      // sent as X-Goog-Visitor-Id when set: a session that passed isSessionToken
+   char       *replyVisitor;   // receives the reply's own session (captureSession); NULL = not wanted
+   int         replyVisitorCap;
+   int         append;         // add the reply's items to out's (deduped by videoId) instead of starting afresh. out
+                               // is then left alone unless an answer comes, whose next-page token replaces out's
+} WebRequest;
+
+// POST a WEB innertube endpoint with a prebuilt json body, then parse videoRenderers from the response.
+static int postAndParseWith(const char *url, const char *body, int bodyLen, const WebRequest *request, SearchResults *out)
+{
+   if (!request->append) memset(out, 0, sizeof *out);
+   if (request->replyVisitor) request->replyVisitor[0] = 0;
    char *resp = malloc(RESP_CAP);
    if (!resp) return -1;
 
-   HttpHeader headers[] = {   // WEB_UA is a pointer, so these can't be a file-scope const array
+   HttpHeader headers[7] = {   // WEB_UA is a pointer, so these can't be a file-scope const array
       { "Content-Type", "application/json" },
       { "User-Agent", WEB_UA },
       { "X-YouTube-Client-Name", "1" },
@@ -848,30 +1037,57 @@ static int postAndParse(const char *url, const char *body, int bodyLen, SearchRe
       { "Origin", "https://www.youtube.com" },
       { "Accept-Encoding", "identity" },
    };
-   int headerCount = sizeof headers / sizeof headers[0];
+   int headerCount = 6;
+   if (request->visitorId && request->visitorId[0]) {   // last, as it was sent when the echo was probed
+      headers[6].name = "X-Goog-Visitor-Id";
+      headers[6].value = request->visitorId;
+      headerCount = 7;
+   }
 
    int respLen = 0, status = 0;
    int rc = fetchHttp("POST", url, headers, headerCount, body, bodyLen, resp, RESP_CAP, &respLen, &status);
    if (rc < 0)        { free(resp); return rc; }
    if (status != 200) { free(resp); return -status; }
 
+   int before = out->count;
+   if (request->append) out->continuation[0] = 0;   // the next page is the one this reply names, or none
    parseVideoResults(resp, respLen, out);
+   if (request->pageOneGl) logRegionEcho(resp, resp + respLen, request->pageOneGl, out->count - before);
+   if (request->replyVisitor) captureSession(resp, resp + respLen, request->replyVisitor, request->replyVisitorCap);
    free(resp);
    return 0;
 }
 
+// pageOneGl as in WebRequest.
+static int postAndParse(const char *url, const char *body, int bodyLen, const char *pageOneGl, SearchResults *out)
+{
+   WebRequest request = { pageOneGl, NULL, NULL, 0, 0 };
+   return postAndParseWith(url, body, bodyLen, &request, out);
+}
+
+// snprintf answers with the length it WOULD have written, and the body is sent bodyLen bytes long: one that did
+// not fit is refused rather than sent cut short (or read past its buffer).
+static int refuseBody(int bodyLen, SearchResults *out)
+{
+   logError("[yt] request body of %d bytes does not fit its buffer, not sent\n", bodyLen);
+   memset(out, 0, sizeof *out);
+   return -1;
+}
+
 static int search(const char *query, SortOrder sort, const char *continuation, SearchResults *out)
 {
+   const char *gl = getContentRegionCode();   // read once: the whole request uses this one value
    char body[MAX_CONTINUATION + 512];
    int bodyLen;
-   if (continuation) bodyLen = snprintf(body, sizeof body, CONTINUATION_BODY_FMT, continuation);
+   if (continuation) bodyLen = snprintf(body, sizeof body, CONTINUATION_BODY_FMT, gl, continuation);
    else {
       char escaped[256];
       jsonEscape(query, escaped, sizeof escaped);
       if (sort < 0 || sort >= SORT_COUNT) sort = SORT_RELEVANCE;
-      bodyLen = snprintf(body, sizeof body, SEARCH_BODY_FMT, escaped, SEARCH_SORT_PARAMS[sort]);
+      bodyLen = snprintf(body, sizeof body, SEARCH_BODY_FMT, gl, escaped, SEARCH_SORT_PARAMS[sort]);
    }
-   return postAndParse(SEARCH_URL, body, bodyLen, out);
+   if (bodyLen < 0 || bodyLen >= (int)sizeof body) return refuseBody(bodyLen, out);
+   return postAndParse(SEARCH_URL, body, bodyLen, continuation ? NULL : gl, out);
 }
 
 // the surviving per-category channel-tab feeds, each a real feed logged-out. order matches TrendingCategory.
@@ -884,11 +1100,13 @@ static const struct { const char *browseId, *params; } TRENDING_FEEDS[TREND_COUN
 static int fetchTrending(TrendingCategory category, const char *continuation, SearchResults *out)
 {
    if (category < 0 || category >= TREND_COUNT) return -1;
+   const char *gl = getContentRegionCode();
    char body[MAX_CONTINUATION + 512];
    int bodyLen;
-   if (continuation) bodyLen = snprintf(body, sizeof body, CONTINUATION_BODY_FMT, continuation);
-   else bodyLen = snprintf(body, sizeof body, TRENDING_BODY_FMT, TRENDING_FEEDS[category].browseId, TRENDING_FEEDS[category].params);
-   return postAndParse(BROWSE_URL, body, bodyLen, out);
+   if (continuation) bodyLen = snprintf(body, sizeof body, CONTINUATION_BODY_FMT, gl, continuation);
+   else bodyLen = snprintf(body, sizeof body, TRENDING_BODY_FMT, gl, TRENDING_FEEDS[category].browseId, TRENDING_FEEDS[category].params);
+   if (bodyLen < 0 || bodyLen >= (int)sizeof body) return refuseBody(bodyLen, out);
+   return postAndParse(BROWSE_URL, body, bodyLen, continuation ? NULL : gl, out);
 }
 
 // a channel's Videos tab (sorted Latest by default). token NULL = first page via the videos-tab params;
@@ -896,11 +1114,618 @@ static int fetchTrending(TrendingCategory category, const char *continuation, Se
 #define CHANNEL_VIDEOS_PARAMS "EgZ2aWRlb3PyBgQKAjoA"
 static int getChannel(const char *channelId, const char *token, SearchResults *out)
 {
+   const char *gl = getContentRegionCode();
    char body[MAX_CONTINUATION + 512];
    int bodyLen;
-   if (token) bodyLen = snprintf(body, sizeof body, CONTINUATION_BODY_FMT, token);
-   else       bodyLen = snprintf(body, sizeof body, TRENDING_BODY_FMT, channelId, CHANNEL_VIDEOS_PARAMS);
-   return postAndParse(BROWSE_URL, body, bodyLen, out);
+   if (token) bodyLen = snprintf(body, sizeof body, CONTINUATION_BODY_FMT, gl, token);
+   else       bodyLen = snprintf(body, sizeof body, TRENDING_BODY_FMT, gl, channelId, CHANNEL_VIDEOS_PARAMS);
+   if (bodyLen < 0 || bodyLen >= (int)sizeof body) return refuseBody(bodyLen, out);
+   return postAndParse(BROWSE_URL, body, bodyLen, token ? NULL : gl, out);
 }
 
-const Extractor youtubeExtractor = { "youtube", matches, extract, search, fetchTrending, getChannel };
+// ---- the signed-in account's lists (account.h) ----
+//
+// YouTube answers a request carrying the sign-in only for its TV client (probed in Nov 2026: the WEB client gets
+// HTTP 400 with the same token), so these go out as the TV app and come back in its format. Whatever the page
+// around them - shelves on the home feed, a grid in the history, a playlist's list - every item is a "tileRenderer",
+// a video, a Short, a channel or a playlist by its contentType; the home feed's ad is one with none. Only videos are
+// kept, as everywhere in the app. Playback stays anonymous (extract): nothing that plays depends on the sign-in.
+
+#define TV_CONTEXT_FMT \
+   "{\"context\":{\"client\":{\"clientName\":\"TVHTML5\",\"clientVersion\":\"" ACCOUNT_TV_CLIENT_VERSION "\"," \
+   "\"hl\":\"en\",\"gl\":\"%s\"}}"
+#define TV_BROWSE_BODY_FMT       TV_CONTEXT_FMT ",\"browseId\":\"%s\"}"       // gl, browseId
+#define TV_CONTINUATION_BODY_FMT TV_CONTEXT_FMT ",\"continuation\":\"%s\"}"   // gl, token
+#define AUTHORIZATION_CAP        3072                                         // "Bearer " and an access token
+
+// in AccountFeed order (extractor.h)
+static const char *ACCOUNT_BROWSE_IDS[ACCOUNT_FEED_COUNT] = {
+   "FEwhat_to_watch",   // ACCOUNT_FEED_HOME
+   "FEsubscriptions",   // ACCOUNT_FEED_SUBSCRIPTIONS
+   "FEhistory",         // ACCOUNT_FEED_HISTORY
+   "VLWL",              // ACCOUNT_FEED_WATCH_LATER
+   "FEchannels",        // ACCOUNT_FEED_CHANNELS
+};
+
+// text into a field of its own size; one that does not fit ends in "..." at a whole character
+static void copyText(char *out, int cap, const char *text)
+{
+   int length = (int)strlen(text);
+   if (length < cap) { memcpy(out, text, length + 1); return; }
+   memcpy(out, text, cap - 1);
+   out[cap - 1] = 0;
+   markCut(out, cap);
+}
+
+static int endsWith(const char *text, const char *suffix)
+{
+   int length = (int)strlen(text), suffixLength = (int)strlen(suffix);
+   return length >= suffixLength && strcmp(text + length - suffixLength, suffix) == 0;
+}
+
+// A TV text object's words: its "simpleText", or its "runs" joined. Every probe stays inside [object, end): an
+// unbounded search would run on through the rest of a reply that can pass 700 KB, once per field of every tile.
+static void readTextObject(const char *object, const char *end, char *out, int cap)
+{
+   out[0] = 0;
+   if (findIn(object, end, "\"simpleText\":\"")) {
+      if (jsonString(object, end, "simpleText", out, cap) == 2) markCut(out, cap);
+      return;
+   }
+   int length = 0;
+   for (const char *run = object; (run = findIn(run, end, "\"text\":\"")) != NULL; run += 8) {
+      char part[160];
+      int cut = jsonString(run, end, "text", part, sizeof part) == 2;
+      int partLength = (int)strlen(part), room = cap - 1 - length;
+      if (partLength > room) {   // keep what fits, and never half a character
+         partLength = room;
+         cut = 1;
+         while (partLength > 0 && ((unsigned char)part[partLength] & 0xC0) == 0x80) partLength--;
+      }
+      memcpy(out + length, part, partLength);
+      length += partLength;
+      out[length] = 0;
+      if (cut) { markCut(out, cap); break; }
+   }
+}
+
+// One video tile. Its lines under the title are the channel, then the counts: a badge or two ("4K"), "199K views",
+// "•", "3 weeks ago" - just "23 views" in the history, "1.2K watching" for a stream on air. 1 when it has a title.
+static int parseTileItem(const char *tile, const char *end, SearchResult *item)
+{
+   if (!jsonString(tile, end, "contentId", item->videoId, sizeof item->videoId) || strlen(item->videoId) != 11) return 0;
+   const char *channel = findIn(tile, end, "\"browseId\":\"UC");   // the long-press menu's "Go to channel"; none on
+   if (channel) jsonString(channel, end, "browseId", item->channelId, sizeof item->channelId);   // home tiles
+
+   static const char META[] = "\"tileMetadataRenderer\":{";
+   const char *meta = findIn(tile, end, META);
+   if (!meta) return 0;
+   const char *metaEnd = objectEnd(meta + sizeof META - 2, end);
+   static const char TITLE[] = "\"title\":{";
+   const char *title = findIn(meta, metaEnd, TITLE);
+   if (title) readTextObject(title, objectEnd(title + sizeof TITLE - 2, metaEnd), item->title, sizeof item->title);
+
+   static const char LINE[] = "\"lineRenderer\":{", TEXT[] = "\"text\":{";
+   int line = 0;
+   for (const char *at = meta; (at = findIn(at, metaEnd, LINE)) != NULL; line++) {
+      const char *lineEnd = objectEnd(at + sizeof LINE - 2, metaEnd);
+      for (const char *text = at; (text = findIn(text, lineEnd, TEXT)) != NULL; ) {
+         const char *textEnd = objectEnd(text + sizeof TEXT - 2, lineEnd);
+         char words[96];
+         readTextObject(text, textEnd, words, sizeof words);
+         if (line == 0) { if (!item->author[0]) copyText(item->author, sizeof item->author, words); }
+         else if (endsWith(words, " views") || endsWith(words, " view")) copyText(item->views, sizeof item->views, words);
+         else if (endsWith(words, " watching")) { copyText(item->views, sizeof item->views, words); item->isLive = 1; }
+         else if (endsWith(words, " ago") || strncmp(words, "Streamed ", 9) == 0)
+            copyText(item->published, sizeof item->published, words);
+         text = textEnd;
+      }
+      at = lineEnd;
+   }
+
+   // the time on the thumbnail: a plain duration ("style":"DEFAULT"), or LIVE - never UPCOMING's word
+   static const char OVERLAY[] = "\"thumbnailOverlayTimeStatusRenderer\":{";
+   const char *overlay = findIn(tile, end, OVERLAY);
+   if (overlay) {
+      const char *open = overlay + sizeof OVERLAY - 2, *close = objectEnd(open, end);
+      if (findIn(open, close, "\"style\":\"DEFAULT\"") && findIn(open, close, "\"simpleText\":\""))
+         jsonString(open, close, "simpleText", item->duration, sizeof item->duration);
+      else if (findIn(open, close, "\"style\":\"LIVE\"")) item->isLive = 1;
+   }
+   if (item->isLive) item->duration[0] = 0;
+   return item->title[0] != 0;
+}
+
+// A channel tile (the account's channel list): its id and name, its handle ("@217ae") in author and its subscriber
+// count ("4.6M subscribers") in views - the tile's two lines.
+static int parseChannelTile(const char *tile, const char *end, SearchResult *item)
+{
+   if (!jsonString(tile, end, "contentId", item->channelId, sizeof item->channelId) ||
+       strncmp(item->channelId, "UC", 2) != 0) return 0;
+   static const char META[] = "\"tileMetadataRenderer\":{", TITLE[] = "\"title\":{";
+   static const char LINE[] = "\"lineRenderer\":{", TEXT[] = "\"text\":{";
+   const char *meta = findIn(tile, end, META);
+   if (!meta) return 1;
+   const char *metaEnd = objectEnd(meta + sizeof META - 2, end);
+   const char *title = findIn(meta, metaEnd, TITLE);
+   if (title) readTextObject(title, objectEnd(title + sizeof TITLE - 2, metaEnd), item->title, sizeof item->title);
+   int line = 0;
+   for (const char *at = meta; line < 2 && (at = findIn(at, metaEnd, LINE)) != NULL; line++) {
+      const char *lineEnd = objectEnd(at + sizeof LINE - 2, metaEnd);
+      const char *text = findIn(at, lineEnd, TEXT);
+      if (text) {
+         char words[96];
+         readTextObject(text, objectEnd(text + sizeof TEXT - 2, lineEnd), words, sizeof words);
+         if (endsWith(words, " subscribers") || endsWith(words, " subscriber")) copyText(item->views, sizeof item->views, words);
+         else if (words[0] == '@') copyText(item->author, sizeof item->author, words);
+      }
+      at = lineEnd;
+   }
+   return 1;
+}
+
+// channels: keep the channel tiles (ACCOUNT_FEED_CHANNELS) instead of the videos
+static void parseTileResults(const char *resp, int respLen, int channels, SearchResults *out)
+{
+   const char *end = resp + respLen;
+   static const char TILE[] = "\"tileRenderer\":{";
+   for (const char *at = resp; out->count < MAX_SEARCH_RESULTS && (at = findIn(at, end, TILE)) != NULL; ) {
+      const char *open = at + sizeof TILE - 2, *close = objectEnd(open, end);
+      at = close;
+      if (channels) {
+         SearchResult *item = &out->items[out->count];
+         memset(item, 0, sizeof *item);
+         if (findIn(open, close, "\"contentType\":\"TILE_CONTENT_TYPE_CHANNEL\"") && parseChannelTile(open, close, item))
+            out->count++;
+         continue;
+      }
+      if (!findIn(open, close, "\"contentType\":\"TILE_CONTENT_TYPE_VIDEO\"")) continue;   // Shorts, channels, the ad
+      if (findIn(open, close, "Members only")) continue;   // unplayable for the anonymous player, as in parseVideoResults
+      SearchResult *item = &out->items[out->count];
+      memset(item, 0, sizeof *item);
+      if (parseTileItem(open, close, item) && !isDuplicate(out, item->videoId)) out->count++;
+   }
+   // The next page is the reply's LAST nextContinuationData: on the home feed each shelf carries one for its own row
+   // and the list of shelves its own after all of them; everywhere else there is just the one.
+   static const char NEXT[] = "\"nextContinuationData\":{";
+   const char *last = NULL;
+   for (const char *at = resp; (at = findIn(at, end, NEXT)) != NULL; at += sizeof NEXT - 1) last = at;
+   if (last) jsonString(last, end, "continuation", out->continuation, sizeof out->continuation);
+}
+
+// POST a signed-in TV browse and parse its tiles. A 401 - the access token refused before its time - is answered
+// once with a fresh one.
+// POST a signed-in TV request. The reply's body comes back in a buffer of its own (the caller frees it), NULL on any
+// failure. A 401 - the access token refused before its time - is answered once with a fresh one.
+static char *postAccountRaw(const char *url, const char *body, int bodyLen, const char *what, int cap, int *respLen)
+{
+   char *authorization = (char *)malloc(AUTHORIZATION_CAP);
+   char *resp = (char *)malloc(cap);
+   if (!authorization || !resp) { free(authorization); free(resp); return NULL; }
+   int ok = 0;
+   for (int attempt = 0; attempt < 2; attempt++) {
+      if (getAccountAuthorization(authorization, AUTHORIZATION_CAP) != 0) {
+         logWarn("[yt] account %s: not signed in, or the sign-in could not be renewed\n", what);
+         break;
+      }
+      HttpHeader headers[6] = {
+         { "Content-Type", "application/json" },
+         { "User-Agent", ACCOUNT_TV_USER_AGENT },
+         { "X-YouTube-Client-Name", "7" },
+         { "X-YouTube-Client-Version", ACCOUNT_TV_CLIENT_VERSION },
+         { "Authorization", authorization },
+         { "Accept-Encoding", "identity" },
+      };
+      int status = 0;
+      int rc = fetchHttp("POST", url, headers, 6, body, bodyLen, resp, cap, respLen, &status);
+      if (rc < 0) { logError("[yt] account %s: no answer (rc=%d)\n", what, rc); break; }
+      if (status == 401 && attempt == 0) { dropAccountAccess(); continue; }
+      if (status != 200) { logError("[yt] account %s: HTTP %d\n", what, status); break; }
+      ok = 1;
+      break;
+   }
+   memset(authorization, 0, AUTHORIZATION_CAP);
+   free(authorization);
+   if (!ok) { free(resp); return NULL; }
+   return resp;
+}
+
+static int postAccountBrowse(const char *body, int bodyLen, const char *what, int nextPage, int channels,
+                             SearchResults *out)
+{
+   int respLen = 0;
+   char *resp = postAccountRaw(BROWSE_URL, body, bodyLen, what, RESP_CAP, &respLen);
+   if (!resp) return -1;
+   parseTileResults(resp, respLen, channels, out);
+   logInfo("[yt] account %s %s: %d %s, next page %s\n", what, nextPage ? "next page" : "page 1", out->count,
+           channels ? "channels" : "videos", out->continuation[0] ? "yes" : "no");
+   free(resp);
+   return 0;
+}
+
+static int fetchAccountFeed(AccountFeed feed, const char *continuation, SearchResults *out)
+{
+   memset(out, 0, sizeof *out);
+   if (feed < 0 || feed >= ACCOUNT_FEED_COUNT) return -1;
+   const char *gl = getContentRegionCode();
+   char body[MAX_CONTINUATION + 512];
+   int bodyLen = continuation ? snprintf(body, sizeof body, TV_CONTINUATION_BODY_FMT, gl, continuation)
+                              : snprintf(body, sizeof body, TV_BROWSE_BODY_FMT, gl, ACCOUNT_BROWSE_IDS[feed]);
+   if (bodyLen < 0 || bodyLen >= (int)sizeof body) return refuseBody(bodyLen, out);
+   return postAccountBrowse(body, bodyLen, ACCOUNT_BROWSE_IDS[feed], continuation != NULL,
+                            feed == ACCOUNT_FEED_CHANNELS, out);
+}
+
+// ---- the account's playlists ----
+
+#define PLAYLIST_PAGES 5   // the Library's playlist list is read this many pages deep at the most
+
+// an id as it goes into "VL<id>" and a JSON string: letters, digits, '-' and '_' only, with room for the "VL"
+static int isPlaylistId(const char *id)
+{
+   int length = (int)strlen(id);
+   if (length < 2 || length > ACCOUNT_PLAYLIST_ID_CAP - 3) return 0;
+   for (const char *p = id; *p; p++) if (!isIdChar(*p)) return 0;
+   return 1;
+}
+
+// The playlists of one reply of FEplaylist_aggregation, from index `count` on. Returns the new count.
+static int parsePlaylistTiles(const char *resp, int respLen, AccountPlaylistInfo *out, int count, int cap)
+{
+   const char *end = resp + respLen;
+   static const char TILE[] = "\"tileRenderer\":{", META[] = "\"tileMetadataRenderer\":{", TITLE[] = "\"title\":{";
+   static const char OVERLAY[] = "\"thumbnailOverlayTimeStatusRenderer\":{";
+   for (const char *at = resp; count < cap && (at = findIn(at, end, TILE)) != NULL; ) {
+      const char *open = at + sizeof TILE - 2, *close = objectEnd(open, end);
+      at = close;
+      if (!findIn(open, close, "\"contentType\":\"TILE_CONTENT_TYPE_PLAYLIST\"")) continue;
+      AccountPlaylistInfo *list = &out[count];
+      memset(list, 0, sizeof *list);
+      if (!jsonString(open, close, "contentId", list->id, sizeof list->id) || !isPlaylistId(list->id)) continue;
+      if (strcmp(list->id, "WL") == 0) continue;   // Watch Later has a page of its own
+      int known = 0;
+      for (int i = 0; i < count; i++) if (strcmp(out[i].id, list->id) == 0) known = 1;
+      if (known) continue;
+      const char *meta = findIn(open, close, META);
+      if (meta) {
+         const char *metaEnd = objectEnd(meta + sizeof META - 2, close);
+         const char *title = findIn(meta, metaEnd, TITLE);
+         if (title) readTextObject(title, objectEnd(title + sizeof TITLE - 2, metaEnd), list->title, sizeof list->title);
+      }
+      const char *overlay = findIn(open, close, OVERLAY);
+      if (overlay) {
+         const char *overlayOpen = overlay + sizeof OVERLAY - 2;
+         readTextObject(overlayOpen, objectEnd(overlayOpen, close), list->count, sizeof list->count);
+      }
+      if (!list->title[0]) strCopy(list->title, sizeof list->title, strcmp(list->id, "LL") == 0 ? "Liked videos" : list->id);
+      count++;
+   }
+   return count;
+}
+
+static int fetchAccountPlaylists(AccountPlaylistInfo *out, int cap)
+{
+   const char *gl = getContentRegionCode();
+   char *body = (char *)malloc(MAX_CONTINUATION + 512), *token = (char *)malloc(MAX_CONTINUATION);
+   if (!body || !token) { free(body); free(token); return -1; }
+   int count = 0, failed = 0;
+   token[0] = 0;
+   for (int page = 0; page < PLAYLIST_PAGES && count < cap; page++) {
+      int bodyLen = token[0] ? snprintf(body, MAX_CONTINUATION + 512, TV_CONTINUATION_BODY_FMT, gl, token)
+                             : snprintf(body, MAX_CONTINUATION + 512, TV_BROWSE_BODY_FMT, gl, "FEplaylist_aggregation");
+      if (bodyLen < 0 || bodyLen >= MAX_CONTINUATION + 512) break;
+      int respLen = 0;
+      char *resp = postAccountRaw(BROWSE_URL, body, bodyLen, "playlists", RESP_CAP, &respLen);
+      if (!resp) { failed = page == 0; break; }
+      count = parsePlaylistTiles(resp, respLen, out, count, cap);
+      token[0] = 0;
+      static const char NEXT[] = "\"nextContinuationData\":{";
+      const char *last = NULL;
+      for (const char *at = resp; (at = findIn(at, resp + respLen, NEXT)) != NULL; at += sizeof NEXT - 1) last = at;
+      if (last) jsonString(last, resp + respLen, "continuation", token, MAX_CONTINUATION);
+      free(resp);
+      if (!token[0]) break;
+   }
+   free(body);
+   free(token);
+   if (failed) return -1;
+   logInfo("[yt] account playlists: %d\n", count);
+   return count;
+}
+
+static int fetchAccountPlaylistVideos(const char *playlistId, const char *continuation, SearchResults *out)
+{
+   memset(out, 0, sizeof *out);
+   if (!continuation && !isPlaylistId(playlistId)) return -1;
+   const char *gl = getContentRegionCode();
+   char body[MAX_CONTINUATION + 512], browseId[ACCOUNT_PLAYLIST_ID_CAP + 2];
+   snprintf(browseId, sizeof browseId, "VL%s", playlistId);
+   int bodyLen = continuation ? snprintf(body, sizeof body, TV_CONTINUATION_BODY_FMT, gl, continuation)
+                              : snprintf(body, sizeof body, TV_BROWSE_BODY_FMT, gl, browseId);
+   if (bodyLen < 0 || bodyLen >= (int)sizeof body) return refuseBody(bodyLen, out);
+   return postAccountBrowse(body, bodyLen, "playlist", continuation != NULL, 0, out);
+}
+
+// ---- changes to the signed-in account ----
+//
+// What the TV app sends for the same buttons: its Watch Later entries are a playlist edit of "WL" (the tiles' own
+// long-press menu carries exactly that playlistEditEndpoint), a subscription is subscription/subscribe with the
+// channel's id. YouTube answers both with "STATUS_SUCCEEDED" when it took them.
+
+#define EDIT_PLAYLIST_URL "https://www.youtube.com/youtubei/v1/browse/edit_playlist?prettyPrint=false"
+#define SUBSCRIBE_URL     "https://www.youtube.com/youtubei/v1/subscription/subscribe?prettyPrint=false"
+#define UNSUBSCRIBE_URL   "https://www.youtube.com/youtubei/v1/subscription/unsubscribe?prettyPrint=false"
+#define ACTION_REPLY_CAP  (256 * 1024)
+
+static int isChannelId(const char *id)
+{
+   if (strncmp(id, "UC", 2) != 0 || strlen(id) != 24) return 0;
+   for (const char *p = id; *p; p++) if (!isIdChar(*p)) return 0;
+   return 1;
+}
+
+static int changeAccountOnYouTube(AccountAction action, const char *id)
+{
+   int isVideo = action == ACCOUNT_ADD_WATCH_LATER || action == ACCOUNT_REMOVE_WATCH_LATER;
+   char videoId[16];
+   if (isVideo ? !extractVideoId(id, videoId, sizeof videoId) : !isChannelId(id)) {
+      logError("[yt] account change refused: not a %s id\n", isVideo ? "video" : "channel");
+      return -1;
+   }
+   const char *gl = getContentRegionCode(), *url, *what;
+   char body[1024];
+   if (action == ACCOUNT_ADD_WATCH_LATER) {
+      url = EDIT_PLAYLIST_URL; what = "Watch Later add";
+      snprintf(body, sizeof body, TV_CONTEXT_FMT ",\"playlistId\":\"WL\",\"actions\":[{\"action\":\"ACTION_ADD_VIDEO\","
+               "\"addedVideoId\":\"%s\"}]}", gl, videoId);
+   } else if (action == ACCOUNT_REMOVE_WATCH_LATER) {
+      url = EDIT_PLAYLIST_URL; what = "Watch Later remove";
+      snprintf(body, sizeof body, TV_CONTEXT_FMT ",\"playlistId\":\"WL\",\"actions\":[{\"action\":"
+               "\"ACTION_REMOVE_VIDEO_BY_VIDEO_ID\",\"removedVideoId\":\"%s\"}]}", gl, videoId);
+   } else {
+      url = action == ACCOUNT_SUBSCRIBE ? SUBSCRIBE_URL : UNSUBSCRIBE_URL;
+      what = action == ACCOUNT_SUBSCRIBE ? "subscribe" : "unsubscribe";
+      snprintf(body, sizeof body, TV_CONTEXT_FMT ",\"channelIds\":[\"%s\"]}", gl, id);
+   }
+
+   char *authorization = (char *)malloc(AUTHORIZATION_CAP);
+   char *resp = (char *)malloc(ACTION_REPLY_CAP);
+   if (!authorization || !resp) { free(authorization); free(resp); return -1; }
+   int rc = -1;
+   for (int attempt = 0; attempt < 2; attempt++) {
+      if (getAccountAuthorization(authorization, AUTHORIZATION_CAP) != 0) {
+         logWarn("[yt] account %s: not signed in, or the sign-in could not be renewed\n", what);
+         break;
+      }
+      HttpHeader headers[6] = {
+         { "Content-Type", "application/json" },
+         { "User-Agent", ACCOUNT_TV_USER_AGENT },
+         { "X-YouTube-Client-Name", "7" },
+         { "X-YouTube-Client-Version", ACCOUNT_TV_CLIENT_VERSION },
+         { "Authorization", authorization },
+         { "Accept-Encoding", "identity" },
+      };
+      int respLen = 0, status = 0;
+      rc = fetchHttp("POST", url, headers, 6, body, (int)strlen(body), resp, ACTION_REPLY_CAP, &respLen, &status);
+      if (rc < 0) { logError("[yt] account %s: no answer (rc=%d)\n", what, rc); break; }
+      if (status == 401 && attempt == 0) { dropAccountAccess(); continue; }
+      int took = status == 200 && findIn(resp, resp + respLen, "STATUS_SUCCEEDED") != NULL;
+      // a subscribe answers with the button's new state rather than a status: 200 without an error is taken
+      if (status == 200 && !took && !isVideo && !findIn(resp, resp + respLen, "\"error\"")) took = 1;
+      logInfo("[yt] account %s: HTTP %d, %s\n", what, status, took ? "done" : "not taken");
+      rc = took ? 0 : -1;
+      break;
+   }
+   memset(authorization, 0, AUTHORIZATION_CAP);
+   free(authorization);
+   free(resp);
+   return rc;
+}
+
+// ---- the Live page ----
+
+#define LIVE_BROWSE_ID     "UC4R8DWoMoI7CAwX8_LjQHig"   // YouTube's own Live destination, what youtube.com/live shows
+#define LIVE_SEARCH_PARAMS "EgJAAQ=="                    // the search filter "Live" (protobuf 12 02 40 01)
+#define LIVE_SESSION_CAP   96                            // a session is 44 characters
+
+typedef enum { LIVE_KIND_BROWSE, LIVE_KIND_SEARCH } LiveKind;
+
+// The chips' sources, in LiveCategory order (keep in sync). Popular, Gaming, Sports and News are shelves of the Live
+// destination - "Live Now", "Live Now - Gaming" and so on; params = "livetab" plus the shelf's number - whose next
+// pages come only with page 1's session echoed back. Podcasts and Music are live searches, which page without one.
+// A shelf whose page 1 has fewer live streams than fallbackBelow is topped up by a live search: Popular, Gaming and
+// Sports only if their shelf ever comes back empty (YouTube can retire a shelf, as it retired FEtrending); News
+// whenever it is thin - it is empty or holds a few streams in many regions - and with the region's own word for
+// news (fallbackQuery NULL, see newsWord).
+static const struct {
+   LiveKind    kind;
+   const char *name;            // for the log
+   const char *idOrQuery;       // the browseId, or the search query
+   const char *params;
+   const char *fallbackQuery;
+   int         fallbackBelow;
+} LIVE_FEEDS[LIVE_COUNT] = {
+   { LIVE_KIND_BROWSE, "popular",  LIVE_BROWSE_ID, "EgdsaXZldGFikgEDCKEK", "live",   1 },   // LIVE_POPULAR: shelf 1313
+   { LIVE_KIND_BROWSE, "gaming",   LIVE_BROWSE_ID, "EgdsaXZldGFikgEDCJ8K", "gaming", 1 },   // LIVE_GAMING: 1311
+   { LIVE_KIND_BROWSE, "sports",   LIVE_BROWSE_ID, "EgdsaXZldGFikgEDCKAK", "sports", 1 },   // LIVE_SPORTS: 1312
+   { LIVE_KIND_SEARCH, "podcasts", "podcast",      LIVE_SEARCH_PARAMS,     NULL,     0 },   // LIVE_PODCASTS
+   { LIVE_KIND_BROWSE, "news",     LIVE_BROWSE_ID, "EgdsaXZldGFikgEDCKUK", NULL,     6 },   // LIVE_NEWS: 1317
+   { LIVE_KIND_SEARCH, "music",    "music",        LIVE_SEARCH_PARAMS,     NULL,     0 },   // LIVE_MUSIC
+};
+
+// The word a viewer in each region would search news with, for the News chip's fallback: an English "news" search
+// finds NBC, CBS and Times Now from anywhere (probed: RU "новости" gave 13 Russian streams of 20, DE "nachrichten"
+// put WELT first). UTF-8, written as escapes so this file stays ASCII; a literal is split where the next letter
+// would read as part of a hex escape. jsonEscape passes the bytes through as they are, which JSON allows. Codes
+// not listed search "news"; a code the region table no longer has never gets here.
+static const struct { const char *codes, *word; } NEWS_WORDS[] = {
+   { "DE AT CH", "nachrichten" },
+   { "FR",       "actualit\xc3\xa9" "s" },                                               // actualités
+   { "IT",       "notizie" },
+   { "ES MX",    "noticias" },
+   { "PT BR",    "not\xc3\xad" "cias" },                                                 // notícias
+   { "NL BE",    "nieuws" },
+   { "PL",       "wiadomo\xc5\x9b" "ci" },                                               // wiadomości
+   { "CZ",       "zpr\xc3\xa1" "vy" },                                                   // zprávy
+   { "TR",       "haber" },
+   { "RU",       "\xd0\xbd\xd0\xbe\xd0\xb2\xd0\xbe\xd1\x81\xd1\x82\xd0\xb8" },           // новости
+   { "UA BG",    "\xd0\xbd\xd0\xbe\xd0\xb2\xd0\xb8\xd0\xbd\xd0\xb8" },                   // новини
+   { "RS",       "\xd0\xb2\xd0\xb5\xd1\x81\xd1\x82\xd0\xb8" },                           // вести
+   { "HR",       "vijesti" },
+   { "GR",       "\xce\xb5\xce\xb9\xce\xb4\xce\xae\xcf\x83\xce\xb5\xce\xb9\xcf\x82" },   // ειδήσεις
+   { "SE NO",    "nyheter" },
+   { "DK",       "nyheder" },
+   { "FI",       "uutiset" },
+   { "HU",       "h\xc3\xad" "rek" },                                                    // hírek
+   { "RO",       "\xc8\x99" "tiri" },                                                    // știri
+   { "JP",       "\xe3\x83\x8b\xe3\x83\xa5\xe3\x83\xbc\xe3\x82\xb9" },                   // ニュース
+   { "KR",       "\xeb\x89\xb4\xec\x8a\xa4" },                                           // 뉴스
+};
+
+static const char *newsWord(const char *gl)
+{
+   for (unsigned i = 0; i < sizeof NEWS_WORDS / sizeof NEWS_WORDS[0]; i++)
+      for (const char *code = NEWS_WORDS[i].codes; code[0] && code[1]; code += code[2] ? 3 : 2)
+         if (code[0] == gl[0] && code[1] == gl[1]) return NEWS_WORDS[i].word;
+   return "news";
+}
+
+// A live next-page token says which kind of request it continues, and the next page goes wherever that says -
+// never guessed from whether a session is present: "b|<session>|<token>" continues a shelf, whose YouTube token is
+// bound to the session of the reply that handed it out (sent back as X-Goog-Visitor-Id), and "s|<token>" continues
+// a live search. '|' occurs in neither a token nor a session. The grid stores and returns it untouched.
+
+// Turns the YouTube token in `token` into a live token in place: a shelf's when session is set, a search's when it
+// is NULL. 0 done; -1, with the token cleared so the list ends here, when it would not fit or cannot be wrapped.
+static int wrapLiveToken(char *token, int cap, const char *session)
+{
+   int tokenLength = (int)strlen(token);
+   int sessionLength = session ? (int)strlen(session) : 0;
+   int prefix = session ? 3 + sessionLength : 2;
+   if (strchr(token, '|') || tokenLength + prefix >= cap) { token[0] = 0; return -1; }
+   memmove(token + prefix, token, tokenLength + 1);   // no 4 KB copy on the 64 KB worker stack
+   token[0] = session ? 'b' : 's';
+   token[1] = '|';
+   if (session) { memcpy(token + 2, session, sessionLength); token[2 + sessionLength] = '|'; }
+   return 0;
+}
+
+// The YouTube token inside a live token, with *browse set and - for a shelf - its session copied into session.
+// NULL for anything that is not a well-formed live token, including a session that would not pass as a header.
+static const char *splitLiveToken(const char *continuation, int *browse, char *session, int cap)
+{
+   session[0] = 0;
+   if (continuation[0] == 's' && continuation[1] == '|') {
+      *browse = 0;
+      return continuation[2] ? continuation + 2 : NULL;
+   }
+   if (continuation[0] != 'b' || continuation[1] != '|') return NULL;
+   const char *start = continuation + 2, *bar = strchr(start, '|');
+   int length = bar ? (int)(bar - start) : 0;
+   if (length <= 0 || length >= cap || !bar[1]) return NULL;
+   memcpy(session, start, length);
+   session[length] = 0;
+   if (!isSessionToken(session)) { session[0] = 0; return NULL; }
+   *browse = 1;
+   return bar + 1;
+}
+
+// Live streams only, from index `from` on: drops the stream that ended seconds before the shelf was built (it comes
+// back as a video with a duration) and anything upcoming. Compacts in place; returns how many are left from `from`.
+static int keepLiveOnly(SearchResults *out, int from)
+{
+   int kept = from;
+   for (int i = from; i < out->count; i++) {
+      if (!out->items[i].isLive) continue;
+      if (kept != i) out->items[kept] = out->items[i];
+      kept++;
+   }
+   out->count = kept;
+   return kept - from;
+}
+
+static int fetchLive(LiveCategory category, const char *continuation, SearchResults *out, int (*stopped)(void))
+{
+   if (category < 0 || category >= LIVE_COUNT) { memset(out, 0, sizeof *out); return -1; }
+   const char *gl = getContentRegionCode();   // read once: every request of this call uses this one value
+   const char *name = LIVE_FEEDS[category].name;
+   char body[MAX_CONTINUATION + 512];
+   char sent[LIVE_SESSION_CAP] = "", reply[LIVE_SESSION_CAP] = "";
+   char escaped[256];
+   int browse = LIVE_FEEDS[category].kind == LIVE_KIND_BROWSE;
+   int bodyLen;
+   WebRequest request = { NULL, NULL, NULL, 0, 0 };
+
+   if (!continuation) {
+      jsonEscape(LIVE_FEEDS[category].idOrQuery, escaped, sizeof escaped);
+      if (browse) bodyLen = snprintf(body, sizeof body, TRENDING_BODY_FMT, gl, escaped, LIVE_FEEDS[category].params);
+      else        bodyLen = snprintf(body, sizeof body, SEARCH_BODY_FMT, gl, escaped, LIVE_FEEDS[category].params);
+      request.pageOneGl = gl;
+   } else {
+      const char *token = splitLiveToken(continuation, &browse, sent, sizeof sent);
+      if (!token) {   // not ours: end the list quietly rather than send YouTube something it cannot answer
+         logError("[yt] live %s: not a live next-page token, the list ends here\n", name);
+         memset(out, 0, sizeof *out);
+         return 0;
+      }
+      bodyLen = snprintf(body, sizeof body, CONTINUATION_BODY_FMT, gl, token);
+      if (browse) request.visitorId = sent;
+   }
+   if (bodyLen < 0 || bodyLen >= (int)sizeof body) return refuseBody(bodyLen, out);
+   if (browse) { request.replyVisitor = reply; request.replyVisitorCap = sizeof reply; }
+
+   int rc = postAndParseWith(browse ? BROWSE_URL : SEARCH_URL, body, bodyLen, &request, out);
+   int fallbackBelow = continuation ? 0 : LIVE_FEEDS[category].fallbackBelow;
+   // a shelf YouTube has retired may answer with an HTTP error instead of an empty page (FEtrending now says 400):
+   // a page 1 that has a fallback goes on to it; a lost connection (rc above -100) fails as every list does
+   if (rc < 0 && (fallbackBelow == 0 || rc > -100)) {
+      logError("[yt] live %s gl=%s %s failed rc=%d\n", name, gl, continuation ? "next page" : "page 1", rc);
+      return rc;
+   }
+   char note[128] = "";   // what else happened, for the log line
+   if (rc < 0) snprintf(note, sizeof note, ", the shelf answered HTTP %d", -rc);
+   int parsed = out->count;
+   int live = keepLiveOnly(out, 0);   // the shelf's own count, logged as such
+   int tokenIsBrowse = browse;
+
+   if (live < fallbackBelow) {
+      const char *word = LIVE_FEEDS[category].fallbackQuery ? LIVE_FEEDS[category].fallbackQuery : newsWord(gl);
+      int noted = (int)strlen(note);
+      if (stopped && stopped()) {   // the page was switched away from: its result is thrown away anyway
+         snprintf(note + noted, sizeof note - noted, ", stopped before the fallback search");
+      } else {
+         jsonEscape(word, escaped, sizeof escaped);
+         bodyLen = snprintf(body, sizeof body, SEARCH_BODY_FMT, gl, escaped, LIVE_SEARCH_PARAMS);
+         WebRequest fallback = { gl, NULL, NULL, 0, 1 };
+         int before = out->count;
+         int fallbackRc = (bodyLen >= 0 && bodyLen < (int)sizeof body) ? postAndParseWith(SEARCH_URL, body, bodyLen, &fallback, out) : -1;
+         if (fallbackRc == 0) {
+            // the shelf's own streams first, the search's after them; the list pages on with the search's token
+            int added = keepLiveOnly(out, before);
+            snprintf(note + noted, sizeof note - noted, ", fallback search \"%s\": +%d live", word, added);
+            tokenIsBrowse = 0;
+            rc = 0;
+         } else {   // out is as the shelf left it, its own next-page token included
+            snprintf(note + noted, sizeof note - noted, ", fallback search \"%s\" failed rc=%d", word, fallbackRc);
+         }
+      }
+      if (rc < 0) {   // neither the shelf nor its fallback answered
+         logError("[yt] live %s gl=%s page 1 failed%s\n", name, gl, note);
+         return rc;
+      }
+   }
+
+   // every reply brings a new session, and the next page wants this one; a reply without one leaves the one sent
+   // in force. A shelf token with no session would only fetch an empty page, so the list ends instead (echo=0).
+   const char *session = reply[0] ? reply : sent;
+   if (tokenIsBrowse && !session[0]) out->continuation[0] = 0;
+   int tooLong = out->continuation[0] && wrapLiveToken(out->continuation, sizeof out->continuation, tokenIsBrowse ? session : NULL) != 0;
+   logInfo("[yt] live %s gl=%s %s: parsed %d, live %d%s, next=%d%s%s\n", name, gl, continuation ? "next page" : "page 1",
+           parsed, live, note, out->continuation[0] ? 1 : 0,
+           tokenIsBrowse ? (session[0] ? ", echo=1" : ", echo=0") : "", tooLong ? ", token too long - the list ends" : "");
+   return 0;
+}
+
+const Extractor youtubeExtractor = { "youtube", matches, extract, search, fetchTrending, getChannel, fetchLive,
+                                     fetchAccountFeed, changeAccountOnYouTube, fetchAccountPlaylists,
+                                     fetchAccountPlaylistVideos };

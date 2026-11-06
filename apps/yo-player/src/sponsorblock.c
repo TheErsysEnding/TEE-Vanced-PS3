@@ -18,25 +18,43 @@
 
 #define SB_RESP_CAP  (64 * 1024)   // ample: a video rarely has more than a few dozen short segments
 
-// api category name <-> enum, human label, and the canonical SponsorBlock colour (ARGB, opaque).
+// api category name <-> enum, human label, and the category's colour (ARGB, opaque).
 static const char *CATEGORY_API_NAMES[SPONSOR_CATEGORY_COUNT] = {
    "sponsor", "selfpromo", "interaction", "intro", "outro", "music_offtopic", "filler"
 };
+// The long names (the Ember settings design, close to SponsorBlock's own wording), used everywhere a
+// category is named: the settings rows, the "Skip ..." offer and the "Skipped ..." toast. The short forms
+// ("Interaction", "Outro") did not say what actually gets skipped.
 static const char *CATEGORY_LABELS[SPONSOR_CATEGORY_COUNT] = {
-   "Sponsor", "Self-promo", "Interaction", "Intro", "Outro", "Off-topic music", "Filler"
+   "Sponsor", "Self-promotion", "Interaction reminder", "Intro", "Outro and end cards", "Off-topic music",
+   "Filler and tangents"
 };
+// The Ember design's category colours (UEBERGABE 3.1). These are the one set of colours that does not come
+// from the theme - they identify a category wherever it appears (timeline, settings, legend), so a theme
+// must not be able to make two of them look alike.
 static const unsigned CATEGORY_COLORS[SPONSOR_CATEGORY_COUNT] = {
-   0xFF00D400,   // sponsor        - green
-   0xFFFFFF00,   // selfpromo      - yellow
-   0xFFCC00FF,   // interaction    - magenta
-   0xFF00FFFF,   // intro          - cyan
-   0xFF0202ED,   // outro          - blue
-   0xFFFF9900,   // music_offtopic - orange
-   0xFF7300FF,   // filler         - purple
+   0xFF2BD45A,   // sponsor        - green
+   0xFFF5D90A,   // selfpromo      - yellow
+   0xFFC266FF,   // interaction    - violet
+   0xFF22D3EE,   // intro          - cyan
+   0xFF5B6BFF,   // outro          - blue
+   // pink: SponsorBlock's orange (#FF9900) all but vanished against the TEE-orange played part of the
+   // seek bar, which is exactly where these spans are drawn
+   0xFFF25DB0,   // music_offtopic - pink
+   0xFF9B6BFF,   // filler         - purple
 };
 
-unsigned    getSponsorCategoryColor(SponsorCategory category) { return CATEGORY_COLORS[category]; }
-const char *getSponsorCategoryName(SponsorCategory category)  { return CATEGORY_LABELS[category]; }
+// out-of-range categories never come from the parser (readCategory only returns known ones), but the
+// tables are indexed directly, so a bad value gets a transparent colour and a generic name, not a wild read.
+unsigned getSponsorCategoryColor(SponsorCategory category)
+{
+   return ((int)category >= 0 && category < SPONSOR_CATEGORY_COUNT) ? CATEGORY_COLORS[category] : 0u;
+}
+
+const char *getSponsorCategoryName(SponsorCategory category)
+{
+   return ((int)category >= 0 && category < SPONSOR_CATEGORY_COUNT) ? CATEGORY_LABELS[category] : "Segment";
+}
 
 // the category enum for a "category":"..." within [from,end), or -1 if it's one we don't handle.
 static int readCategory(const char *from, const char *end)

@@ -102,7 +102,8 @@ def make_icon():
     tracked_text(d, (111, 110), "VANCED", vanced, CREAM, 3.2)
 
     small = font(MEDIUM, 13)
-    d.text((112, 140), "PS3   ·   V0.5 BETA", font=small, fill=MUTED)
+    # no version on the tile: it went stale with every release (the XMB title carries it instead)
+    d.text((112, 140), "PS3", font=small, fill=MUTED)
 
     d.rounded_rectangle((0, 0, W - 1, H - 1), radius=4, outline=(60, 46, 28), width=1)
     path = OUT / "ICON0.PNG"

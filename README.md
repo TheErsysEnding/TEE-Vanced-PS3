@@ -5,18 +5,31 @@ hardware. A fork of **[mohasi's Yo! Player](https://github.com/mohasi/ps3-dev)**
 (Apache-2.0) — see [NOTICE](NOTICE); the application, its decoder and its
 libraries are his work.
 
-**Status: v0.13 beta.** Every version here has been installed and used on a real
+**Status: v1.0.** Every version here has been installed and used on a real
 console before being called done. See [CHANGELOG.md](CHANGELOG.md).
 
 ---
 
 ## What this fork adds
 
-**A left icon rail.** Search, Trending, Subscriptions, Continue watching,
-Playlists, Watch Later, History and Settings, all on screen as icons instead of
-behind shoulder buttons you have to remember. LEFT or O opens it, X or RIGHT
-picks. The icons come from the icon font already compiled into the upstream
+**A left icon rail.** Search, For you, Trending, Live, Subscriptions, Continue
+watching, Playlists, Watch Later, History, Login and Settings, all on screen as
+icons instead of behind shoulder buttons you have to remember. LEFT or O opens it, X picks,
+O or RIGHT close it again. The icons come from the icon font already compiled into the upstream
 library — nothing extra is shipped.
+
+**Your YouTube account, optionally.** Login, at the foot of the rail, shows a
+code; type it at google.com/device on your phone and the app brings your
+subscriptions, Watch Later, history, playlists and recommendations - on the
+Account page and in the rail's own entries - and Subscribe buttons and Square
+change your account. It signs in the way YouTube's own TV app
+does - the password stays on Google's page - and keeps the sign-in as plain text
+in `account.txt`, so keep the console's FTP to yourself. Playback never needs
+the account.
+
+**Live, and a region.** A page of streams that are on air now - Popular,
+Gaming, Sports, Podcasts, News and Music - and a choice of 33 countries for
+Trending, Live and the other lists.
 
 **A settings screen.** Upstream has none: the options exist but the only way to
 reach them is editing `settings.txt` over FTP. Autoplay and all seven
@@ -53,11 +66,12 @@ a language nobody asked for. It now plays the original. When a video has
 several tracks, the player says so as it starts, and Square steps through them
 from where you are.
 
-**Its own look.** Orange on warm black, matching the icon.
+**Its own look, "Ember".** A warm dark ground in TEE orange, matching the icon,
+the Manrope typeface, and a focus that can be seen from the sofa.
 
-**Your own playlists.** Not YouTube's — there are none to read without a signed-in
-account — but local lists that nobody else can change. L3 files the selected
-video; the sidebar opens them.
+**Your own playlists.** Local lists that nobody else can change - and, signed
+in, your YouTube playlists above them. L3 files the selected video into a local
+list; the sidebar opens them.
 
 Not shipped yet: search filters (date, duration, HD).
 
@@ -92,7 +106,7 @@ The package lands in `pkg/out/`, named after `APP_VERSION` in
 python3 genbuild.py                 # generate build-ps3.bat from the .vcxproj files
 ./tools/sync-work.sh                # mirror sources onto the build machine
 ssh <vm> "cd /d C:\ps3-dev && build-ps3.bat"
-./build-pkg-fromsource.sh TEE-Vanced-PS3-v0.13-beta "TEE Vanced PS3 V0.13 Beta"
+./build-pkg-fromsource.sh TEE-Vanced-PS3-v1.0 "TEE Vanced PS3 V1.0"
 ```
 
 Upstream is pinned (`UPSTREAM_REV` in `tools/build-env.sh`). mohasi's tree has
@@ -117,7 +131,7 @@ not contain the change. `build.sh` now checks this itself: it fetches the ELF to
 and that run's build stamp. By hand, on the build machine:
 
 ```sh
-ppu-lv2-strings yo-player.ppu.elf | grep "V0.13 Beta"
+ppu-lv2-strings yo-player.ppu.elf | grep "V1.0"
 ```
 
 ---
@@ -127,8 +141,8 @@ ppu-lv2-strings yo-player.ppu.elf | grep "V0.13 Beta"
 Install the `.pkg` from the console's package manager. It writes its data to a
 directory it picks at runtime — `/dev_hdd0/yo-player` cannot be created on every
 console, so it falls back through a list and logs which one it chose to
-`/dev_hdd0/dbg.txt`. Your subscriptions, history and settings live there and
-survive uninstalling the app.
+`/dev_hdd0/tmp/TEE_Vanced/dbg.txt`. Your subscriptions, history and settings
+live there and survive uninstalling the app.
 
 A VPN on the console makes YouTube answer `LOGIN_REQUIRED`. Turn it off.
 
@@ -145,7 +159,8 @@ anything else.
 
 If it survives a power cycle, check the console's date and time as well: the
 certificate check uses the console's own clock, so a wrong date makes every
-secure connection fail at once. `/dev_hdd0/dbg.txt` names the reason.
+secure connection fail at once. `/dev_hdd0/tmp/TEE_Vanced/dbg.txt` names the
+reason.
 
 ---
 

@@ -1,5 +1,7 @@
 #pragma once
 
+#include "qr-draw.h"
+
 // qr-linktree - the channel's link as a QR code, baked in as a bit matrix.
 //
 // A URL on a television is useless: nobody types one with a controller. A QR code is scanned with the phone
@@ -26,7 +28,7 @@
 //   PY
 
 #define QR_URL       "linktr.ee/theersysending"   // what is printed under the code, without the scheme
-#define QR_QUIET     4                            // quiet-zone modules the spec requires on every side
+#define QR_QUIET     QR_QUIET_MODULES             // quiet-zone modules the spec requires on every side
 #define QR_SIZE      29
 
 // one bit per module, bit x = column x, LSB = leftmost. Set bit = dark module.
@@ -41,28 +43,6 @@ static const unsigned int QR_ROWS[QR_SIZE] = {
    0x054E1C7Fu,
 };
 
-// Draws the code at (x, y) with `scale` pixels per module, quiet zone included - so the drawn size is
-// (QR_SIZE + 2 * QR_QUIET) * scale on both sides. A scanner needs real contrast, so this paints its own
-// white ground and black modules whatever the theme is doing.
-//
-// Horizontal runs are merged into one rectangle each: this matrix has 439 dark modules that collapse into
-// 218 runs, so the box costs 219 rectangles a frame instead of 440, for pixel-identical output. Worth
-// keeping honest - the renderer silently drops draw calls once a frame's batch fills (gfx.c, MAX_QUADS).
-static inline void drawQrCode(int x, int y, int scale)
-{
-   int span = (QR_SIZE + 2 * QR_QUIET) * scale;
-   fillGfxRectangle(x, y, span, span, 0xFFFFFFFF);
-
-   int originX = x + QR_QUIET * scale, originY = y + QR_QUIET * scale;
-   for (int row = 0; row < QR_SIZE; row++) {
-      unsigned int bits = QR_ROWS[row];
-      int col = 0;
-      while (col < QR_SIZE) {
-         if (!(bits & (1u << col))) { col++; continue; }
-         int run = 0;
-         while (col + run < QR_SIZE && (bits & (1u << (col + run)))) run++;
-         fillGfxRectangle(originX + col * scale, originY + row * scale, run * scale, scale, 0xFF000000);
-         col += run;
-      }
-   }
-}
+// Draws the code at (x, y) with `scale` pixels per module, quiet zone included: (QR_SIZE + 2 * QR_QUIET) * scale on
+// both sides (qr-draw.h).
+static inline void drawQrCode(int x, int y, int scale) { drawQrMatrix(QR_ROWS, QR_SIZE, x, y, scale); }

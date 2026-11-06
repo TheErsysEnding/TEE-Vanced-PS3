@@ -11,10 +11,22 @@
 // turn pages, and stepping off the top or bottom edge turns one too. A screen draws the position from
 // gridPageIndex / gridPageCount.
 //
-// Two presentations of the same data (setGridView):
-//   GRID_VIEW_GRID - GRID_COLS thumbnails per row, title underneath. Dense; the original look.
-//   GRID_VIEW_LIST - one result per row (thumbnail left, title + meta beside it) down the left of the screen
-//                    with a large preview of the selection on the right, the way a desktop browser lists them.
+// Two presentations of the same data (setGridView), both in the Ember look:
+//   GRID_VIEW_GRID - the list pages' cards (Bild 4): GRID_COLS thumbnails per row with rounded corners, a
+//                    title of up to two lines and a meta line under each; the focused card grows to 104 %
+//                    with a glow and a ring, its title in 800. As many whole rows as fit the rectangle make a
+//                    page.
+//   GRID_VIEW_LIST - the search results' rows (Bild 5): exactly LIST_ROWS rows a page, each a thumbnail with
+//                    the title and "channel . views . age" beside it; the focused row lies on a surface1
+//                    plate with a ring and a glow. Row i of the page is the box (x, y + i*step, width, step -
+//                    20) with step = height / 3, so the rows fill the rectangle passed to initVideoGrid.
+//
+// Either view is drawn on activeTheme->appBg (the corner masks are that colour), and the selection's glow
+// reaches 81 px past its card or row - a screen draws its header AFTER the grid. Every label takes its own
+// font from ui-fonts.h: titles and meta lines are text from YouTube, so each is drawn raw, without what no
+// font can draw (uiCleanText: emoji and the like), in Manrope when Manrope has every character left and in
+// FONT_POP when not. A title that would still come out mostly blank - one in Thai or Arabic, scripts no font
+// of the console has (uiTextIsLegible) - shows its channel name in its place.
 
 #include "extractor.h"          // SearchResults / SearchResult
 #include "font.h"               // Font
@@ -24,6 +36,7 @@
 #include <stdint.h>
 
 #define GRID_COLS     4         // columns in GRID_VIEW_GRID (list view is always 1)
+#define LIST_ROWS     3         // rows on a page of GRID_VIEW_LIST
 #define GRID_THREADS  4         // parallel thumbnail fetch threads
 
 typedef enum { GRID_RUNNING, GRID_READY, GRID_EMPTY } GridStage;
@@ -47,25 +60,32 @@ typedef struct {
 } GridThumb;
 
 typedef struct {
-   Font            *font;
+   Font            *font;                                  // as passed to initVideoGrid; not drawn with any
+                                                           // more (see above) - kept so callers still compile
    int              x, y, width, height;                   // grid rectangle on screen
    GridView         view;
    int              cols;                                  // 1 in list view, GRID_COLS in grid view
-   int              tileW, thumbH, rowStep, visibleRows;   // derived geometry (tileW = thumbnail width)
-   int              textX, textW;                          // per-row title/meta column, relative to a row's left
-   int              previewX, previewW;                    // list view: the preview pane (0 wide in grid view)
+   int              tileW, thumbH, rowH, rowStep, visibleRows;  // derived geometry: thumbnail size, a card's or a
+                                                                //   row's height, the step from one row to the next
+   int              textX, textW;                          // title/meta column, relative to a card's or row's left
 
    SearchResults    results;
    GridThumb        thumbs[MAX_SEARCH_RESULTS];
-   Label            rows[MAX_SEARCH_RESULTS];              // per-tile title
-   Label            metas[MAX_SEARCH_RESULTS];             // per-tile "author - views - age"
+   Label            titles[MAX_SEARCH_RESULTS];            // per-tile title, its first line (white: tinted when drawn)
+   Label            titles2[MAX_SEARCH_RESULTS];           // the second line, when the title needs one (white)
+   Label            channels[MAX_SEARCH_RESULTS];          // list view: the channel, ahead of the rest of the meta
+   Label            metas[MAX_SEARCH_RESULTS];             // "author . views . age" (list view: ". views . age")
    Label            durations[MAX_SEARCH_RESULTS];         // per-tile duration / LIVE badge
    Label            watchLaterBadge;                       // shared "Watch Later" tag drawn on queued tiles
-   Label            previewTitle, previewMeta;             // list view: the selection, shown large on the right
-   int              previewFor;                            // result index the preview labels hold (-1 = none)
+   Label            watchedBadge;                          // shared "WATCHED" badge on finished videos
+   Label            focusTitle, focusTitle2;               // grid view: the focused card's title in 800 (white)
+   int              focusTitleIndex;                       // the result they hold (-1 = none yet)
+   unsigned char    labelled[MAX_SEARCH_RESULTS];          // the tile's labels are rasterised (it is in the window)
 
    int              page;                                  // results are shown a page at a time, never scrolled
    int              selected, scrollRow, winStart, winEnd;  // scrollRow is derived: page * visibleRows
+   int              focusIndex, focusFrom;                 // the selection the focus look has reached, the one
+   uint64_t         focusSinceUs;                          //   it left (-1 = none) and when it changed
    ButtonRepeat     horizontalRepeat, verticalRepeat, pageRepeat;
 
    // background worker + thumbnail fetch cursor
@@ -85,11 +105,16 @@ typedef struct {
    int              (*isWatchLater)(const char *videoId);  // watch-later badge predicate (NULL = no badge)
    int              (*watchedPosition)(const char *videoId);   // seconds watched, for the progress line (NULL = none)
    int              inputSuppressed;                           // pad ignored, but the grid keeps working
+   int              focusHidden;                               // the selection drawn like any other item
 } VideoGrid;
 
+// font is no longer used for drawing (see the header comment); pass uiGetFont(...) or NULL.
 void initVideoGrid(VideoGrid *grid, Font *font, int x, int y, int width, int height);
 void termVideoGrid(VideoGrid *grid);
 
+// A tile counts as watched - dimmed, with the WATCHED badge - when isWatched says so and it shows no progress
+// line: a video you stopped half way is "started" (Bild 4), with its progress line and its picture at full
+// strength. A live tile (isLive) is never watched, whatever isWatched says: a stream cannot be finished.
 void setGridWatchedPredicate(VideoGrid *grid, int (*isWatched)(const char *videoId));
 void setGridWatchLaterPredicate(VideoGrid *grid, int (*isWatchLater)(const char *videoId));
 
@@ -104,6 +129,18 @@ void setGridProgressSource(VideoGrid *grid, int (*watchedPosition)(const char *v
 // timers, or a direction still held from the overlay would fire the moment focus came back.
 void setGridInputSuppressed(VideoGrid *grid, int suppressed);
 
+// While something else on the screen has the focus (Search's field), the selection is drawn like any other item -
+// no plate, ring or glow - so only one thing on screen looks focused. The selection itself is kept for when the
+// focus comes back.
+void setGridFocusHidden(VideoGrid *grid, int hidden);
+
+// Stamps the three auto-repeat timers with "now", so a direction that is already held when this is called
+// waits the normal hold delay before it moves anything, while a fresh press still acts at once. For a screen
+// coming back to the front (its resume): a button held through the screen that just closed - the player's
+// UP/DOWN volume, say - would otherwise read as long overdue and drive the list on the very first frame.
+// setGridInputSuppressed does the same when input comes back.
+void resetGridRepeat(VideoGrid *grid);
+
 // switch presentation, keeping the results, the thumbnails already fetched and the selection. Re-lays out the
 // labels for the new column width, so it is not free - drive it from a button, not per frame.
 void setGridView(VideoGrid *grid, GridView view);
@@ -115,7 +152,10 @@ void setGridSource(VideoGrid *grid, GridFetchFn fetch, void *user);
 // restore already-known results instantly (grid then only re-fetches thumbnails); fetch/user drive paging.
 void setGridCached(VideoGrid *grid, const SearchResults *cached, GridFetchFn fetch, void *user);
 
-void updateVideoGrid(VideoGrid *grid);   // nav + scroll + window + decode + infinite scroll; call each frame
+// nav + scroll + window + decode + infinite scroll; call each frame. In grid view LEFT and RIGHT keep to the
+// selection's row: LEFT stops at the leftmost column - LEFT there is the rail's (home.c) - instead of wrapping
+// to the end of the row above, and RIGHT stops at the rightmost one, so a LEFT always takes a RIGHT back.
+void updateVideoGrid(VideoGrid *grid);
 void drawVideoGrid(VideoGrid *grid);
 void stopVideoGrid(VideoGrid *grid);     // block until the worker stops (before playback / teardown)
 

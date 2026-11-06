@@ -1,9 +1,19 @@
 // search-input screen - the app's own search field plus the search history (see search-input.h).
+//
+// The page is the top of Bild 5 (Ember): the search field across the top and, under "Recent searches", the
+// history - as rows, one query each, not as Bild 5's chips: the history is walked with UP/DOWN, and a row of
+// chips would make DOWN mean "the next one to the right". The collapsed rail sits at the left edge, drawn
+// passive: this screen is pushed and Circle is Back here, so the rail only says where you are.
 
 #include "screens/search-input.h"
 #include "storage.h"
-#include "ui/button-hints.h"
+#include "sidebar.h"            // the rail: collapsed, or open over the screen while it has the focus
+#include "screens/home.h"       // updateRailOverScreen: LEFT opens the rail here as on Home
+#include "ui-hints.h"           // the Ember hint row
+#include "ui-draw.h"            // safe area, rounded fills, focus glow and ring, uiDrawLabelAt
+#include "ui-fonts.h"           // the shared fonts, the type scale, label helpers and text placement
 #include "ui/console-glyphs.h"
+#include "ui/icon-font.h"       // the field's magnifier, the rows' clock
 
 #include "gfx.h"
 #include "theme.h"
@@ -16,27 +26,47 @@
 #include "string-utilities.h"   // strCopy
 #include <string.h>
 #include <stdio.h>
+#include <sys/sys_time.h>       // sys_time_get_system_time: the move timer, restarted as the rail closes
 
-#define MARGIN_X      50
-#define HEADER_Y      26
-#define TITLE_SIZE    26
-#define FIELD_Y       84
-#define FIELD_H       62
-#define FIELD_TEXT    28
-#define FIELD_PAD     18
-#define RECENT_Y      170
-#define RECENT_TEXT   21
-#define LIST_TOP      206
-#define ROW_H         46
-#define ROW_TEXT      24
-#define ROW_PAD       12
-#define HINTS_BOTTOM  42
-#define HINT_GLYPH_H  25
-#define HINT_TEXT     21
-#define LIST_BOTTOM_GAP 24      // clearance kept between the last row and the hint row
+// Content runs from beside the collapsed rail (112 px wide) to the safe area's right edge - x 176..1824,
+// the column every Ember page uses. The field and the rows span all of it, so their right ends line up with
+// the results screen's (search.c).
+#define CONTENT_X       SIDEBAR_CONTENT_X
+#define CONTENT_RIGHT   UI_SAFE_RIGHT
+#define CONTENT_W       (CONTENT_RIGHT - CONTENT_X)
+// The field as Bild 5 draws it: 88 tall at the top of the page, radius 26 (the radius the row ring,
+// UI_RING_ROW, is made for) with a 2-px inner border; the magnifier's 34-px box 30 in from the left and the
+// text 88 in (30 + 34 + 22 + the input's 2). The rows below take the same two columns, so every icon sits
+// under the magnifier and every query under the field's text.
+#define FIELD_Y         58
+#define FIELD_H         88
+#define FIELD_RADIUS    26
+#define FIELD_BORDER    2       // its inner border: hairline over the field colour
+#define FIELD_PAD       30
+#define ICON_BOX        34
+#define FIELD_ICON_SIZE 28      // the icon font's magnifier at 28 px is about 28 px of ink, as drawn in Bild 5
+#define TEXT_X          (CONTENT_X + 88)
+#define TEXT_W          (CONTENT_RIGHT - FIELD_PAD - TEXT_X)
+#define FIELD_TEXT      34
+#define FIELD_WEIGHT    UI_WEIGHT_BOLD
+#define PLACEHOLDER_GAP 10      // "Press" - the cross - "to type"
+#define RECENT_BASELINE 201     // capitals centred on the band where the results screen has its sort segment
+                                // (y 166..221), Bild 5's row of "Recent" and the segment
+#define RECENT_TEXT     20      // "Recent" in Bild 5: 20/700 in text-3
+#define LIST_TOP        230
+#define ROW_PLATE_H     60
+#define ROW_GAP         16      // between two plates; a focused row's ring takes 9 of it
+#define ROW_H           (ROW_PLATE_H + ROW_GAP)
+#define ROW_RADIUS      14      // the radius the thumbnail ring (UI_RING_THUMB) is made for
+#define ROW_ICON_SIZE   24      // the clock Bild 5's recent chips carry, a little larger on a 60-px row
+#define ROW_TEXT        24
+#define ROW_WEIGHT      UI_WEIGHT_BOLD
+#define LIST_BOTTOM     (UI_HINTS_BOTTOM_Y - 18)   // the last plate ends here: its ring 9 px lower, then the hints
 
 // row 0 is the field itself; 1..historyCount are the remembered queries
 #define ROW_FIELD 0
+#define CROSS_HINT  0   // X's slot in the hint row (see initSearchInput): retitled per focused row
+#define SQUARE_HINT 2   // Square's slot: shown only on a remembered query, the one kind of row it deletes
 
 static struct {
    char  query[SEARCH_QUERY_LEN];
@@ -51,23 +81,27 @@ static struct {
 static SearchInputDone doneCallback;
 static char            pendingInitial[SEARCH_QUERY_LEN];
 
-static Font        font;
-static Label       titleLabel, fieldLabel, recentLabel, emptyLabel;
-static Label       rowLabels[MAX_SEARCH_HISTORY];
-static ButtonHints hints;
+static Label        fieldLabel, pressLabel, toTypeLabel, idleLabel, recentLabel, emptyLabel;
+static Label        rowLabels[MAX_SEARCH_HISTORY];
+static Icon         fieldIcon, rowIcon;
+static UiHints      hints;
 static ButtonRepeat navigateRepeat;
 
 static void reloadHistory(void)
 {
    state.historyCount = getSearchHistory(state.history, MAX_SEARCH_HISTORY);
-   for (int i = 0; i < state.historyCount; i++) setLabelText(&rowLabels[i], state.history[i]);
+   // queries are typed text: drawn raw, and in FONT_POP when Manrope lacks one of their characters
+   for (int i = 0; i < state.historyCount; i++) uiSetTextLabel(&rowLabels[i], ROW_WEIGHT, state.history[i]);
    if (state.selected > state.historyCount) state.selected = state.historyCount;
 }
 
+// An empty field shows a placeholder instead, dimmed so it cannot be mistaken for a query: "Press X to type"
+// with the console's own cross while the field has the focus (drawPlaceholder), "Search YouTube" while a
+// remembered query has it - X then searches that query, so the field must not promise typing.
 static void setFieldText(const char *text)
 {
    strCopy(state.query, sizeof state.query, text ? text : "");
-   setLabelText(&fieldLabel, state.query[0] ? state.query : "Press X to type");
+   uiSetTextLabel(&fieldLabel, FIELD_WEIGHT, state.query);
 }
 
 // hand the query back to whoever opened the screen. The screen is gone by the time the callback runs, so
@@ -90,6 +124,18 @@ static void onTyped(const char *text)
    confirm(text);
 }
 
+// X types on the field and searches a remembered query straight away, so its caption follows the focused
+// row; a fixed "Search" stood under a field where X opens the keyboard. Square deletes a remembered query
+// and does nothing on the field, so its hint is there only while a query has the focus - "Delete" under
+// the field promised an action that row does not have. Renders only when the row changes from the field to
+// a query or back.
+static void updateRowHints(void)
+{
+   int onQuery = state.selected != ROW_FIELD;
+   uiSetHintCaption(&hints, CROSS_HINT, onQuery ? "Search" : "Type");
+   uiSetHintShown(&hints, SQUARE_HINT, onQuery);
+}
+
 static void keepSelectionVisible(void)
 {
    if (state.selected == ROW_FIELD) { state.scroll = 0; return; }
@@ -106,32 +152,48 @@ static void initSearchInput(void)
    state.selected = ROW_FIELD;
    state.scroll = 0;
 
-   int listHeight = state.screenH - HINTS_BOTTOM - LIST_BOTTOM_GAP - LIST_TOP;
-   state.visibleRows = listHeight / ROW_H;
+   // as many whole plates as fit above LIST_BOTTOM: the last one needs no gap under it
+   state.visibleRows = (LIST_BOTTOM - LIST_TOP + ROW_GAP) / ROW_H;
    if (state.visibleRows < 1) state.visibleRows = 1;
 
-   font = openSystemFont(FONT_POP);
-   int textWidth = state.screenW - 2 * MARGIN_X;
-   initLabel(&titleLabel,  &font, MARGIN_X, HEADER_Y, textWidth, AUTO, TITLE_SIZE, activeTheme->textPrimary,   TEXT_NOWRAP_ELLIPSIS, "Search");
-   initLabel(&fieldLabel,  &font, 0, 0, textWidth - 2 * FIELD_PAD, AUTO, FIELD_TEXT, activeTheme->textPrimary, TEXT_NOWRAP_ELLIPSIS, "");
-   initLabel(&recentLabel, &font, MARGIN_X, RECENT_Y, textWidth, AUTO, RECENT_TEXT, activeTheme->textSecondary, TEXT_NOWRAP, "Recent searches");
-   initLabel(&emptyLabel,  &font, MARGIN_X, LIST_TOP, textWidth, AUTO, ROW_TEXT, activeTheme->textSecondary, TEXT_NOWRAP, "Nothing yet - your searches will be listed here");
+   // The fonts are the shared ones (ui-fonts.h) - nothing here opens or closes one. Labels are positioned
+   // when they are drawn, by their measured capitals: a query may come out in FONT_POP, which sits at another
+   // height in its texture than Manrope.
+   uiInitTextLabel(&fieldLabel,  FIELD_WEIGHT, 0, 0, TEXT_W, FIELD_TEXT, activeTheme->textPrimary, TEXT_NOWRAP_ELLIPSIS, "");
+   uiInitLabel(&pressLabel,      FIELD_WEIGHT, 0, 0, AUTO, FIELD_TEXT, activeTheme->textTertiary, TEXT_NOWRAP, "Press");
+   uiInitLabel(&toTypeLabel,     FIELD_WEIGHT, 0, 0, AUTO, FIELD_TEXT, activeTheme->textTertiary, TEXT_NOWRAP, "to type");
+   uiInitLabel(&idleLabel,       FIELD_WEIGHT, 0, 0, AUTO, FIELD_TEXT, activeTheme->textTertiary, TEXT_NOWRAP, "Search YouTube");
+   uiInitLabel(&recentLabel,     UI_WEIGHT_BOLD, 0, 0, AUTO, RECENT_TEXT, activeTheme->textTertiary, TEXT_NOWRAP, "Recent searches");
+   uiInitLabel(&emptyLabel,      UI_BODY_WEIGHT, 0, 0, AUTO, UI_BODY_SIZE, activeTheme->textSecondary, TEXT_NOWRAP, "Nothing yet - your searches will be listed here");
    for (int i = 0; i < MAX_SEARCH_HISTORY; i++)
-      initLabel(&rowLabels[i], &font, 0, 0, textWidth - 2 * ROW_PAD, AUTO, ROW_TEXT, activeTheme->textPrimary, TEXT_NOWRAP_ELLIPSIS, "");
+      uiInitTextLabel(&rowLabels[i], ROW_WEIGHT, 0, 0, TEXT_W, ROW_TEXT, activeTheme->textPrimary, TEXT_NOWRAP_ELLIPSIS, "");
+   initIcon(&fieldIcon, ICON_SEARCH, FIELD_ICON_SIZE);
+   initIcon(&rowIcon,   ICON_CLOCK,  ROW_ICON_SIZE);
 
-   initButtonHints(&hints, &font, state.screenH - HINTS_BOTTOM, HINT_GLYPH_H, HINT_TEXT, activeTheme->textSecondary);
-   addButtonHint(&hints, getConsoleGlyph(GLYPH_CROSS),  "Search");
-   addButtonHint(&hints, getConsoleGlyph(GLYPH_CIRCLE), "Back");
-   addButtonHint(&hints, getConsoleGlyph(GLYPH_SQUARE), "Delete");
-   addButtonHint(&hints, getConsoleGlyph(GLYPH_START),  "Type");
+   uiInitHints(&hints);
+   uiAddHint(&hints, GLYPH_CROSS,  "Type");     // CROSS_HINT: "Search" on a remembered query (updateRowHints)
+   uiAddHint(&hints, GLYPH_CIRCLE, "Back");
+   uiAddHint(&hints, GLYPH_SQUARE, "Delete");   // SQUARE_HINT: only on a remembered query (updateRowHints)
+   uiAddHint(&hints, GLYPH_START,  "Type");
+   uiAddHint(&hints, GLYPH_DPAD_LEFT, "Menu");   // the rail opens here as on Home
 
    setFieldText(pendingInitial);
    reloadHistory();
+   updateRowHints();
 }
 
 static void updateSearchInput(void)
 {
    if (oskInputActive()) return;
+
+   // The rail: LEFT opens it here as on Home (home.h). Search picked in it is this screen: the rail just closes.
+   // A direction still held as it closes waits out the normal delay instead of moving at once.
+   int rail = updateRailOverScreen(SIDE_SEARCH);
+   if (rail == RAIL_GONE) return;   // Home is back on top: this screen is gone, touch nothing of it
+   if (rail != RAIL_NOT_OPEN) {
+      if (!isSidebarFocused()) { navigateRepeat.timer = sys_time_get_system_time(); navigateRepeat.repeats = 0; }
+      return;
+   }
 
    if (isPadButtonPressed(PAD_BTN_CIRCLE)) { popScreen(); return; }
    if (isPadButtonPressed(PAD_BTN_START))  { oskInputBegin("Search YouTube", state.query, onTyped); return; }
@@ -158,42 +220,112 @@ static void updateSearchInput(void)
    }
 }
 
+// The field as Bild 5 draws it: surface-2 with a 2-px inner border. The border is the hairline laid over the
+// whole field and the field colour drawn again 2 px in, which leaves exactly the lightened edge of the CSS
+// inset border.
+static void fillField(int x, int y, int w, int h)
+{
+   uiFillRounded(x, y, w, h, FIELD_RADIUS, activeTheme->surface);
+   uiFillRounded(x, y, w, h, FIELD_RADIUS, activeTheme->hairline);
+   uiFillRounded(x + FIELD_BORDER, y + FIELD_BORDER, w - 2 * FIELD_BORDER, h - 2 * FIELD_BORDER,
+                 FIELD_RADIUS - FIELD_BORDER, activeTheme->surface);
+}
+
+// An icon with its ink centred in a box. The glyph does not fill its em box, so centring the em box would
+// leave the ink off centre by the glyph's own bearings.
+static void drawIconInBox(Icon *icon, int boxX, int boxY, int boxW, int boxH, uint32_t color)
+{
+   if (!icon->tex || icon->tex->w <= 0 || icon->tex->h <= 0) return;
+   drawIcon(icon, boxX + (boxW - icon->tex->w) / 2 - icon->offsetX, boxY + (boxH - icon->tex->h) / 2 - icon->offsetY, color);
+}
+
+// A console button glyph scaled to `height` with its own aspect, as the hint row draws it (untinted: it is
+// full-colour art). Returns the width it took; a glyph the console did not have keeps a square slot.
+static int drawGlyph(ConsoleGlyph glyph, int x, int y, int height)
+{
+   GfxTexture tex = getConsoleGlyph(glyph);
+   int width = tex.h > 0 ? (tex.w * height + tex.h / 2) / tex.h : height;
+   if (tex.offset) drawGfxTexture(x, y, width, height, tex, 0.0f, 0.0f, 1.0f, 1.0f, 0xFFFFFFFF, GFX_FILTER_LINEAR);
+   return width;
+}
+
+// "Press [X] to type" in the empty field, dimmed to text-3 like any placeholder, with the console's own
+// cross where the old text spelled out the letter X
+static void drawPlaceholder(void)
+{
+   int x = TEXT_X;
+   uiDrawLabelAt(&pressLabel, x, uiLabelYForCenter(&pressLabel, FIELD_Y, FIELD_H));
+   x += pressLabel.tt.tex.w + PLACEHOLDER_GAP;
+   x += drawGlyph(GLYPH_CROSS, x, FIELD_Y + (FIELD_H - UI_HINT_GLYPH_H) / 2, UI_HINT_GLYPH_H) + PLACEHOLDER_GAP;
+   uiDrawLabelAt(&toTypeLabel, x, uiLabelYForCenter(&toTypeLabel, FIELD_Y, FIELD_H));
+}
+
+static int historyRowY(int row) { return LIST_TOP + (row - state.scroll) * ROW_H; }
+
+// A remembered query: a surface-1 plate with the clock of Bild 5's recent chips and the query beside it. The
+// row in focus lifts to surface-2 and its clock turns orange; the ring and glow round it are drawn by the
+// caller, the glow before every plate and the ring after.
+static void drawHistoryRow(int row, int focused)
+{
+   int y = historyRowY(row);
+   uiFillRounded(CONTENT_X, y, CONTENT_W, ROW_PLATE_H, ROW_RADIUS, focused ? activeTheme->surface : activeTheme->surface1);
+   drawIconInBox(&rowIcon, CONTENT_X + FIELD_PAD, y, ICON_BOX, ROW_PLATE_H,
+                 focused ? activeTheme->accent : activeTheme->textSecondary);
+   uiDrawLabelAt(&rowLabels[row], TEXT_X, uiLabelYForCenter(&rowLabels[row], y, ROW_PLATE_H));
+}
+
 static void drawSearchInput(void)
 {
    fillGfxRectangle(0, 0, state.screenW, state.screenH, activeTheme->appBg);
-   drawLabel(&titleLabel);
 
-   // the field
-   int fieldW = state.screenW - 2 * MARGIN_X;
-   int ring = activeTheme->focusThickness;
-   if (state.selected == ROW_FIELD)
-      fillGfxRectangle(MARGIN_X - ring, FIELD_Y - ring, fieldW + 2 * ring, FIELD_H + 2 * ring, activeTheme->focusBorder);
-   fillGfxRectangle(MARGIN_X, FIELD_Y, fieldW, FIELD_H, activeTheme->surface);
-   drawLabelAt(&fieldLabel, MARGIN_X + FIELD_PAD, FIELD_Y + (FIELD_H - FIELD_TEXT) / 2 - 2);
+   int end = state.scroll + state.visibleRows;   // one past the last history row drawn
+   if (end > state.historyCount) end = state.historyCount;
+   int fieldFocused = state.selected == ROW_FIELD;
+   int focusRow = state.selected - 1;            // the history row in focus (-1: the field has it)
+   int rowFocused = !fieldFocused && focusRow >= state.scroll && focusRow < end;
 
-   drawLabel(&recentLabel);
-   if (state.historyCount == 0) { drawLabel(&emptyLabel); drawButtonHints(&hints, state.screenW); return; }
+   // The focus glow goes down first, under everything: the field and the plates drawn after it cover the
+   // parts that fall on them, so it shows round the focused one and in the gaps - never over a neighbour's text.
+   if (fieldFocused)    uiDrawFocusGlow(CONTENT_X, FIELD_Y, CONTENT_W, FIELD_H, activeTheme->focusGlow);
+   else if (rowFocused) uiDrawFocusGlow(CONTENT_X, historyRowY(focusRow), CONTENT_W, ROW_PLATE_H, activeTheme->focusGlow);
 
-   for (int row = state.scroll; row < state.historyCount && row < state.scroll + state.visibleRows; row++) {
-      int y = LIST_TOP + (row - state.scroll) * ROW_H;
-      if (state.selected == row + 1)
-         fillGfxRectangle(MARGIN_X - ring, y - ring, fieldW + 2 * ring, ROW_H - 6 + 2 * ring, activeTheme->focusBorder);
-      fillGfxRectangle(MARGIN_X, y, fieldW, ROW_H - 6, activeTheme->surface);
-      drawLabelAt(&rowLabels[row], MARGIN_X + ROW_PAD, y + (ROW_H - 6 - ROW_TEXT) / 2 - 2);
-   }
+   // the field: the magnifier turns orange while the field has the focus, like the rows' clocks
+   fillField(CONTENT_X, FIELD_Y, CONTENT_W, FIELD_H);
+   drawIconInBox(&fieldIcon, CONTENT_X + FIELD_PAD, FIELD_Y, ICON_BOX, FIELD_H,
+                 fieldFocused ? activeTheme->accent : activeTheme->textSecondary);
+   if (state.query[0])     uiDrawLabelAt(&fieldLabel, TEXT_X, uiLabelYForCenter(&fieldLabel, FIELD_Y, FIELD_H));
+   else if (fieldFocused)  drawPlaceholder();
+   else                    uiDrawLabelAt(&idleLabel, TEXT_X, uiLabelYForCenter(&idleLabel, FIELD_Y, FIELD_H));
 
-   drawButtonHints(&hints, state.screenW);
+   for (int row = state.scroll; row < end; row++) drawHistoryRow(row, rowFocused && row == focusRow);
+
+   // the ring over the shape it marks
+   if (fieldFocused)    uiDrawFocusRing(CONTENT_X, FIELD_Y, CONTENT_W, FIELD_H, UI_RING_ROW, activeTheme->focusBorder);
+   else if (rowFocused) uiDrawFocusRing(CONTENT_X, historyRowY(focusRow), CONTENT_W, ROW_PLATE_H, UI_RING_THUMB, activeTheme->focusBorder);
+
+   // the labels that sit on no shape come last, so the glow spreading under them never tints them
+   uiDrawLabelAt(&recentLabel, CONTENT_X, uiLabelYForBaseline(&recentLabel, RECENT_BASELINE));
+   if (state.historyCount == 0) uiDrawLabelAt(&emptyLabel, CONTENT_X, uiLabelYForCenter(&emptyLabel, LIST_TOP, ROW_PLATE_H));
+
+   if (!isSidebarFocused()) drawSidebarPassive(state.screenH, SIDE_SEARCH);
+   updateRowHints();    // here, after this frame's update: a deletion can hand the focus back to the field
+   uiDrawHints(&hints, UI_SAFE_RIGHT, UI_HINTS_BOTTOM_Y, UI_ALIGN_RIGHT);
+   if (isSidebarFocused()) drawSidebar(state.screenH);   // open: over everything, the hints dimmed with the rest
 }
 
 static void termSearchInput(void)
 {
-   termButtonHints(&hints);
-   freeLabel(&titleLabel);
+   uiTermHints(&hints);
    freeLabel(&fieldLabel);
+   freeLabel(&pressLabel);
+   freeLabel(&toTypeLabel);
+   freeLabel(&idleLabel);
    freeLabel(&recentLabel);
    freeLabel(&emptyLabel);
    for (int i = 0; i < MAX_SEARCH_HISTORY; i++) freeLabel(&rowLabels[i]);
-   closeFont(&font);
+   freeIcon(&fieldIcon);   // the textures belong to the icon font's shared cache; this only lets go of them
+   freeIcon(&rowIcon);
+   // no closeFont: the fonts are shared, and closing one would blank every label on every screen
 }
 
 void openSearchInput(const char *initialText, SearchInputDone onDone)
