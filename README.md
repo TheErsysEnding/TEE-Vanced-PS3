@@ -68,11 +68,15 @@ from where you are.
 
 **Its own H.264 decoder: 1080p60 at 60 fps.** The TEE Decoder runs on the
 PS3's SPEs and plays YouTube's 1080p60 at a full 60 frames a second, where
-Sony's `cellVdec` manages about 35 at 1080p. Everything it cannot decode - live
-streams, Shorts, 480p - stays on `cellVdec`. A 60 fps video on the PS3's
-59.94 Hz output shows one picture per vblank, with the sound 0.1% slower to
-match. START opens Options with the quality (Auto, or down to 144p for a slow
+Sony's `cellVdec` manages about 35 at 1080p - live streams included. Everything
+it cannot decode - Shorts, 480p - stays on `cellVdec`. A 60 fps video on the
+PS3's 59.94 Hz output shows one picture per vblank, with the sound 0.1% slower
+to match. START opens Options with the quality (Auto, or down to 144p for a slow
 connection), the chapters and autoplay.
+
+**Rewind a live stream.** Where the streamer left YouTube's rewind on, left/right
+and L2/R2 go back through the last 12 hours of a live stream and R1 returns to
+live; its quality can be switched like a video's.
 
 **Its own look, "Ember".** A warm dark ground in TEE orange, matching the icon,
 the Manrope typeface, and a focus that can be seen from the sofa.
