@@ -21,6 +21,11 @@ typedef enum { VIDEO_DECODER_AUTO, VIDEO_DECODER_SONY } VideoDecoderSetting;
 VideoDecoderSetting getVideoDecoderSetting(void);
 int getTeeDecoderSpes(void);
 
+// settings.txt quality=auto|<height>: the highest video height to play (0 = auto, the best that plays smoothly).
+// setQualityCap changes it and saves it (0 saved, -1 not saved - the cap still applies for this run).
+int getQualityCap(void);
+int setQualityCap(int height);
+
 // ---- content region ----
 // Which country's YouTube the lists come from: the "gl" of every WEB request (Trending, Live, Search, channel
 // pages and their next pages). The language ("hl") stays English whatever the region, because the parsers read

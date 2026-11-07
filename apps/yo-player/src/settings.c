@@ -6,6 +6,7 @@
 #include "settings-file.h"
 #include "dbg.h"
 #include <stdio.h>              // snprintf: the runtime path
+#include <string.h>             // strlen
 
 // the file written on first launch: each setting at its default, with a comment explaining the values.
 static const char *DEFAULT_SETTINGS =
@@ -29,11 +30,16 @@ static const char *DEFAULT_SETTINGS =
    "# Sony's cellVdec otherwise; sony = cellVdec only (1080p at up to 30 fps, 720p at 60)\n"
    "\n"
    "tee-decoder-spes=4\n"
-   "# 4 = 1 CABAC + 3 pixel SPEs, 5 = 1 CABAC + 4 pixel (more headroom; with the sound all 6 SPEs are busy)\n";
+   "# 4 = 1 CABAC + 3 pixel SPEs, 5 = 1 CABAC + 4 pixel (more headroom; with the sound all 6 SPEs are busy)\n"
+   "\n"
+   "quality=auto\n"
+   "# the highest video quality to play: auto = the best the console plays smoothly, or a height such as 1080,\n"
+   "# 720, 480, 360 or 144 - lower saves bandwidth on a slow connection. The player sets it too: START > Quality.\n";
 
 static SponsorblockMode sponsorblockMode = SPONSORBLOCK_ADS;
 static VideoDecoderSetting videoDecoder = VIDEO_DECODER_AUTO;
 static int teeDecoderSpes = 4;
+static int qualityCap = 0;   // quality=: the highest video height to play, 0 = auto
 
 // ---- content region ----
 
@@ -182,6 +188,15 @@ void loadSettings(void)
    }
    logInfo("[settings] video-decoder %s, tee-decoder-spes %d\n", videoDecoder == VIDEO_DECODER_SONY ? "sony" : "auto",
            teeDecoderSpes);
+   const char *quality = findSettingValue(text, "quality");
+   if (quality && !settingValueEquals(quality, "auto")) {
+      int height = 0;
+      for (const char *digit = quality; *digit >= '0' && *digit <= '9' && height < 100000; digit++)
+         height = height * 10 + (*digit - '0');
+      if (height >= 100 && height <= 4320) qualityCap = height;
+      else logWarn("[settings] quality takes auto or a height such as 720, using auto\n");
+   }
+   if (qualityCap) logInfo("[settings] quality up to %dp\n", qualityCap);
 
    const char *region = findSettingValue(text, "region");
    int index = region ? parseRegion(region) : -1;
@@ -204,7 +219,8 @@ void loadSettings(void)
 // read whole here first, nothing is written unless that worked, and the new text is built from what was read -
 // no second read that could fail in between. A missing or empty file becomes the documented defaults with the
 // chosen region, as loadSettings would write it. Main thread only: 8 KB of buffers on the stack.
-static int saveRegion(const char *code)
+// puts key=value into settings.txt and keeps every other line (see the comment above for why it reads first)
+static int saveSetting(const char *key, const char *value)
 {
    char path[128];
    settingsPath(path, sizeof path);
@@ -212,22 +228,23 @@ static int saveRegion(const char *code)
    char text[SETTINGS_FILE_CAP];
    int length = readFile(path, text, sizeof text);
    if (length < 0 && fileExists(path)) {
-      logError("[settings] region not saved: %s exists but cannot be read\n", path);
+      logError("[settings] %s not saved: %s exists but cannot be read\n", key, path);
       return -1;
    }
-   if (length >= SETTINGS_FILE_CAP - 64) {   // room for the region line, and proof the read was not cut short
-      logError("[settings] region not saved: %s is too large to rewrite whole (%d bytes)\n", path, length);
+   if (length >= SETTINGS_FILE_CAP - 64) {   // room for the line, and proof the read was not cut short
+      logError("[settings] %s not saved: %s is too large to rewrite whole (%d bytes)\n", key, path, length);
       return -1;
    }
    if (length <= 0) strCopy(text, sizeof text, DEFAULT_SETTINGS);
 
+   int keyLength = (int)strlen(key);
    char out[SETTINGS_FILE_CAP];
    int written = 0, found = 0;
    for (const char *line = text; *line; ) {   // as rewriteSettingKey does, but on the text already read
       const char *lineEnd = line;
       while (*lineEnd && *lineEnd != '\n') lineEnd++;
-      if (lineDeclaresKey(line, "region", 6)) {
-         appendSettingLine(out, sizeof out, &written, "region", code);
+      if (lineDeclaresKey(line, key, keyLength)) {
+         appendSettingLine(out, sizeof out, &written, key, value);
          found = 1;
       } else {
          for (const char *c = line; c < lineEnd && written < (int)sizeof out - 1; c++) out[written++] = *c;
@@ -235,13 +252,29 @@ static int saveRegion(const char *code)
       }
       line = *lineEnd ? lineEnd + 1 : lineEnd;
    }
-   if (!found) appendSettingLine(out, sizeof out, &written, "region", code);
+   if (!found) appendSettingLine(out, sizeof out, &written, key, value);
 
    if (writeFile(path, out, (uint64_t)written) != 0) {
-      logError("[settings] region not saved: writing %s failed\n", path);
+      logError("[settings] %s not saved: writing %s failed\n", key, path);
       return -1;
    }
    return 0;
+}
+
+static int saveRegion(const char *code) { return saveSetting("region", code); }
+
+int getQualityCap(void) { return qualityCap; }
+
+int setQualityCap(int height)
+{
+   if (height < 0) height = 0;
+   qualityCap = height;
+   char value[16];
+   if (height) snprintf(value, sizeof value, "%d", height);
+   else        strCopy(value, sizeof value, "auto");
+   int rc = saveSetting("quality", value);
+   logInfo("[settings] quality %s (%s)\n", value, rc == 0 ? "saved" : "NOT saved");
+   return rc;
 }
 
 int setContentRegionIndex(int index)

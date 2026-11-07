@@ -269,6 +269,13 @@ static char requestedInput[256] = "jNQXAC9IVRw";   // "Me at the zoo"
 
 typedef enum { STAGE_LOADING, STAGE_FAILED, STAGE_PLAYING } Stage;
 
+// the options menu (START with the controls up): one page of rows, Quality opening a second with the qualities
+#define MAX_QUALITY_CHOICES 6
+#define OPTION_ROWS         3
+#define OPTION_TEXT_MAX_W   720
+enum { OPTION_QUALITY, OPTION_CHAPTERS, OPTION_AUTOPLAY };
+typedef struct { int itag, width, height, fps; char url[MAX_STREAM_URL]; } QualityChoice;
+
 static struct {
    volatile Stage   stage;
    char             message[128];     // failure reason (worker writes, UI reads)
@@ -303,6 +310,17 @@ static struct {
    int              chapterSelected;
    int              chapterTimeWidth;    // widest time label (the right-aligned time column)
    int              chapterPanelWidth;
+
+   // the options menu: Quality, Chapters, Autoplay. Quality opens the list of the qualities this video offers
+   // that the player can play (the worker fills it at resolve); a pick rebuilds the player at the position.
+   int              optionsVisible;
+   int              optionsLevel;         // 0 the menu, 1 the quality list
+   int              optionsSelected;
+   QualityChoice    qualities[MAX_QUALITY_CHOICES];   // the best first
+   int              qualityCount;
+   int              qualityPick;          // the one playing, -1 = none of them (a muxed or fallback pick)
+   int              controlsHidden;       // O put the controls away (even while paused) until the next activity
+
    int              vidItag, vidW, vidH, vidFps, audItag;   // picked formats (worker sets, UI reads)
    int              isLive;           // a live stream: no duration, no resume/save, no seek
 
@@ -378,7 +396,7 @@ static struct {
    LegendPlace      legendPlace;
 } state;
 
-#define STAT_LINES 4
+#define STAT_LINES 5   // video, frame rate and decoder, audio, time - and how to put the panel away
 // R3's stats panel: in body text, on a panel under the title block and clear of the volume plate below it
 #define STATS_TEXT_SIZE    UI_BODY_SIZE
 #define STATS_TEXT_WEIGHT  UI_BODY_WEIGHT
@@ -412,6 +430,10 @@ static Label liveLabel;                       // row A on a live stream, where t
 static Label legendLabels[SPONSOR_CATEGORY_COUNT];   // the legend's category names
 static Label chapterLabels[MAX_CHAPTERS];     // chapter titles (picker overlay rows)
 static Label descriptionHeading, chaptersHeading;    // the two overlay panels' headings
+static Label optionsHeading, qualityHeading;          // the options menu's two pages
+static Label optionLabels[OPTION_ROWS];               // "Quality: ...", "Chapters", "Autoplay: On"
+static Label qualityLabels[MAX_QUALITY_CHOICES + 1];  // "Auto (1080p60)", then one per quality
+static UiHints optionHints;
 static UiHints hudHints;                      // the HUD's hint row
 static UiHints descriptionHints, chapterHints;       // each overlay's own buttons, in its heading
 static TextTexture descriptionTexture;        // whole description as one tall texture (scrolled by draw)
@@ -466,9 +488,27 @@ static void worker(uint64_t arg)
    // audio-track switch) follows the same choice.
    setH264DecoderPolicy(getVideoDecoderSetting() == VIDEO_DECODER_SONY ? H264_POLICY_SONY : H264_POLICY_AUTO,
                         getTeeDecoderSpes());
-   const StreamFormat *video = pickBestVideoForPlayback(info, isH264TeeUsable());
+   int teeUsable = isH264TeeUsable();
+   // the best playable format, up to the viewer's quality cap (settings quality=, START > Quality)
+   const StreamFormat *video = pickVideoForPlayback(info, teeUsable, getQualityCap());
    if (!video) { fail("no playable mp4 video"); goto done; }
    if (video->isLiveSegmented) setH264DecoderPolicy(H264_POLICY_SONY, getTeeDecoderSpes());
+
+   // the quality menu's choices: the video-only formats the player can play, the best first (none on a live
+   // stream, whose segments a rebuild would have to rejoin)
+   {
+      const StreamFormat *choices[MAX_QUALITY_CHOICES];
+      int count = video->isLiveSegmented ? 0 : listPlayableVideos(info, teeUsable, choices, MAX_QUALITY_CHOICES);
+      state.qualityCount = 0;
+      state.qualityPick = -1;
+      for (int i = 0; i < count; i++) {
+         QualityChoice *choice = &state.qualities[state.qualityCount++];
+         choice->itag = choices[i]->itag; choice->width = choices[i]->width;
+         choice->height = choices[i]->height; choice->fps = choices[i]->fps;
+         strCopy(choice->url, sizeof choice->url, choices[i]->url);
+         if (choices[i] == video) state.qualityPick = i;
+      }
+   }
    // a muxed pick (itag 18) already carries audio; a video-only pick needs a separate audio track
    const StreamFormat *audio = video->hasAudio ? NULL : pickBestAudio(info);
    logInfo("[yt] play video itag %d %dx%d %s, audio itag %d\n", video->itag, video->width, video->height,
@@ -516,6 +556,8 @@ static void worker(uint64_t arg)
          state.audItag = audio ? audio->itag : (video->hasAudio ? video->itag : 0);
          strCopy(state.videoUrl, sizeof state.videoUrl, video->url);
          strCopy(state.audioUrl, sizeof state.audioUrl, audio ? audio->url : "");
+         state.qualityPick = -1;
+         for (int i = 0; i < state.qualityCount; i++) if (state.qualities[i].itag == video->itag) state.qualityPick = i;
          state.pendingPlayer = createVideoPlayerSplit(video->url, audio ? audio->url : NULL, allocGfxVideoBuffer, freeGfxVideoBuffer);
       }
    }
@@ -632,7 +674,7 @@ static void initHints(void)
    uiAddHint(&hudHints, GLYPH_SQUARE,   "Audio track");   // HINT_SQUARE: Autoplay with a single track
    uiAddHint(&hudHints, GLYPH_TRIANGLE, "Subtitles");     // HINT_TRIANGLE: Skip while the offer stands (on a
                                                           // live stream it shows only then)
-   uiAddHint(&hudHints, GLYPH_START,    "Chapters");      // HINT_START
+   uiAddHint(&hudHints, GLYPH_START,    "Options");       // HINT_START: the options menu (quality, chapters, autoplay)
    uiAddHint(&hudHints, GLYPH_SELECT,   "Description");   // HINT_SELECT
    uiAddHint(&hudHints, GLYPH_CIRCLE,   "Back");          // HINT_CIRCLE
    uiSetHintsGap(&hudHints, HINT_ROW_GAP);
@@ -653,6 +695,11 @@ static void initHints(void)
    uiAddHint(&chapterHints, GLYPH_START,     "Close");
    uiAddHint(&chapterHints, GLYPH_DPAD_UP,   "");
    uiAddHint(&chapterHints, GLYPH_DPAD_DOWN, "Move");
+   uiInitHints(&optionHints);
+   uiAddHint(&optionHints, GLYPH_CROSS,     "Select");
+   uiAddHint(&optionHints, GLYPH_CIRCLE,    "Back");
+   uiAddHint(&optionHints, GLYPH_DPAD_UP,   "");
+   uiAddHint(&optionHints, GLYPH_DPAD_DOWN, "Move");
 }
 
 static void initPlay(void)
@@ -684,6 +731,17 @@ static void initPlay(void)
                TEXT_NOWRAP, "Description");
    uiInitLabel(&chaptersHeading, PANEL_TITLE_WEIGHT, 0, 0, AUTO, PANEL_TITLE_SIZE, activeTheme->textPrimary,
                TEXT_NOWRAP, "Chapters");
+   uiInitLabel(&optionsHeading, PANEL_TITLE_WEIGHT, 0, 0, AUTO, PANEL_TITLE_SIZE, activeTheme->textPrimary,
+               TEXT_NOWRAP, "Options");
+   uiInitLabel(&qualityHeading, PANEL_TITLE_WEIGHT, 0, 0, AUTO, PANEL_TITLE_SIZE, activeTheme->textPrimary,
+               TEXT_NOWRAP, "Quality");
+   for (int i = 0; i < OPTION_ROWS; i++)
+      uiInitLabel(&optionLabels[i], CHAPTER_TITLE_WEIGHT, 0, 0, OPTION_TEXT_MAX_W, CHAPTER_TEXT_SIZE,
+                  activeTheme->textPrimary, TEXT_NOWRAP, "");
+   for (int i = 0; i < MAX_QUALITY_CHOICES + 1; i++)
+      uiInitLabel(&qualityLabels[i], CHAPTER_TITLE_WEIGHT, 0, 0, OPTION_TEXT_MAX_W, CHAPTER_TEXT_SIZE,
+                  activeTheme->textPrimary, TEXT_NOWRAP, "");
+   state.qualityPick = -1;
    initHints();
    // text from YouTube - the title, the channel and views, track names (in the toasts and the chips), chapter
    // titles - is raw, and the whole of it is FONT_POP whenever Manrope lacks one of its characters
@@ -728,7 +786,10 @@ static void initPlay(void)
                               THREAD_PRIORITY_DEFAULT, THREAD_STACK_SIZE_64KB, "yt-sponsor") == 0);
 }
 
-static void showControls(void) { state.controlsShownUs = sys_time_get_system_time(); }
+static void showControls(void) { state.controlsShownUs = sys_time_get_system_time(); state.controlsHidden = 0; }
+
+// O with the controls up: away with them, paused or not - O used to leave the video even then
+static void hideControls(void) { state.controlsHidden = 1; state.controlsShownUs = 0; }
 
 static void formatTime(char *buffer, int cap, int seconds)
 {
@@ -1187,6 +1248,113 @@ static void handleChaptersInput(void)
    if (state.chapterSelected >= state.chapters.count) state.chapterSelected = state.chapters.count - 1;
 }
 
+// ---- the options menu (START with the controls up) ----
+// Quality, Chapters and Autoplay on one page, like the gear in YouTube's own player; Quality opens a second page
+// with the qualities this video offers that the player can play. X picks, O goes back a page or closes, START
+// closes. Playback carries on underneath.
+
+static void setQualityChip(void);   // the HUD's quality chip (below)
+static int  controlsVisible(void);  // whether the HUD is up (below)
+
+static void qualityName(char *out, int cap, int height, int fps)
+{
+   if (fps > 30) snprintf(out, cap, "%dp%d", height, fps);
+   else          snprintf(out, cap, "%dp", height);
+}
+
+static void setOptionLabels(void)
+{
+   char text[96], name[24];
+   if (state.isLive)               strCopy(text, sizeof text, "Quality: live stream");
+   else if (state.qualityCount == 0) strCopy(text, sizeof text, "Quality: no other");
+   else {
+      qualityName(name, sizeof name, state.vidH, state.vidFps);
+      snprintf(text, sizeof text, "Quality: %s%s", getQualityCap() ? "" : "Auto - ", name);
+   }
+   setLabelText(&optionLabels[OPTION_QUALITY], text);
+   setLabelText(&optionLabels[OPTION_CHAPTERS], state.chapters.count && !state.isLive ? "Chapters" : "Chapters: none");
+   setLabelText(&optionLabels[OPTION_AUTOPLAY], getAutoplay() ? "Autoplay: On" : "Autoplay: Off");
+}
+
+// row 0 is Auto (the best that plays, no cap), then one row per quality; the one in use says so
+static void setQualityLabels(void)
+{
+   char text[64], name[24];
+   qualityName(name, sizeof name, state.qualities[0].height, state.qualities[0].fps);
+   snprintf(text, sizeof text, "Auto (%s)%s", name, getQualityCap() ? "" : "  - on");
+   setLabelText(&qualityLabels[0], text);
+   for (int i = 0; i < state.qualityCount; i++) {
+      qualityName(name, sizeof name, state.qualities[i].height, state.qualities[i].fps);
+      snprintf(text, sizeof text, "%s%s", name, getQualityCap() && i == state.qualityPick ? "  - on" : "");
+      setLabelText(&qualityLabels[i + 1], text);
+   }
+}
+
+// a quality from the list (choice -1 = Auto): saved as the cap for the videos after this one too, and the player
+// rebuilt on it at the position - the way an audio-track switch does, "Loading..." meanwhile
+static void chooseQuality(int choice)
+{
+   if (state.qualityCount == 0) return;
+   int index = choice < 0 ? 0 : choice;   // Auto plays the best one (the list is sorted best first)
+   setQualityCap(choice < 0 ? 0 : state.qualities[index].height);
+   if (index == state.qualityPick) { showControls(); return; }
+   if (state.threadActive || !state.player || state.stage != STAGE_PLAYING) { showToast("Busy - try again"); return; }
+
+   const QualityChoice *quality = &state.qualities[index];
+   float at = state.seeking ? state.seekTarget : getVideoPositionSeconds(state.player);
+   if (state.firstFrameSeen && !state.isLive) setWatchedPosition(requestedInput, (int)at);
+   strCopy(state.videoUrl, sizeof state.videoUrl, quality->url);
+   state.vidItag = quality->itag; state.vidW = quality->width; state.vidH = quality->height; state.vidFps = quality->fps;
+   state.qualityPick = index;
+   setQualityChip();
+   logInfo("[yt] quality: itag %d %dx%d %dfps from %ds\n", quality->itag, quality->width, quality->height, quality->fps, (int)at);
+   reopenAt(at);
+}
+
+static void openOptions(void)
+{
+   setOptionLabels();
+   state.optionsLevel = 0;
+   state.optionsSelected = OPTION_QUALITY;
+   state.optionsVisible = 1;
+}
+
+static void handleOptionsInput(void)
+{
+   if (isPadButtonPressed(PAD_BTN_START)) { state.optionsVisible = 0; return; }
+   if (isPadButtonPressed(PAD_BTN_CIRCLE)) {
+      if (state.optionsLevel == 1) { state.optionsLevel = 0; state.optionsSelected = OPTION_QUALITY; }
+      else state.optionsVisible = 0;
+      return;
+   }
+
+   int rows = state.optionsLevel == 0 ? OPTION_ROWS : state.qualityCount + 1;
+   if (isPadButtonPressed(PAD_BTN_CROSS)) {
+      if (state.optionsLevel == 1) {
+         state.optionsVisible = 0;
+         chooseQuality(state.optionsSelected - 1);   // row 0 is Auto
+      } else if (state.optionsSelected == OPTION_QUALITY) {
+         if (state.qualityCount == 0) { showToast(state.isLive ? "No quality choice on a live stream" : "No other quality"); return; }
+         setQualityLabels();
+         state.optionsLevel = 1;
+         state.optionsSelected = getQualityCap() && state.qualityPick >= 0 ? state.qualityPick + 1 : 0;
+      } else if (state.optionsSelected == OPTION_CHAPTERS) {
+         state.optionsVisible = 0;
+         openChapters();
+      } else {
+         setAutoplay(!getAutoplay());
+         setOptionLabels();
+      }
+      return;
+   }
+
+   static ButtonRepeat navigateRepeat;
+   if (isRepeatDue(&navigateRepeat, getPadButtonState(PAD_BTN_DOWN)))    state.optionsSelected++;
+   else if (isRepeatDue(&navigateRepeat, getPadButtonState(PAD_BTN_UP))) state.optionsSelected--;
+   if (state.optionsSelected < 0) state.optionsSelected = 0;
+   if (state.optionsSelected >= rows) state.optionsSelected = rows - 1;
+}
+
 // ---- the HUD's text and layout (Bild 2) ----
 // Labels are set here, in the update, and only rasterise when what they say changes; the draw only places
 // them. Nothing here reads the pad.
@@ -1363,14 +1531,16 @@ static void updateHintCaptions(void)
 {
    const char *cross = isVideoEnded(state.player) ? "Replay" : isVideoPaused(state.player) ? "Play" : "Pause";
    uiSetHintCaption(&hudHints, HINT_CROSS, cross);
-   uiSetHintCaption(&hudHints, HINT_SQUARE, state.audioTrackCount > 1 ? "Audio track" : "Autoplay");
+   uiSetHintCaption(&hudHints, HINT_SQUARE, "Audio track");
+   uiSetHintShown(&hudHints, HINT_SQUARE, state.audioTrackCount > 1);   // autoplay is in the options menu now
+   uiSetHintCaption(&hudHints, HINT_CIRCLE, "Hide");                   // with the controls up, O puts them away
    uiSetHintCaption(&hudHints, HINT_TRIANGLE, state.skipPrompt >= 0 ? "Skip" : "Subtitles");
    int seekable = !state.isLive;
    uiSetHintShown(&hudHints, HINT_L1, seekable);
    uiSetHintShown(&hudHints, HINT_R1, seekable);
    uiSetHintShown(&hudHints, HINT_L2, seekable);
    uiSetHintShown(&hudHints, HINT_R2, seekable);
-   uiSetHintShown(&hudHints, HINT_START, seekable);
+   uiSetHintShown(&hudHints, HINT_START, 1);   // the options menu, live streams included (autoplay)
    uiSetHintShown(&hudHints, HINT_TRIANGLE, !state.isLive || state.skipPrompt >= 0);
 }
 
@@ -1387,27 +1557,31 @@ static void updatePlay(void)
 {
    // autoplay gets first refusal: a finished video hands the screen over before anything else runs
    if (state.stage == STAGE_PLAYING && state.player && !state.descriptionVisible && !state.chaptersVisible &&
-       isVideoEnded(state.player) && advanceAutoplay()) return;
+       !state.optionsVisible && isVideoEnded(state.player) && advanceAutoplay()) return;
 
    // an overlay owns the pad for the whole frame it was (or just became) visible, so the button that
    // closed or opened it can't leak into playback input below (e.g. cross toggling pause on the way out)
-   int overlayHadPad = state.descriptionVisible || state.chaptersVisible;
+   int overlayHadPad = state.descriptionVisible || state.chaptersVisible || state.optionsVisible;
    if (state.descriptionVisible) handleDescriptionInput();
    else if (state.chaptersVisible) handleChaptersInput();
+   else if (state.optionsVisible) handleOptionsInput();
    else {
-      if (isPadButtonPressed(PAD_BTN_CIRCLE)) { popScreen(); return; }   // back to the results list
+      // O puts the controls away first, paused or not; only with nothing on the picture does it leave the video
+      // (it used to leave at once, controls up or not)
+      if (isPadButtonPressed(PAD_BTN_CIRCLE)) {
+         if (state.stage == STAGE_PLAYING && state.player && controlsVisible()) hideControls();
+         else { popScreen(); return; }   // back to the results list
+      }
       if (isPadButtonPressed(PAD_BTN_R3)) state.showStats = !state.showStats;
       // Square picks the audio track on a video that has several - its original language and YouTube's AI
-      // dubs of it, say. Everywhere else it keeps toggling autoplay, which the settings screen also has.
-      if (isPadButtonPressed(PAD_BTN_SQUARE)) {
-         if (state.audioTrackCount > 1) cycleAudioTrack();
-         else {
-            setAutoplay(!getAutoplay());
-            showToast(getAutoplay() ? "Autoplay on" : "Autoplay off");
-         }
-      }
+      // dubs of it, say. Autoplay moved to the options menu (START).
+      if (isPadButtonPressed(PAD_BTN_SQUARE) && state.audioTrackCount > 1) cycleAudioTrack();
       if (isPadButtonPressed(PAD_BTN_SELECT) && state.stage == STAGE_PLAYING && state.player) openDescription();
-      if (isPadButtonPressed(PAD_BTN_START) && state.stage == STAGE_PLAYING && state.player) openChapters();
+      // START brings the controls up; with them up, it opens the options menu (quality, chapters, autoplay)
+      if (isPadButtonPressed(PAD_BTN_START) && state.stage == STAGE_PLAYING && state.player) {
+         if (controlsVisible()) openOptions();
+         else showControls();
+      }
       // L3 is the only button still free in the player, and mid-video is exactly where you want the XMB on
       // a pad whose PS button the console never sees (DualShock 4 / DualSense). See ps-button.h.
       if (isPadButtonPressed(PAD_BTN_L3) && pressPsButton() != 0) showToast("PS button not available");
@@ -1418,7 +1592,7 @@ static void updatePlay(void)
    // direction still held from scrolling the description or walking the chapter list ran the volume down - or
    // up - the moment the overlay was gone. Stamped now, a direction held across the close waits out the
    // normal first-repeat delay as though it had just been pressed; a fresh press still steps at once.
-   if (overlayHadPad && !state.descriptionVisible && !state.chaptersVisible) {
+   if (overlayHadPad && !state.descriptionVisible && !state.chaptersVisible && !state.optionsVisible) {
       volumeMeter.repeat.timer   = sys_time_get_system_time();
       volumeMeter.repeat.repeats = 0;
    }
@@ -1537,7 +1711,7 @@ static void updatePlay(void)
    // segment - or after scrubbing out of one - a Triangle meant for the subtitles would still have run the
    // skip and jumped the video forward to that segment's end. It also has to clear itself when the segment
    // ends, so it is recomputed every frame rather than latched.
-   state.skipPrompt = (state.stage == STAGE_PLAYING && !state.descriptionVisible && !state.chaptersVisible)
+   state.skipPrompt = (state.stage == STAGE_PLAYING && !state.descriptionVisible && !state.chaptersVisible && !state.optionsVisible)
                       ? findSkipOffer() : -1;
    if (state.skipPrompt >= 0 && state.skipPrompt != state.skipPromptShown) {
       const SponsorSegment *segment = &state.sb.segments[state.skipPrompt];
@@ -1550,7 +1724,8 @@ static void updatePlay(void)
       state.skipPromptShown = state.skipPrompt;
    }
 
-   if (state.stage == STAGE_PLAYING && state.player && !overlayHadPad && !state.descriptionVisible && !state.chaptersVisible)
+   if (state.stage == STAGE_PLAYING && state.player && !overlayHadPad && !state.descriptionVisible && !state.chaptersVisible &&
+       !state.optionsVisible)
       handlePlaybackInput();
    if (state.sbReady && state.stage == STAGE_PLAYING && state.player && !isVideoPaused(state.player) && !state.seeking)
       autoSkipSponsor();
@@ -1598,6 +1773,8 @@ static void updateStatLabels(void)
    if (state.isLive) snprintf(line, sizeof line, "Time  %s", now);
    else              snprintf(line, sizeof line, "Time  %s / %s", now, length);
    setLabelText(&statLabels[3], line);
+   // so a panel opened by a stray R3 says how it goes away again
+   setLabelText(&statLabels[4], "Press R3 to hide");
 }
 
 // the stats panel sits under the title block, so the two never overlap while the controls are up, and
@@ -1849,6 +2026,7 @@ static void drawHud(void)
 // the HUD shows while scrubbing / paused / ended, else auto-hides after the last activity
 static int controlsVisible(void)
 {
+   if (state.controlsHidden) return 0;   // put away with O until the next activity (showControls)
    if (isVideoPaused(state.player) || isVideoEnded(state.player) || state.seeking) return 1;
    return state.controlsShownUs != 0 && sys_time_get_system_time() - state.controlsShownUs < CONTROLS_VISIBLE_US;
 }
@@ -1968,6 +2146,30 @@ static void drawChapters(void)
    }
 }
 
+// The options menu on a panel like the chapter picker's: its page's rows, the selected one on an accent plate.
+static void drawOptions(void)
+{
+   fillGfxRectangle(0, 0, state.screenW, state.screenH, activeTheme->scrim);
+
+   int level = state.optionsLevel;
+   int rows = level == 0 ? OPTION_ROWS : state.qualityCount + 1;
+   Label *labels = level == 0 ? optionLabels : qualityLabels;
+   int panelW = CHAPTER_PANEL_MIN_W;
+   int panelH = PANEL_HEADER_H + CHAPTER_LIST_PAD_TOP + rows * CHAPTER_ROW_HEIGHT + CHAPTER_LIST_PAD_BOTTOM;
+   int panelX = state.screenW / 2 - panelW / 2, panelY = state.screenH / 2 - panelH / 2;
+   drawOverlayPanel(panelX, panelY, panelW, panelH, level == 0 ? &optionsHeading : &qualityHeading, &optionHints);
+
+   int topY   = panelY + PANEL_HEADER_H + CHAPTER_LIST_PAD_TOP;
+   int plateX = panelX + PANEL_PAD_X - CHAPTER_ROW_INSET;
+   int plateW = panelW - 2 * (PANEL_PAD_X - CHAPTER_ROW_INSET);
+   for (int row = 0; row < rows; row++) {
+      int rowY = topY + row * CHAPTER_ROW_HEIGHT;
+      if (row == state.optionsSelected)
+         uiFillRounded(plateX, rowY + 4, plateW, CHAPTER_ROW_HEIGHT - 8, UI_RADIUS_ROW, activeTheme->rowHighlight);
+      uiDrawLabelAt(&labels[row], panelX + PANEL_PAD_X, uiLabelYForCenter(&labels[row], rowY, CHAPTER_ROW_HEIGHT));
+   }
+}
+
 // a brief toast at the top right: under the chips - or under the title plate, when it would reach the plate
 static void drawToast(void)
 {
@@ -2070,12 +2272,13 @@ static void drawPlay(void)
          drawGfxYuvFrame(dx, dy, dw, dh, frame, w, h);
       }
       measureFps(frame);
-      int overlayUp = state.chaptersVisible || state.descriptionVisible;   // a full-screen overlay hides the HUD noise
+      int overlayUp = state.chaptersVisible || state.descriptionVisible || state.optionsVisible;   // a full-screen overlay hides the HUD noise
       int hudUp = state.stage == STAGE_PLAYING && controlsVisible() && !overlayUp;   // live too: title, chips, LIVE
       if (hudUp) drawHud();
       if (state.showStats && frame) { updateStatLabels(); drawStatsOverlay(); }   // over the HUD's gradient
       if (state.stage == STAGE_PLAYING && !overlayUp) { drawSubtitle(hudUp); drawSkipPrompt(); drawToast(); drawVolume(); }
       if (state.chaptersVisible) drawChapters();
+      if (state.optionsVisible) drawOptions();
       if (state.descriptionVisible) drawDescription();
    }
 
@@ -2125,6 +2328,10 @@ static void termPlay(void)
    for (int i = 0; i < MAX_CHAPTERS; i++) freeLabel(&chapterLabels[i]);
    freeLabel(&descriptionHeading);
    freeLabel(&chaptersHeading);
+   freeLabel(&optionsHeading);
+   freeLabel(&qualityHeading);
+   for (int i = 0; i < OPTION_ROWS; i++) freeLabel(&optionLabels[i]);
+   for (int i = 0; i < MAX_QUALITY_CHOICES + 1; i++) freeLabel(&qualityLabels[i]);
    uiTermHints(&hudHints);
    uiTermHints(&descriptionHints);
    uiTermHints(&chapterHints);
