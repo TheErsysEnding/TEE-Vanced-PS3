@@ -1,0 +1,22 @@
+# TEE Decoder 1.3.0 - the module folder libs/simple-lib-av/src/tee_decoder/, vendored unchanged from TEE's
+# baustein/source/tee_decoder/ (TEE-Decoder-Baustein-1.3.0, 2026-11-07). genbuild.py refuses to build when the
+# folder differs from this list. Never edit the module here: change TEE's master, make a new building block,
+# copy the folder over and update this file (sha256sum of every file, sorted by name).
+8d759b52ba342c1665d642515ddae5d74360af7a06ec9587809c42f9f455e917  td_cabac_job.h
+ec3ca46a53e3b572178b9df5854d9192ee4dec487ed1f3a33f86e31fb1e23424  td_cabac_slice.h
+2d0dd5820d41b8a8091dbb66d2a45d2eb5c8cb79888e262700fe077eff39e954  td_core.c
+61a68872b824ab377b28795745b9b228846ecc47b647562b7c0747a2136210c0  td_core.h
+fe7a06d0ac1bb1620a16e4faf7f054a4d0c75fa356c3001c92ac7f11c92892ed  td_dpb.c
+4963a45403956f4df7557d3502c9d388925623f10e3aed0ecbac9504512f2941  td_dpb.h
+612914e266c3be9f8c52f5367995ecd5ec7cd1fe96bcc3456590532f30d94c08  td_h264_hdr.c
+e7c76ade4968ead55ae8e5421229a917f68cf8cd39ad9bb405ce2f30f1f3c908  td_h264_hdr.h
+1e6d47f9518e19ca45cc745ce8629a433dcfbd1e3c871cdbdad69f12281eabbd  td_names.h
+baf9f9278fe5f4207aeb68bea73ef356387460380fb4ae34a39d0e94fd526a14  td_pichash.h
+bb597c1988460d202f849a6b9c76a5e254dcaae6a6639d90859ba49cb078f045  td_pixel_job.h
+0641f66e61ef59c77f677d138f4e2f29eb20004669de34044be6237f1641154c  td_plat.h
+7ae909afde41525d5c821df619eb871581cabe33a3fed6f75c787cf7e425e5dc  td_plat_cell.c
+c37b26e3c02c17c161280fac78e17739c2cbc6f2c99d9811100bd7179b71dad9  td_plat_ps3.c
+e94620351e3cb23847eee907365b19fa2e399abdfdde1b6dbbedb4d4780de522  td_recon.h
+9eb221dfbccb5117bba628bf197f460001219f696ea4fc2cba0df8a59304ef60  td_spu_images.c
+3f0036886e2b1f867d07ce5b1edb987f5f7f1ba8732d676514dca39d1ba653d8  tee_decoder.c
+934041d621ed9ac6ec70a8d25acd230708b307fda5c1c3fc5637649f67cbedff  tee_decoder.h
