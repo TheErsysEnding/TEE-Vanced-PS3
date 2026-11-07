@@ -1,5 +1,9 @@
 # TEE Vanced PS3
 
+<p align="center">
+  <img src="branding/banner.png" alt="TEE Vanced PS3 - Full HD 60 fps, H.264 support, the TEE Decoder - linktr.ee/theersysending" width="560">
+</p>
+
 A YouTube client for the PlayStation 3, built from source and run on real
 hardware. A fork of **[mohasi's Yo! Player](https://github.com/mohasi/ps3-dev)**
 (Apache-2.0) — see [NOTICE](NOTICE); the application and its libraries are his
@@ -150,7 +154,12 @@ ppu-lv2-strings yo-player.ppu.elf | grep "V1.0.1"
 
 ## Installing
 
-Install the `.pkg` from the console's package manager. It writes its data to a
+<p align="center">
+  <img src="branding/ICON0.PNG" alt="TEE Vanced PS3's tile on the XMB" width="320">
+</p>
+
+Install the `.pkg` from the console's package manager; it appears on the XMB as
+the tile above, with its own background (`branding/PIC1.PNG`). It writes its data to a
 directory it picks at runtime — `/dev_hdd0/yo-player` cannot be created on every
 console, so it falls back through a list and logs which one it chose to
 `/dev_hdd0/tmp/TEE_Vanced/dbg.txt`. Your subscriptions, history and settings
@@ -185,4 +194,4 @@ use it, in free or closed software, commercially too; changes to the decoder
 itself stay open. The TEE name, logo and the artwork in `branding/` are not part
 of either licence.
 
-Contact: github@teebug.de
+Contact: github@teebug.de · More from TEE: [linktr.ee/theersysending](https://linktr.ee/theersysending)

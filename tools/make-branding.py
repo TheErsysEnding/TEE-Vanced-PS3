@@ -195,6 +195,14 @@ def make_background():
     return path, img.size
 
 
+def make_banner(background):
+    """The README's banner: the part of the XMB background with the wordmark, the claim and the linktree."""
+    banner = background.crop((1090, 320, 1890, 1020))
+    path = OUT / "banner.png"
+    banner.save(path, optimize=True)
+    return path, banner.size
+
+
 if __name__ == "__main__":
-    for path, size in (make_icon(), make_background()):
+    for path, size in (make_icon(), make_background(), make_banner(Image.open(OUT / "PIC1.PNG"))):
         print(f"{path.name:10} {size[0]}x{size[1]}  {path.stat().st_size:>8} bytes  {path}")
