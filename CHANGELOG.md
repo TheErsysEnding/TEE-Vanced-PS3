@@ -3,6 +3,39 @@
 Every release listed here was installed and used on a real PS3 (EVILNAT 4.92 DEX)
 before it was tagged. Anything that had not been is said so plainly.
 
+## v1.1 — not released yet
+
+Not yet run anywhere: not on a console, and not in RPCS3 either (the build PC
+ran out of memory, see below). This is a test build.
+
+### Added
+
+**TEE's own H.264 decoder.** The TEE Decoder (TEE's, on the SPEs, version
+1.3.0) decodes YouTube's 1080p60 at 60 fps on TEE's console, where Sony's
+`cellVdec` manages about 35 fps at 1080p. TEE Vanced now uses it for every
+video it can decode, and opens 1080p60 (itag 299) for it; before, every 60 fps
+video played at 720p60.
+
+- It decodes High and Main profile H.264 with CABAC, 8 bit 4:2:0, progressive,
+  with a coded width that is a multiple of 128 up to 1920 x 1088 - YouTube's
+  1920-, 1280-, 640- and 256-wide streams. The app reads each stream's own SPS
+  and PPS before it opens the decoder; everything else, live streams and the
+  480p/240p sizes (854 and 426 wide) stay on `cellVdec`.
+- It uses 4 SPEs (1 CABAC + 3 pixel), `cellAdec` 1 more for the sound: 5 of 6,
+  as with `cellVdec`. `tee-decoder-spes=5` in `settings.txt` gives it a fourth
+  pixel SPE (all 6 busy with the sound).
+- `video-decoder=sony` in `settings.txt` plays everything on `cellVdec` again.
+- If it fails while playing, the app flushes it and goes on from the next
+  keyframe; a second failure within 30 s hands the video to `cellVdec` until
+  the app is restarted.
+- The R3 overlay names the decoder in use.
+- The module is vendored unchanged in `libs/simple-lib-av/src/tee_decoder/`;
+  the build stops if it differs from `libs/simple-lib-av/tee_decoder.sha256`.
+
+**Before a release:** the module has no licence yet, and its SPU programs
+carry the build machine's path in their `.note.spu_name` section; both need
+TEE's decision and a new module build.
+
 ## v1.0.1 — 2026-11-06
 
 ### Changed
