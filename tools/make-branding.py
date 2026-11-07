@@ -11,27 +11,78 @@ entry looks like it belongs to the same family:
 
 The XMB draws the game's title and its own chrome over the LEFT half of PIC1, so everything that has to stay
 readable lives on the right.
+
+Since v2.0.0 both also say what the TEE Decoder brings (FULL HD 60 FPS, H.264) and carry the linktree where it is
+seen - on the tile, and as a plate under the claim on the background (it used to be a faint line in a corner).
+That text is Manrope, the app's own font, read straight from the bytes the app embeds - no installed font needed
+for it; the wordmark stays Montserrat.
 """
 
+import io
 import pathlib
+import re
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
-OUT = pathlib.Path(__file__).resolve().parent.parent / "branding"
+ROOT = pathlib.Path(__file__).resolve().parent.parent
+OUT = ROOT / "branding"
 OUT.mkdir(exist_ok=True)
 
 BRAND = (255, 138, 0)
 LIGHT = (255, 190, 92)
 CREAM = (234, 223, 206)
 MUTED = (154, 140, 116)
+INK = (20, 16, 10)
 BG_TOP = (32, 25, 15)
 BG_BOTTOM = (16, 13, 8)
 
 HEAVY = "/usr/share/fonts/opentype/montserrat/Montserrat-ExtraBold.otf"
 MEDIUM = "/usr/share/fonts/opentype/montserrat/Montserrat-SemiBold.otf"
 
+LINKTREE = "linktr.ee/theersysending"
+
 
 def font(path, size):
     return ImageFont.truetype(path, size)
+
+
+_manrope = {}
+
+
+def manrope(weight, size):
+    """Manrope (SIL OFL 1.1) as the app embeds it: apps/yo-player/src/assets/manrope-<weight>.c holds the TTF."""
+    if weight not in _manrope:
+        text = (ROOT / "apps/yo-player/src/assets" / f"manrope-{weight}.c").read_text(encoding="utf-8")
+        body = text[text.index("{") + 1:text.rindex("}")]
+        _manrope[weight] = bytes(int(h, 16) for h in re.findall(r"0x([0-9a-fA-F]{2})", body))
+    return ImageFont.truetype(io.BytesIO(_manrope[weight]), size)
+
+
+def pill(draw, x, y, text, fnt, fill, ink, pad_x, height, outline=None, width=0):
+    """A rounded label with its text centred on the capitals, not on the font's line box. Returns its right edge."""
+    l, _, r, _ = draw.textbbox((0, 0), text, font=fnt)
+    _, cap_top, _, cap_bottom = draw.textbbox((0, 0), "H", font=fnt)
+    w = (r - l) + 2 * pad_x
+    draw.rounded_rectangle((x, y, x + w, y + height), radius=height // 2, fill=fill, outline=outline, width=width)
+    draw.text((x + pad_x - l, y + (height - (cap_bottom - cap_top)) / 2 - cap_top), text, font=fnt, fill=ink)
+    return x + w
+
+
+def draw_icon_extras(img):
+    """The tile's claim across the top, and the linktree under the wordmark."""
+    d = ImageDraw.Draw(img)
+    end = pill(d, 22, 12, "FULL HD 60 FPS", manrope("extrabold", 14), BRAND, INK, 9, 24)
+    d.text((end + 8, 17), "H.264 · TEE DECODER", font=manrope("extrabold", 12), fill=LIGHT)
+    d.text((22, 143), LINKTREE, font=manrope("extrabold", 15), fill=CREAM)
+
+
+def draw_background_extras(img):
+    """Under the background's subtitle: the claim, and the linktree as a plate that can be seen from the sofa."""
+    d = ImageDraw.Draw(img)
+    x = 1306
+    pill(d, x, 690, "FULL HD 60 FPS", manrope("extrabold", 34), BRAND, INK, 26, 64)
+    d.text((x, 778), "H.264 SUPPORT · TEE DECODER", font=manrope("extrabold", 34), fill=LIGHT)
+    d.text((x, 880), "Updates & more from TEE:", font=manrope("semibold", 24), fill=MUTED)
+    pill(d, x, 922, LINKTREE, manrope("extrabold", 34), (34, 26, 16), CREAM, 26, 64, outline=BRAND, width=3)
 
 
 def vertical_gradient(size, top, bottom):
@@ -101,9 +152,8 @@ def make_icon():
     d.text((108, 44), "TEE", font=tee, fill=BRAND)
     tracked_text(d, (111, 110), "VANCED", vanced, CREAM, 3.2)
 
-    small = font(MEDIUM, 13)
     # no version on the tile: it went stale with every release (the XMB title carries it instead)
-    d.text((112, 140), "PS3", font=small, fill=MUTED)
+    draw_icon_extras(img)
 
     d.rounded_rectangle((0, 0, W - 1, H - 1), radius=4, outline=(60, 46, 28), width=1)
     path = OUT / "ICON0.PNG"
@@ -138,9 +188,7 @@ def make_background():
     # name anyone else's brand. "YT" is the owner's wording.
     d.text((1306, 616), "YT Player for PlayStation 3 with adblock", font=sub, fill=MUTED)
 
-    foot = font(MEDIUM, 24)
-    text = "linktr.ee/theersysending"
-    d.text((W - 70 - d.textlength(text, font=foot), H - 74), text, font=foot, fill=(120, 108, 90))
+    draw_background_extras(img)
 
     path = OUT / "PIC1.PNG"
     img.save(path, optimize=True)
