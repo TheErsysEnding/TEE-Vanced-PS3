@@ -5,22 +5,25 @@ before it was tagged. Anything that had not been is said so plainly.
 
 ## v1.1 — not released yet
 
-Not yet run anywhere: not on a console, and not in RPCS3 either (the build PC
-ran out of memory, see below). This is a test build.
+Test builds only so far. The test builds V1.1 Test1 to Test7 were installed on
+TEE's console (EVILNAT 4.92 DEX) on 2026-11-07; the release itself waits for a
+new build of the decoder module (see the end of this section).
 
 ### Added
 
 **TEE's own H.264 decoder.** The TEE Decoder (TEE's, on the SPEs, version
-1.3.0) decodes YouTube's 1080p60 at 60 fps on TEE's console, where Sony's
-`cellVdec` manages about 35 fps at 1080p. TEE Vanced now uses it for every
-video it can decode, and opens 1080p60 (itag 299) for it; before, every 60 fps
-video played at 720p60.
+1.3.0) decodes YouTube's 1080p60 at 60 fps, where Sony's `cellVdec` manages
+about 35 fps at 1080p. TEE Vanced now uses it for every video it can decode,
+and opens 1080p60 (itag 299) for it; before, every 60 fps video played at
+720p60. On the console 1080p60, 720p60, 360p and 144p all played on it, with
+sound, seeking and switching videos.
 
 - It decodes High and Main profile H.264 with CABAC, 8 bit 4:2:0, progressive,
   with a coded width that is a multiple of 128 up to 1920 x 1088 - YouTube's
   1920-, 1280-, 640- and 256-wide streams. The app reads each stream's own SPS
   and PPS before it opens the decoder; everything else, live streams and the
-  480p/240p sizes (854 and 426 wide) stay on `cellVdec`.
+  480p/240p sizes (854 and 426 wide) stay on `cellVdec`. A 1080p60 video that
+  does not get the TEE Decoder plays at 720p60 on `cellVdec`, as before.
 - It uses 4 SPEs (1 CABAC + 3 pixel), `cellAdec` 1 more for the sound: 5 of 6,
   as with `cellVdec`. `tee-decoder-spes=5` in `settings.txt` gives it a fourth
   pixel SPE (all 6 busy with the sound).
@@ -28,13 +31,42 @@ video played at 720p60.
 - If it fails while playing, the app flushes it and goes on from the next
   keyframe; a second failure within 30 s hands the video to `cellVdec` until
   the app is restarted.
-- The R3 overlay names the decoder in use.
 - The module is vendored unchanged in `libs/simple-lib-av/src/tee_decoder/`;
   the build stops if it differs from `libs/simple-lib-av/tee_decoder.sha256`.
 
-**Before a release:** the module has no licence yet, and its SPU programs
-carry the build machine's path in their `.note.spu_name` section; both need
-TEE's decision and a new module build.
+**Smooth 60 fps on a 59.94 Hz screen (display sync).** A video whose frame
+rate is the screen's - 60 fps on the PS3's 59.94 Hz, or 30 fps at two vblanks
+a picture - now shows exactly one picture per vblank, and the sound plays
+0.1% slower to match (1.7 cents, not audible), steered so picture and sound
+stay together. Before, the clock had to drop a picture every 16.7 s, and the
+audio clock's 5 ms steps turned that into a few seconds of judder each time.
+
+**Choose the quality.** START shows the controls; with them up it opens
+Options: Quality, Chapters and Autoplay. Quality lists Auto and every quality
+of the video the player can play - for example 1080p60, 720p60, 360p, 144p.
+A pick switches at the same position and stays as the highest quality for the
+next videos too (`quality=` in `settings.txt`, e.g. for a slow connection),
+until Auto is picked again.
+
+### Changed
+
+- O puts the controls away first, paused or not; only with nothing on the
+  picture does it leave the video. It used to leave at once.
+- START opens Options instead of the chapter list (Chapters is in it), and
+  Autoplay moved there from Square, which is now only the audio-track button.
+- The R3 panel names the decoder and says "Press R3 to hide".
+
+### Fixed
+
+- **The app hung after seeking back from near the end of a video** (also in
+  Yo! Player). Once the last stretch of the file had been fetched, a seek back
+  was never fetched again: the picture stopped, and O froze the app (FTP and
+  webMAN still answered). The fetch now follows the seek, closing the player
+  cancels a read that waits, and a read that gets nothing for 30 s gives up.
+
+**Before a release:** the decoder module has no licence yet, and its SPU
+programs carry the build machine's path in their `.note.spu_name` section;
+both need TEE's decision and a new module build.
 
 ## v1.0.1 — 2026-11-06
 
