@@ -90,6 +90,11 @@ struct VideoPlayer {
    uint64_t currentPts;           // pts of the frame currently displayed
    int      displayIndex;         // slot being displayed, or -1
    uint64_t audioWaitStartUs;     // when pre-roll first started waiting on the audio clock (0 = not yet)
+
+   // presentation statistics (getVideoFrame, under lock): a line goes to the log for every second in which a
+   // picture was dropped as late or none was ready - the stutter a viewer sees, with what was behind it
+   uint64_t statsSecondUs;
+   int      statsShown, statsLate, statsRepeats, statsStarved, statsReadyMin;
 };
 
 // defined below the decode thread but used by performSeek's audio-revive path
@@ -144,7 +149,10 @@ static int feedDecoder(VideoPlayer *player, int *startedAtKeyframe)
    while (fed < (tee ? 8 : 1) && player->running && player->seekRequestNs < 0 && !player->inputEnded) {
       if (!player->hasPendingAu && getAuBacklogH264(player->decoder) >= limit) break;
       if (!player->hasPendingAu) {
+         uint64_t readStartUs = sys_time_get_system_time();
          int r = readVideoAu(&player->demuxer, &player->pendingAu);
+         uint64_t readUs = sys_time_get_system_time() - readStartUs;
+         if (readUs > 30000) logWarn("[video-player] reading the next access unit took %d ms\n", (int)(readUs / 1000));
          if (r < 0) return -1;
          if (r == 0) { player->inputEnded = 1; endOfStreamH264(player->decoder); break; }
          if (!*startedAtKeyframe) { if (!player->pendingAu.keyframe) continue; *startedAtKeyframe = 1; }
@@ -259,6 +267,8 @@ static void performSeek(VideoPlayer *player)
    player->audioClockValid = 0;
    player->audioWaitStartUs = 0;         // fresh pre-roll: each seek gets the full window to wait for audio,
                                          // else a stale timer trips instantly and video starts on the wall clock
+   player->statsSecondUs = 0;            // the stutter statistics start over with the new position
+   player->statsShown = player->statsLate = player->statsRepeats = player->statsStarved = 0;
    unlock(&player->lock);
 
    // hold the audio feed until the first post-seek frame actually presents (getVideoFrame releases it), so
@@ -689,25 +699,50 @@ const uint8_t *getVideoFrame(VideoPlayer *player, int *width, int *height)
    uint64_t clock = presentationClockNs(player, nowUs);
 
    // pick the latest ready frame whose pts is due; drop older ready frames (skip if we fell behind)
-   int best = -1; uint64_t bestPts = 0;
-   for (int i = 0; i < FRAME_SLOTS; i++)
+   int best = -1, readyCount = 0; uint64_t bestPts = 0;
+   for (int i = 0; i < FRAME_SLOTS; i++) {
+      if (player->slots[i].state == SLOT_READY) readyCount++;
       if (player->slots[i].state == SLOT_READY && player->slots[i].pts <= clock && (best < 0 || player->slots[i].pts >= bestPts)) { best = i; bestPts = player->slots[i].pts; }
+   }
 
+   int late = 0;
    if (best >= 0) {
       for (int i = 0; i < FRAME_SLOTS; i++) {
          if (player->slots[i].state == SLOT_RETIRING) player->slots[i].state = SLOT_EMPTY;                // GPU is done with it by now
          else if (player->slots[i].state == SLOT_DISPLAYING) player->slots[i].state = SLOT_RETIRING;      // hold one present for the frame in flight
-         else if (player->slots[i].state == SLOT_READY && player->slots[i].pts < bestPts) player->slots[i].state = SLOT_EMPTY;   // drop skipped
+         else if (player->slots[i].state == SLOT_READY && player->slots[i].pts < bestPts) { player->slots[i].state = SLOT_EMPTY; late++; }   // drop skipped
       }
       player->slots[best].state = SLOT_DISPLAYING;
       player->displayIndex = best;
       player->currentPts   = bestPts;
    }
 
+   // the stutter statistics: a present with a new picture, pictures dropped as late, a present with none due,
+   // and none ready at all (the decoder behind, not just early)
+   char statsLine[200];
+   statsLine[0] = 0;
+   if (!player->paused) {
+      if (!player->statsSecondUs) { player->statsSecondUs = nowUs; player->statsReadyMin = FRAME_SLOTS; }
+      if (best >= 0) player->statsShown++; else player->statsRepeats++;
+      if (best < 0 && readyCount == 0) player->statsStarved++;
+      player->statsLate += late;
+      if (readyCount < player->statsReadyMin) player->statsReadyMin = readyCount;
+      if (nowUs - player->statsSecondUs >= 1000000ull) {
+         if (player->statsLate || player->statsStarved)
+            snprintf(statsLine, sizeof statsLine, "[video-player] 1 s: %d pictures shown, %d dropped as late, %d presents "
+                     "without a new one (%d with none ready), fewest ready %d of %d\n", player->statsShown, player->statsLate,
+                     player->statsRepeats, player->statsStarved, player->statsReadyMin, FRAME_SLOTS);
+         player->statsSecondUs = nowUs;
+         player->statsShown = player->statsLate = player->statsRepeats = player->statsStarved = 0;
+         player->statsReadyMin = FRAME_SLOTS;
+      }
+   }
+
    int idx = player->displayIndex;
    const uint8_t *buffer = 0;
    if (idx >= 0) { buffer = player->slots[idx].yuv; *width = player->slots[idx].width; *height = player->slots[idx].height; }
    unlock(&player->lock);
+   if (statsLine[0]) logInfo("%s", statsLine);   // outside the lock: a file write must not hold up the decode thread
 
    // release the audio held through pre-roll (mixer call must run outside player->lock)
    if (releaseAudio && player->audioFeedOpen) pauseAudioPcmFeed(0);
