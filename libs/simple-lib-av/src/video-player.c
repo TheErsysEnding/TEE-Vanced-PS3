@@ -16,6 +16,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/sys_time.h>
+#include <sysutil/sysutil_sysparam.h>   // cellVideoOutGetState: the screen's refresh rate (display sync)
 
 // the decode thread runs ahead into this ring; the extra slots past PREROLL_FRAMES are cushion the
 // decoder banks during easy scenes and spends on hard (high-bitrate) frames without the picture stalling.
@@ -100,6 +101,18 @@ struct VideoPlayer {
    // picture was dropped as late or none was ready - the stutter a viewer sees, with what was behind it
    uint64_t statsSecondUs;
    int      statsShown, statsLate, statsRepeats, statsStarved, statsReadyMin;
+
+   // display sync (see pickSyncedFrame): a video whose frame rate matches the screen's (60 fps on 59.94 Hz, 30 on
+   // 59.94 at two vblanks a picture) shows exactly one picture per vblank, and the sound's tempo is steered by a
+   // hair so the clock keeps up - instead of the clock dropping a picture every 1 / (60 - 59.94) = 16.7 s
+   int      syncPerFrame;       // vblanks per picture when the rates match (1 or 2), 0 = no display sync
+   double   syncBaseSpeed;      // the sound's tempo that matches: screen rate / (syncPerFrame x frame rate)
+   uint64_t syncVblankUs;       // one vblank of the screen
+   int      syncActive;         // frame-locked right now (UI thread, under lock)
+   uint64_t syncLastUs;         // when the last present ran
+   int      syncVblanks;        // vblanks counted toward the next picture
+   int      syncSpeedSet;       // the sound's tempo is not 1.0 at the moment
+   uint64_t syncLogUs;          // when the last display-sync line went to the log
 };
 
 // defined below the decode thread but used by performSeek's audio-revive path
@@ -553,6 +566,45 @@ static void audioOpenThread(uint64_t arg)
 
 static int roundUp16(int value) { return (value + 15) & ~15; }
 
+// the screen's refresh rate as the console drives it, 0 if unknown
+static double screenRefreshHz(void)
+{
+   CellVideoOutState state;
+   if (cellVideoOutGetState(CELL_VIDEO_OUT_PRIMARY, 0, &state) < 0) return 0.0;
+   uint16_t rates = state.displayMode.refreshRates;
+   if (rates & CELL_VIDEO_OUT_REFRESH_RATE_59_94HZ) return 60000.0 / 1001.0;
+   if (rates & CELL_VIDEO_OUT_REFRESH_RATE_60HZ)    return 60.0;
+   if (rates & CELL_VIDEO_OUT_REFRESH_RATE_50HZ)    return 50.0;
+   if (rates & CELL_VIDEO_OUT_REFRESH_RATE_30HZ)    return 30.0;
+   return 0.0;
+}
+
+// display sync when the video's frame rate is the screen's (or half of it) to within 1%: then one picture per
+// vblank (or per two) plays it at the screen's pace, and the sound follows at screen rate / (n x frame rate)
+static void setUpDisplaySync(VideoPlayer *player)
+{
+   double screenHz = screenRefreshHz();
+   if (screenHz <= 0.0 || !player->demuxer.frameDurationNs) {
+      logInfo("[video-player] display sync off: screen rate %s, frame rate %s\n", screenHz > 0.0 ? "known" : "unknown",
+              player->demuxer.frameDurationNs ? "known" : "unknown");
+      return;
+   }
+   double fps = 1.0e9 / (double)player->demuxer.frameDurationNs;
+   for (int perFrame = 1; perFrame <= 2 && !player->syncPerFrame; perFrame++) {
+      double ratio = screenHz / ((double)perFrame * fps);
+      if (ratio > 0.99 && ratio < 1.01) { player->syncPerFrame = perFrame; player->syncBaseSpeed = ratio; }
+   }
+   player->syncVblankUs = (uint64_t)(1.0e6 / screenHz + 0.5);
+   // integers only: this printf has no floating point
+   if (player->syncPerFrame)
+      logInfo("[video-player] display sync on: screen %d mHz, video %d mHz, %d vblank(s) a picture, sound tempo %d ppm\n",
+              (int)(screenHz * 1000.0 + 0.5), (int)(fps * 1000.0 + 0.5), player->syncPerFrame,
+              (int)(player->syncBaseSpeed * 1.0e6 + 0.5));
+   else
+      logInfo("[video-player] display sync off: screen %d mHz, video %d mHz\n", (int)(screenHz * 1000.0 + 0.5),
+              (int)(fps * 1000.0 + 0.5));
+}
+
 // heap fallbacks when the caller supplies no frame allocator
 static void *allocFrameFromHeap(size_t size) { return memalign(128, size); }
 static void freeFrameToHeap(void *buffer) { free(buffer); }
@@ -638,6 +690,7 @@ VideoPlayer *createVideoPlayerSplit(const char *videoPath, const char *audioPath
               (int)(1000000000ull / player->demuxer.frameDurationNs), getH264DecoderName(player->decoder));
       player->catchUpAllowed = 1;   // armed; the decode thread engages it only while behind
    }
+   setUpDisplaySync(player);
 
    player->running = 1;
    player->threadActive = (spawnJoinableThread(&player->thread, decodeThread, (uint64_t)(uintptr_t)player,
@@ -690,6 +743,49 @@ static const uint8_t *takeHeldFrame(VideoPlayer *player, int *width, int *height
    return heldBuffer;
 }
 
+#define SYNC_CORRECTION_NS  10000000000ll   // the sound's tempo moves by error / 10 s ...
+#define SYNC_MAX_CORRECTION 0.005           // ... by 0.5% at most (8.6 cents, and only while it closes a gap)
+
+// Display sync (caller holds player->lock): the picture advances by the vblanks that went by since the last
+// present - one picture per vblank, or per two - not by the clock, so the beat between a 60 fps video and a
+// 59.94 Hz screen never makes it skip. The sound's tempo is steered so the clock stays with the picture (see
+// getVideoFrame). Only a real gap goes back to dropping or holding: the picture more than 1.5 pictures behind
+// the clock skips one, more than 1.5 ahead waits. Returns the slot to show, -1 to keep the current one.
+static int pickSyncedFrame(VideoPlayer *player, uint64_t nowUs, uint64_t clock)
+{
+   int64_t vblankUs = (int64_t)player->syncVblankUs;
+   int elapsed = (int)(((int64_t)(nowUs - player->syncLastUs) + vblankUs / 2) / vblankUs);
+   if (elapsed < 0) elapsed = 0;
+   player->syncLastUs = nowUs;
+   player->syncVblanks += elapsed;
+   int advance = player->syncVblanks / player->syncPerFrame;
+   player->syncVblanks -= advance * player->syncPerFrame;
+
+   int64_t frameNs = (int64_t)player->demuxer.frameDurationNs;
+   int64_t errorNs = (int64_t)player->currentPts - (int64_t)clock;   // > 0: the picture is ahead of the sound
+   int best = -1;
+   if (errorNs < -frameNs * 6) {   // far behind (a stall): straight to the picture that is due, as without sync
+      uint64_t bestPts = 0;
+      for (int i = 0; i < FRAME_SLOTS; i++)
+         if (player->slots[i].state == SLOT_READY && player->slots[i].pts <= clock && (best < 0 || player->slots[i].pts >= bestPts)) { best = i; bestPts = player->slots[i].pts; }
+      return best;
+   }
+   if (errorNs < -frameNs * 3 / 2) advance++;                        // behind: skip one picture to catch up
+   else if (errorNs > frameNs * 3 / 2) advance = 0;                  // ahead: hold this one
+
+   uint64_t after = player->currentPts;
+   for (int step = 0; step < advance; step++) {
+      int next = -1;
+      for (int i = 0; i < FRAME_SLOTS; i++)
+         if (player->slots[i].state == SLOT_READY && player->slots[i].pts > after &&
+             (next < 0 || player->slots[i].pts < player->slots[next].pts)) next = i;
+      if (next < 0) break;   // nothing newer decoded yet: show what is there, or repeat
+      best = next;
+      after = player->slots[next].pts;
+   }
+   return best;
+}
+
 const uint8_t *getVideoFrame(VideoPlayer *player, int *width, int *height)
 {
    uint64_t nowUs = sys_time_get_system_time();
@@ -740,12 +836,21 @@ const uint8_t *getVideoFrame(VideoPlayer *player, int *width, int *height)
    steerPresentationClock(player, nowUs);
    uint64_t clock = presentationClockNs(player, nowUs);
 
-   // pick the latest ready frame whose pts is due; drop older ready frames (skip if we fell behind)
    int best = -1, readyCount = 0; uint64_t bestPts = 0;
-   for (int i = 0; i < FRAME_SLOTS; i++) {
-      if (player->slots[i].state == SLOT_READY) readyCount++;
-      if (player->slots[i].state == SLOT_READY && player->slots[i].pts <= clock && (best < 0 || player->slots[i].pts >= bestPts)) { best = i; bestPts = player->slots[i].pts; }
+   for (int i = 0; i < FRAME_SLOTS; i++) if (player->slots[i].state == SLOT_READY) readyCount++;
+
+   // display sync while the sound runs (see pickSyncedFrame); it locks on from a picture chosen by the clock
+   int synced = player->syncPerFrame && player->audioClockValid && player->audioFeedOpen && !player->paused;
+   if (synced && player->syncActive) {
+      best = pickSyncedFrame(player, nowUs, clock);
+      if (best >= 0) bestPts = player->slots[best].pts;
+   } else {
+      // pick the latest ready frame whose pts is due; drop older ready frames (skip if we fell behind)
+      for (int i = 0; i < FRAME_SLOTS; i++)
+         if (player->slots[i].state == SLOT_READY && player->slots[i].pts <= clock && (best < 0 || player->slots[i].pts >= bestPts)) { best = i; bestPts = player->slots[i].pts; }
+      if (synced && best >= 0) { player->syncActive = 1; player->syncLastUs = nowUs; player->syncVblanks = 0; }
    }
+   if (!synced) player->syncActive = 0;
 
    int late = 0;
    if (best >= 0) {
@@ -757,6 +862,29 @@ const uint8_t *getVideoFrame(VideoPlayer *player, int *width, int *height)
       player->slots[best].state = SLOT_DISPLAYING;
       player->displayIndex = best;
       player->currentPts   = bestPts;
+   }
+
+   // display sync: the sound's tempo keeps the clock with the picture - the screen's rate over the video's, plus a
+   // correction that closes the gap between them (picture ahead: the sound a hair faster). Back to 1.0 otherwise.
+   char syncLine[160];
+   syncLine[0] = 0;
+   if (synced && player->syncActive) {
+      int64_t errorNs = (int64_t)player->currentPts - (int64_t)clock;
+      double correction = (double)errorNs / (double)SYNC_CORRECTION_NS;
+      if (correction >  SYNC_MAX_CORRECTION) correction =  SYNC_MAX_CORRECTION;
+      if (correction < -SYNC_MAX_CORRECTION) correction = -SYNC_MAX_CORRECTION;
+      double speed = player->syncBaseSpeed * (1.0 + correction);
+      setAudioPcmFeedSpeed(speed);
+      player->syncSpeedSet = 1;
+      if (nowUs - player->syncLogUs >= 10000000ull) {
+         player->syncLogUs = nowUs;
+         snprintf(syncLine, sizeof syncLine, "[video-player] display sync: picture %d ms %s the sound, sound tempo %d ppm\n",
+                  (int)((errorNs < 0 ? -errorNs : errorNs) / 1000000), errorNs < 0 ? "behind" : "ahead of",
+                  (int)(speed * 1.0e6 + 0.5));
+      }
+   } else if (player->syncSpeedSet) {
+      setAudioPcmFeedSpeed(1.0);
+      player->syncSpeedSet = 0;
    }
 
    // the stutter statistics: a present with a new picture, pictures dropped as late, a present with none due,
@@ -785,6 +913,7 @@ const uint8_t *getVideoFrame(VideoPlayer *player, int *width, int *height)
    if (idx >= 0) { buffer = player->slots[idx].yuv; *width = player->slots[idx].width; *height = player->slots[idx].height; }
    unlock(&player->lock);
    if (statsLine[0]) logInfo("%s", statsLine);   // outside the lock: a file write must not hold up the decode thread
+   if (syncLine[0]) logInfo("%s", syncLine);
 
    // release the audio held through pre-roll (mixer call must run outside player->lock)
    if (releaseAudio && player->audioFeedOpen) pauseAudioPcmFeed(0);
