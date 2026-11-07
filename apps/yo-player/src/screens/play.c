@@ -1562,10 +1562,11 @@ static void updateStatLabels(void)
    getAudioTrackInfo(state.player, &rate, &channels);
    float pos = getVideoPositionSeconds(state.player), duration = getVideoDurationSeconds(state.player);
 
-   snprintf(line, sizeof line, "Video  itag %d   %dx%d   H.264 (%s)", state.vidItag, state.vidW, state.vidH,
-            getVideoDecoderName(state.player));
+   snprintf(line, sizeof line, "Video  itag %d   %dx%d   H.264", state.vidItag, state.vidW, state.vidH);
    setLabelText(&statLabels[0], line);
-   snprintf(line, sizeof line, "FPS  %d   (target %d)", state.measuredFps, state.vidFps);
+   // the decoder on the frame-rate line: the video line is already as wide as the panel
+   snprintf(line, sizeof line, "FPS  %d   (target %d)   %s", state.measuredFps, state.vidFps,
+            getVideoDecoderName(state.player));
    setLabelText(&statLabels[1], line);
    if (state.audItag) snprintf(line, sizeof line, "Audio  itag %d   AAC %d Hz   %d ch", state.audItag, rate, channels);
    else               strCopy(line, sizeof line, "Audio  none");

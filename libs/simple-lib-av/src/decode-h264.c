@@ -46,14 +46,17 @@ static uint64_t nowUs(void)
 #define VDEC_SPU_PRIORITY    200
 #define VDEC_PPU_STACK_SIZE  (16 * 1024)
 
-// The TEE Decoder, as TEE Vanced runs it. The memory settings are the lean ones TEE's guide gives for YouTube
-// (about 75 MB at 1080p instead of the default 112 MB): the records ring never below 8 MB (the largest
-// picture's CABAC records measured 3.9 MB, and a ring smaller than one picture retries forever), records and
-// input sizes powers of two. The SPE time-out sits below video-player.c's 3 s stall detector, so a silent SPE
-// becomes the decoder's own error (which ends its SPU groups) before the player flushes it.
+// The TEE Decoder, as TEE Vanced runs it: about 91 MB at 1080p instead of the default 112 MB - fewer picture
+// buffers and a smaller input ring, but TEE's own 32 MB records ring. The 16 MB of the lean setting in TEE's
+// guide played 1080p60 at 60 fps on the console (Test1, 2026-11-07), but YouTube's high-motion pictures
+// (2.5-4.3 MB of CABAC records each) did not fit into what was free of it 33 times in 110 s and had their
+// CABAC run again - headroom spent for nothing, with 56 MB of user memory still free. Records and input sizes
+// stay powers of two, the records ring never below 8 MB (a ring smaller than one picture retries forever).
+// The SPE time-out sits below video-player.c's 3 s stall detector, so a silent SPE becomes the decoder's own
+// error (which ends its SPU groups) before the player flushes it.
 #define TEE_PICTURES         12
 #define TEE_INPUT_BYTES      (4u << 20)
-#define TEE_RECORDS_HD       (16u << 20)   // above 720 rows
+#define TEE_RECORDS_HD       (32u << 20)   // above 720 rows
 #define TEE_RECORDS_SD       (8u << 20)
 #define TEE_TIMEOUT_MS       2000
 #define TEE_FIXED_BYTES      (6u << 20)    // its slice ring and NAL buffer
