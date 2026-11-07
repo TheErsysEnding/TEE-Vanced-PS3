@@ -970,9 +970,18 @@ float getVideoPositionSeconds(const VideoPlayer *player)
    return (float)player->currentPts / 1.0e9f;   // stream pts count from the start of the file
 }
 
+uint64_t getVideoPositionNs(const VideoPlayer *player) { return player->currentPts; }
+
 float getVideoDurationSeconds(const VideoPlayer *player)
 {
    return (float)player->demuxer.durationNs / 1.0e9f;
+}
+
+long getVideoLiveFirstSq(const VideoPlayer *player)
+{
+   if (!player || !player->demuxer.isMp4) return -1;
+   const VideoSource *source = &player->demuxer.container.mp4.source;
+   return source->isOpen && source->isLive ? getLiveSourceFirstSq(source->live) : -1;
 }
 
 const char *getVideoDecoderName(const VideoPlayer *player)

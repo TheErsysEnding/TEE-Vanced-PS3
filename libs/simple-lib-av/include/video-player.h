@@ -42,7 +42,12 @@ void  seekVideoPlayer(VideoPlayer *player, float seconds);
 void  seekVideoPlayerPast(VideoPlayer *player, float seconds);
 int   isVideoEnded(const VideoPlayer *player);       // decode reached end of stream and the ring drained
 float getVideoPositionSeconds(const VideoPlayer *player);
+// the same in nanoseconds, exact: a live stream's pts count from its broadcast's start, and after months on air
+// (sq 4174810, 241 days, seen 2026-11-07) a float second has whole seconds of step
+uint64_t getVideoPositionNs(const VideoPlayer *player);
 float getVideoDurationSeconds(const VideoPlayer *player);
+// a live segment stream: the sq segment its picture began with (see live-source.h); -1 for anything else
+long  getVideoLiveFirstSq(const VideoPlayer *player);
 void  getAudioTrackInfo(const VideoPlayer *player, int *rate, int *channels);   // 0/0 if no audio track
 
 // the decoder behind the picture, for a stats overlay: "TEE Decoder" or "cellVdec" (see decode-h264.h)

@@ -12,14 +12,13 @@ static int decodableVideo(const StreamFormat *format)
    return 0;
 }
 
-// what the TEE Decoder (TEE's own, on the SPEs) takes on top: up to 1920 x 1080 at up to 60 fps - 1080p60 too -
-// when the coded width is a multiple of 128 (1920, 1280, 640, 256 wide; not 854 or 426), and not live, which
-// stays on cellVdec for now. decode-h264.c checks the stream itself when it opens and falls back to cellVdec.
+// what the TEE Decoder (TEE's own, on the SPEs) takes on top: up to 1920 x 1080 at up to 60 fps - 1080p60 too,
+// live streams' as well (V1.1 Test9) - when the coded width is a multiple of 128 (1920, 1280, 640, 256 wide; not
+// 854 or 426). decode-h264.c checks the stream itself when it opens and falls back to cellVdec.
 static int teeDecodableVideo(const StreamFormat *format)
 {
    int codedWidth = (format->width + 15) & ~15;
-   return codedWidth % 128 == 0 && format->width <= 1920 && format->height <= 1080 && format->fps <= 60 &&
-          !format->isLiveSegmented;
+   return codedWidth % 128 == 0 && format->width <= 1920 && format->height <= 1080 && format->fps <= 60;
 }
 
 static int playableVideo(const StreamFormat *format, int teeUsable)

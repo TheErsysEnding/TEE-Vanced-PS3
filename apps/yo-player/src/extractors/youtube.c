@@ -700,6 +700,15 @@ static int extract(const char *input, StreamInfo *out)
       out->isLive = liveNow;
       if (liveNow) {
          logInfo("[yt] live stream (dash=%d formats=%d dur=%d)\n", dash ? 1 : 0, out->formatCount, out->durationSeconds);
+         // the rewind: the streamer's DVR switch, and every adaptive format's segment length and window (the
+         // same for all of a stream's formats). Seen 2026-11-07: DVR on for 2 of 6 live streams, 5 s segments
+         // (2 s for low latency), a 12 h window; googlevideo still served segments 14 h back with DVR off.
+         out->liveDvr = strstr(resp, "\"isLiveDvrEnabled\":true") != NULL;
+         const char *streaming = strstr(resp, "\"streamingData\"");
+         jsonInt(streaming, end, "targetDurationSec", &out->liveSegmentSec);
+         jsonInt(streaming, end, "maxDvrDurationSec", &out->liveWindowSec);
+         logInfo("[yt] live rewind %s, %d s segments, window %d s\n", out->liveDvr ? "on" : "off",
+                 out->liveSegmentSec, out->liveWindowSec);
          parseLiveManifest(resp, end, out);
          int segmented = 0;
          for (int i = 0; i < out->formatCount; i++)

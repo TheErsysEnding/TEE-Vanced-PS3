@@ -15,6 +15,8 @@
 #include <stdio.h>
 
 #define SEGMENT_FETCH_CAP (8 * 1024 * 1024)    // one segment (a few seconds of 1080p); keyframe segments fit
+#define SEGMENT_FETCH_START (1024 * 1024)      // the fetch buffer's first size: an audio segment is ~80 KB, a 1080p
+                                               // video one 0.3-4 MB, so it doubles up to the cap as segments need
 #define WINDOW_CAP        (8 * 1024 * 1024)    // rolling concatenated-stream buffer kept for the demuxer
 #define WINDOW_BACKLOG    (2 * 1024 * 1024)    // history kept before the read position for small back-seeks
 #define TARGET_AHEAD      (4 * 1024 * 1024)    // how far ahead of the reader the prefetch keeps the window filled
@@ -30,6 +32,8 @@ static const char *SEGMENT_UA = "Mozilla/5.0 (PLAYSTATION 3; 4.9)";
 struct LiveSource {
    char     base[2048];   // "<...>/" - append "sq/<n>"
    long     nextSq;       // next segment number to fetch (prefetch-thread owned)
+   long     edgeSq;       // the live edge the source was opened with
+   volatile long firstSq; // the segment the stream began with, -1 until it is in
    int      firstDone;    // the first (init-bearing) segment has been emitted
    int      failStreak;   // consecutive failed fetches of the current segment, for log throttling
 
@@ -39,6 +43,7 @@ struct LiveSource {
    uint64_t position;     // current read position (virtual)
 
    uint8_t *fetchBuffer;  // reused per-segment download buffer (prefetch-thread owned)
+   int      fetchCap;     // its size, SEGMENT_FETCH_START up to SEGMENT_FETCH_CAP
 
    sys_lwmutex_t    lock;
    int              lockReady;
@@ -94,21 +99,43 @@ static int fetchNextSegment(LiveSource *source)
       snprintf(url, sizeof url, "%ssq/%ld", source->base, source->nextSq);
    HttpHeader headers[] = { { "User-Agent", SEGMENT_UA }, { "Accept-Encoding", "identity" } };
 
-   int length = 0, status = 0;
-   int rc = fetchHttp("GET", url, headers, 2, NULL, 0, (char *)source->fetchBuffer, SEGMENT_FETCH_CAP, &length, &status);
-   if (rc != 0 || length <= 0) {
-      if (rc == 0 && (status == 204 || status == 404)) return 1;   // not generated yet: we're at the live edge
+   int length = 0, status = 0, rc;
+   for (;;) {
+      rc = fetchHttp("GET", url, headers, 2, NULL, 0, (char *)source->fetchBuffer, source->fetchCap, &length, &status);
+      // fetchHttp stops at cap - 1 without saying the body went on: a segment that fills the buffer is fetched
+      // again into one twice the size, up to the cap
+      if (rc != 0 || length < source->fetchCap - 1 || source->fetchCap >= SEGMENT_FETCH_CAP) break;
+      int grown = source->fetchCap * 2 < SEGMENT_FETCH_CAP ? source->fetchCap * 2 : SEGMENT_FETCH_CAP;
+      uint8_t *bigger = (uint8_t *)realloc(source->fetchBuffer, grown);
+      if (!bigger) break;   // keep what fitted, as the fixed buffer did
+      source->fetchBuffer = bigger;
+      source->fetchCap = grown;
+      logInfo("[live] sq/%ld fills the fetch buffer: now %d KB\n", source->nextSq, grown / 1024);
+   }
+   if (rc == 0 && (status == 204 || status == 404)) {
+      // 204: not generated yet, we're at the live edge (googlevideo holds the request ~7.5 s first). A 404 behind
+      // the edge is a segment the server no longer has - a rewind past its window (answered after ~8 s): before
+      // anything of the stream went out, it begins at the live edge instead. Otherwise wait for the edge.
+      if (status == 404 && !source->firstDone && source->nextSq < source->edgeSq - START_BEHIND_EDGE) {
+         logWarn("[live] sq/%ld is gone (404): beginning at the live edge, sq/%ld\n", source->nextSq,
+                 source->edgeSq - START_BEHIND_EDGE);
+         source->nextSq = source->edgeSq - START_BEHIND_EDGE;
+         return 0;   // fetch that one at once
+      }
+      return 1;
+   }
+   if (rc != 0 || length <= 0 || (status != 200 && status != 206)) {
       // the caller retries the same segment every 200ms, so a network outage would log 5 lines a second
       // forever; log the first failure and then one per ~5s of outage
       if (source->failStreak++ % 25 == 0)
          logError("[live] segment sq/%ld failed rc=%d status=%d (fail #%d)\n", source->nextSq, rc, status, source->failStreak);
       return -1;
    }
-   if (status != 200 && status != 206) return (status == 204 || status == 404) ? 1 : -1;
    source->failStreak = 0;
 
    int offset = source->firstDone ? firstMoofOffset(source->fetchBuffer, length) : 0;
    lock(&source->lock);
+   if (!source->firstDone) source->firstSq = source->nextSq;
    source->firstDone = 1;
    appendWindow(source, source->fetchBuffer + offset, length - offset);
    unlock(&source->lock);
@@ -134,20 +161,24 @@ static void prefetchThread(uint64_t arg)
    exitThread();
 }
 
-LiveSource *openLiveSource(const char *baseUrl, long startSq, long edgeSq)
+LiveSource *openLiveSource(const char *baseUrl, long startSq, long edgeSq, long playSq)
 {
    LiveSource *source = (LiveSource *)calloc(1, sizeof *source);
    if (!source) return NULL;
    source->window = (uint8_t *)malloc(WINDOW_CAP);
-   source->fetchBuffer = (uint8_t *)malloc(SEGMENT_FETCH_CAP);
+   source->fetchCap = SEGMENT_FETCH_START;
+   source->fetchBuffer = (uint8_t *)malloc(source->fetchCap);
    if (!source->window || !source->fetchBuffer) { closeLiveSource(source); return NULL; }
 
    strCopy(source->base, sizeof source->base, baseUrl);
-   long start = edgeSq - START_BEHIND_EDGE;
+   long start = playSq >= 0 ? playSq : edgeSq - START_BEHIND_EDGE;
    source->nextSq = start > startSq ? start : startSq;
+   source->edgeSq = edgeSq;
+   source->firstSq = -1;
    createLock(&source->lock);
    source->lockReady = 1;
-   logInfo("[live] open sq %ld..%ld, starting at %ld\n", startSq, edgeSq, source->nextSq);
+   logInfo("[live] open sq %ld..%ld, starting at %ld%s\n", startSq, edgeSq, source->nextSq,
+           playSq >= 0 ? " (asked for)" : "");
 
    source->running = 1;
    source->threadActive = spawnJoinableThread(&source->prefetchThread, prefetchThread, (uint64_t)(uintptr_t)source,
@@ -185,6 +216,8 @@ int seekLiveSource(LiveSource *source, uint64_t offset)
 }
 
 uint64_t getLiveSourcePosition(const LiveSource *source) { return source->position; }
+
+long getLiveSourceFirstSq(const LiveSource *source) { return source->firstSq >= 0 ? source->firstSq : source->nextSq; }
 
 void cancelLiveSource(LiveSource *source) { if (source) source->cancel = 1; }
 
