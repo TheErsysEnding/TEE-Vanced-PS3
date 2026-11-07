@@ -500,6 +500,25 @@ static void worker(uint64_t arg)
    // open the decoder: both streams ride the http module by range request. an audio open
    // failure inside the player just means silent playback. NULL if it can't be demuxed/decoded.
    state.pendingPlayer = createVideoPlayerSplit(video->url, audio ? audio->url : NULL, allocGfxVideoBuffer, freeGfxVideoBuffer);
+
+   // a format only the TEE Decoder keeps up with (1080p60) that ended up on cellVdec - the TEE Decoder did not
+   // open, for want of memory or because of the stream's own SPS - plays what cellVdec can instead, as before
+   // the TEE Decoder: 720p60 for a 60 fps video. cellVdec on 1080p60 manages about 35 fps (Test4, 2026-11-07).
+   if (state.pendingPlayer && needsTeeDecoder(video) && !isVideoOnTeeDecoder(state.pendingPlayer)) {
+      const StreamFormat *fallback = pickBestVideo(info);
+      if (fallback && fallback != video) {
+         logWarn("[yt] the TEE Decoder did not take itag %d: playing itag %d %dx%d on cellVdec\n", video->itag,
+                 fallback->itag, fallback->width, fallback->height);
+         destroyVideoPlayer(state.pendingPlayer);
+         video = fallback;
+         if (video->hasAudio) audio = NULL;   // a muxed pick carries its own sound
+         state.vidItag = video->itag; state.vidW = video->width; state.vidH = video->height; state.vidFps = video->fps;
+         state.audItag = audio ? audio->itag : (video->hasAudio ? video->itag : 0);
+         strCopy(state.videoUrl, sizeof state.videoUrl, video->url);
+         strCopy(state.audioUrl, sizeof state.audioUrl, audio ? audio->url : "");
+         state.pendingPlayer = createVideoPlayerSplit(video->url, audio ? audio->url : NULL, allocGfxVideoBuffer, freeGfxVideoBuffer);
+      }
+   }
    if (!state.pendingPlayer) { fail("couldn't open stream"); goto done; }
 
    // resume where we left off. seekVideoPlayer only posts the target; the decode thread does the

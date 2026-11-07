@@ -47,3 +47,6 @@ void  getAudioTrackInfo(const VideoPlayer *player, int *rate, int *channels);   
 
 // the decoder behind the picture, for a stats overlay: "TEE Decoder" or "cellVdec" (see decode-h264.h)
 const char *getVideoDecoderName(const VideoPlayer *player);
+
+// 1 when the picture comes from the TEE Decoder (0: cellVdec)
+int isVideoOnTeeDecoder(const VideoPlayer *player);

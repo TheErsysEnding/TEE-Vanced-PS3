@@ -14,6 +14,9 @@ const StreamFormat *pickBestVideo(const StreamInfo *info);
 // 1080p60 among it. Downloads keep pickBestVideo, so their files stay what cellVdec and the XMB can play.
 const StreamFormat *pickBestVideoForPlayback(const StreamInfo *info, int teeUsable);
 
+// 1 for a format cellVdec cannot keep up with (1080p above 30 fps): only worth playing on the TEE Decoder
+int needsTeeDecoder(const StreamFormat *format);
+
 // the AAC/mp4 audio-only stream to pair with a video-only pick, preferring itag 140 and not its
 // dynamic-range-compressed copy. On a video with several audio tracks the extractor has already narrowed
 // formats[] to the original track's stream. NULL if none.

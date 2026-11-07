@@ -38,6 +38,8 @@ static const StreamFormat *pickVideo(const StreamInfo *info, int teeUsable)
 
 const StreamFormat *pickBestVideo(const StreamInfo *info) { return pickVideo(info, 0); }
 
+int needsTeeDecoder(const StreamFormat *format) { return format && !decodableVideo(format); }
+
 const StreamFormat *pickBestVideoForPlayback(const StreamInfo *info, int teeUsable) { return pickVideo(info, teeUsable); }
 
 const StreamFormat *pickBestAudio(const StreamInfo *info)

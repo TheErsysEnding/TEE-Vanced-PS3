@@ -60,7 +60,6 @@ static uint64_t nowUs(void)
 #define TEE_RECORDS_SD       (8u << 20)
 #define TEE_TIMEOUT_MS       2000
 #define TEE_FIXED_BYTES      (6u << 20)    // its slice ring and NAL buffer
-#define TEE_HEADROOM_BYTES   (8u << 20)    // left for the sound pipeline and the rest of playback
 #define TEE_BACKLOG_LIMIT    48             // AUs fed and not yet out as pictures (see getAuBacklogLimitH264)
 #define TEE_STATS_US         5000000ull     // one statistics line this often while it plays
 
@@ -585,20 +584,16 @@ static H264Decoder *createTee(const H264StreamParams *params, char *why, int cap
    config.log           = teeLog;
    if (teeSpes == 5) { config.ncabac = 1; config.npixel = 4; }   // tier 1 otherwise: 1 CABAC + 3 pixel
 
-   // all of it is allocated up front; leave room for the sound pipeline and the rest of playback. The kernel's
-   // number can be lower than what malloc could still serve (freed memory may stay in the heap), so this only
-   // refuses when it is clearly short - tdec_open itself fails cleanly when memory runs out.
+   // All of it is allocated up front. The kernel's free count is logged but decides nothing: memory a closed
+   // decoder gave back stays in the malloc heap, so the kernel reported 38 MB free on the second video of Test4
+   // (2026-11-07) while the heap still held the 90 MB the first one had used - and a check against that number
+   // turned the TEE Decoder down and left 1080p60 to cellVdec. Whether the memory is there is what malloc says:
+   // tdec_open fails cleanly when it is not, and the caller falls back to cellVdec then.
    size_t need = tdec_picture_memory_size(&config) + config.records_bytes + config.input_bytes + TEE_FIXED_BYTES;
    sys_memory_info_t info;
-   if (sys_memory_get_user_memory_size(&info) == CELL_OK) {
-      logInfo("[decode-h264] user memory before the TEE Decoder: %u MB free of %u MB, it needs about %u MB\n",
+   if (sys_memory_get_user_memory_size(&info) == CELL_OK)
+      logInfo("[decode-h264] user memory before the TEE Decoder: %u MB free of %u MB (heap not counted), it needs about %u MB\n",
               (unsigned)(info.available_user_memory >> 20), (unsigned)(info.total_user_memory >> 20), (unsigned)(need >> 20));
-      if ((size_t)info.available_user_memory < need + TEE_HEADROOM_BYTES) {
-         snprintf(why, cap, "%u MB free, it needs about %u MB", (unsigned)(info.available_user_memory >> 20),
-                  (unsigned)((need + TEE_HEADROOM_BYTES) >> 20));
-         return 0;
-      }
-   }
 
    H264Decoder *decoder = (H264Decoder *)calloc(1, sizeof *decoder);
    if (!decoder) { snprintf(why, cap, "out of memory"); return 0; }

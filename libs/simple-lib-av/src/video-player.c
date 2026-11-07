@@ -851,6 +851,11 @@ const char *getVideoDecoderName(const VideoPlayer *player)
    return player ? getH264DecoderName(player->decoder) : "none";
 }
 
+int isVideoOnTeeDecoder(const VideoPlayer *player)
+{
+   return player && isTeeH264Decoder(player->decoder);
+}
+
 // audio track format for a stats overlay; rate/channels read 0 when there's no audio track.
 void getAudioTrackInfo(const VideoPlayer *player, int *rate, int *channels)
 {
