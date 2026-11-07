@@ -22,11 +22,13 @@ static int seekBackend(VideoSource *source, uint64_t offset)
 
 // a live segment stream is addressed as "dashseg|<startSq>|<edgeSq>|<baseUrl>", or with the segment to begin at
 // as "dashseg|<startSq>|<edgeSq>|<playSq>|<baseUrl>" (see live-source.h; playSq -1 = the default, near the edge).
-// A base url begins with its scheme, never a digit, so a number there is playSq. NULL base on a malformed value
-// keeps openVideoSource from opening it.
-static const char *parseLivePath(const char *path, long *startSq, long *edgeSq, long *playSq)
+// "dashvod|..." is the same for a live stream that has ended: edgeSq is its last segment, and the default start is
+// startSq. A base url begins with its scheme, never a digit, so a number there is playSq. NULL base on a malformed
+// value keeps openVideoSource from opening it.
+static const char *parseLivePath(const char *path, long *startSq, long *edgeSq, long *playSq, int *ended)
 {
-   if (strncmp(path, "dashseg|", 8) != 0) return NULL;
+   if (strncmp(path, "dashseg|", 8) != 0 && strncmp(path, "dashvod|", 8) != 0) return NULL;
+   *ended = path[4] == 'v';
    const char *cursor = path + 8;
    *startSq = atol(cursor);
    cursor = strchr(cursor, '|');
@@ -53,9 +55,10 @@ int openVideoSource(VideoSource *source, const char *path)
    if (!source->buffer) return -1;
 
    long startSq = 0, edgeSq = 0, playSq = -1;
-   const char *liveBase = parseLivePath(path, &startSq, &edgeSq, &playSq);
+   int ended = 0;
+   const char *liveBase = parseLivePath(path, &startSq, &edgeSq, &playSq, &ended);
    if (liveBase) {
-      source->live = openLiveSource(liveBase, startSq, edgeSq, playSq);
+      source->live = openLiveSource(liveBase, startSq, edgeSq, playSq, ended);
       if (!source->live) { free(source->buffer); source->buffer = 0; return -1; }
       source->isLive = 1;
       source->size   = 0;   // unbounded live stream

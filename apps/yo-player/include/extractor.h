@@ -57,6 +57,8 @@ typedef struct {
    CaptionTrack captions[MAX_CAPTION_TRACKS];
    int  durationSeconds;
    int  isLive;            // currently broadcasting: streams need live segment-sequence fetching, not a static moov
+   int  isPostLive;        // a live stream that just ended (isPostLiveDvr): YouTube serves its recording as the same
+                           // sq segments, the last one fixed, until it has made a video of it - no static moov either
    // a live stream's rewind (YouTube's DVR): whether the streamer left it on (isLiveDvrEnabled), how long each
    // sq segment is (targetDurationSec: 5, or 2 for low latency) and how far back it reaches (maxDvrDurationSec,
    // 12 h). 0 where the reply does not say.

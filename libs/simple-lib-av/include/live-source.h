@@ -13,8 +13,10 @@ typedef struct LiveSource LiveSource;
 // open the sq window. playSq < 0 begins a few segments behind edgeSq so there is a small buffer; playSq >= 0
 // begins at that segment (a rewind into the DVR window, or a rebuild at the segment playing - TEE Vanced).
 // Should that first segment be gone from the server's window (404), the stream begins at the live edge
-// instead (getLiveSourceFirstSq says where). NULL on failure.
-LiveSource *openLiveSource(const char *baseUrl, long startSq, long edgeSq, long playSq);
+// instead (getLiveSourceFirstSq says where). ended: a live stream that is over (YouTube's post-live recording) -
+// edgeSq is its last segment, after which the stream ends instead of waiting, and playSq < 0 begins at startSq,
+// as a video begins at its start. NULL on failure.
+LiveSource *openLiveSource(const char *baseUrl, long startSq, long edgeSq, long playSq, int ended);
 
 int64_t  readLiveSource(LiveSource *source, void *buffer, uint64_t length);   // bytes, 0 = eof/cancelled, -1 err
 int      seekLiveSource(LiveSource *source, uint64_t offset);                 // within the buffered window; 0 / -1

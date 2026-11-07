@@ -338,7 +338,9 @@ static struct {
 
    // a live stream's segment line (see LIVE_SEGMENT_SEC_DEFAULT): the worker sets the stream's part, the UI the
    // player's. The edge is the one the resolve saw, moved on one segment per segment length since.
-   int              liveDvr;           // the streamer left the rewind on (YouTube's DVR)
+   int              liveEnded;         // a live stream that is over (YouTube's post-live recording): its last
+                                       // segment is the end, it plays from its start and has a video's timeline
+   int              liveDvr;           // the streamer left the rewind on (YouTube's DVR); always on an ended one
    int              liveSegmentSec;    // seconds per segment: 5, or 2 for low latency
    int              liveWindowSegs;    // how many segments back the rewind reaches
    long             liveFloorSq;       // the earliest segment there is: the manifest's first, else 0
@@ -491,6 +493,25 @@ static int isRenderableSubtitleLanguage(const char *code)
    return 0;
 }
 
+static void writeLiveDescriptor(char *out, int cap, const char *descriptor, long edgeSq, long playSq);   // below
+
+// builds the player for a video and its audio; for an ended live stream picked up where it was left (playSq >= 0)
+// both descriptors begin at that segment
+static VideoPlayer *createPlayerFor(const StreamFormat *video, const StreamFormat *audio, long playSq)
+{
+   char videoPath[MAX_STREAM_URL + 48], audioPath[MAX_STREAM_URL + 48];
+   const char *openVideo = video->url, *openAudio = audio ? audio->url : NULL;
+   if (playSq >= 0) {
+      writeLiveDescriptor(videoPath, sizeof videoPath, video->url, state.liveEdgeSq, playSq);
+      if (videoPath[0]) openVideo = videoPath;
+      if (audio) {
+         writeLiveDescriptor(audioPath, sizeof audioPath, audio->url, state.liveEdgeSq, playSq);
+         if (audioPath[0]) openAudio = audioPath;
+      }
+   }
+   return createVideoPlayerSplit(openVideo, openAudio, allocGfxVideoBuffer, freeGfxVideoBuffer);
+}
+
 static void worker(uint64_t arg)
 {
    (void)arg;
@@ -522,17 +543,27 @@ static void worker(uint64_t arg)
    if (!video) { fail("no playable mp4 video"); goto done; }
 
    // a live stream's segment line: the edge the resolve just saw (every format has the same numbers), the
-   // segment length, and how far the rewind reaches when the streamer left it on
+   // segment length, and how far the rewind reaches when the streamer left it on. A stream that has ended plays
+   // its recording from the start - or from where it was left, kept like a video's - and its edge stays put.
+   long liveResumeSq = -1;
    if (video->isLiveSegmented) {
-      state.liveDvr        = info->liveDvr;
+      state.liveEnded      = info->isPostLive;
+      state.liveDvr        = info->liveDvr || state.liveEnded;
       state.liveSegmentSec = info->liveSegmentSec > 0 ? info->liveSegmentSec : LIVE_SEGMENT_SEC_DEFAULT;
       state.liveWindowSegs = (info->liveWindowSec > 0 ? info->liveWindowSec : LIVE_WINDOW_SEC_DEFAULT) / state.liveSegmentSec;
       state.liveFloorSq    = video->liveStartSq > 0 ? video->liveStartSq : 0;
       state.liveEdgeSq     = video->liveEdgeSq;
       state.liveEdgeUs     = sys_time_get_system_time();
-      state.liveFirstSq    = video->liveEdgeSq - LIVE_START_BEHIND;   // until the player says
-      state.liveOpenedAtEdge = 1;
-      state.liveLatencySec = (float)((LIVE_START_BEHIND + 1) * state.liveSegmentSec);   // until its first picture
+      state.liveFirstSq    = state.liveEnded ? state.liveFloorSq : video->liveEdgeSq - LIVE_START_BEHIND;   // until the player says
+      state.liveOpenedAtEdge = !state.liveEnded;
+      state.liveLatencySec = state.liveEnded ? 0.0f : (float)((LIVE_START_BEHIND + 1) * state.liveSegmentSec);   // until its first picture
+      if (state.liveEnded) {
+         int resumeAt = getWatchedPosition(requestedInput);
+         long sq = state.liveFloorSq + resumeAt / state.liveSegmentSec;
+         if (resumeAt > 3 && sq < state.liveEdgeSq - 1) liveResumeSq = state.liveFirstSq = sq;
+         logInfo("[yt] ended live stream: sq %ld..%ld, %d s segments, from sq %ld\n", state.liveFloorSq, state.liveEdgeSq,
+                 state.liveSegmentSec, state.liveFirstSq);
+      }
    }
 
    // the quality menu's choices: the video-only formats the player can play, the best first. On a live stream a
@@ -580,7 +611,7 @@ static void worker(uint64_t arg)
 
    // open the decoder: both streams ride the http module by range request. an audio open
    // failure inside the player just means silent playback. NULL if it can't be demuxed/decoded.
-   state.pendingPlayer = createVideoPlayerSplit(video->url, audio ? audio->url : NULL, allocGfxVideoBuffer, freeGfxVideoBuffer);
+   state.pendingPlayer = createPlayerFor(video, audio, liveResumeSq);
 
    // a format only the TEE Decoder keeps up with (1080p60) that ended up on cellVdec - the TEE Decoder did not
    // open, for want of memory or because of the stream's own SPS - plays what cellVdec can instead, as before
@@ -599,7 +630,7 @@ static void worker(uint64_t arg)
          strCopy(state.audioUrl, sizeof state.audioUrl, audio ? audio->url : "");
          state.qualityPick = -1;
          for (int i = 0; i < state.qualityCount; i++) if (state.qualities[i].itag == video->itag) state.qualityPick = i;
-         state.pendingPlayer = createVideoPlayerSplit(video->url, audio ? audio->url : NULL, allocGfxVideoBuffer, freeGfxVideoBuffer);
+         state.pendingPlayer = createPlayerFor(video, audio, liveResumeSq);
       }
    }
    if (!state.pendingPlayer) { fail("couldn't open stream"); goto done; }
@@ -684,7 +715,7 @@ void playVideoFromList(const SearchResults *results, int index)
 // duplicating that as a second path is exactly how one of them ends up forgotten. 1 if it took over.
 static int advanceAutoplay(void)
 {
-   if (!getAutoplay() || state.isLive) return 0;
+   if (!getAutoplay() || (state.isLive && !state.liveEnded)) return 0;   // an ended stream ends like a video
    if (playQueueIndex + 1 >= playQueueCount) return 0;
 
    const SearchResult *next = &playQueue[++playQueueIndex];
@@ -969,9 +1000,11 @@ static void reopenAt(float seconds)
 
 // ---- a live stream's segment line ----
 
-// the newest segment now (fractional): the one the resolve saw, moved on one per segment length since
+// the newest segment now (fractional): the one the resolve saw, moved on one per segment length since - an ended
+// stream's last one, which stays put
 static double liveEdgeNow(void)
 {
+   if (state.liveEnded) return (double)state.liveEdgeSq;
    double elapsed = (double)(sys_time_get_system_time() - state.liveEdgeUs) / 1.0e6;
    return (double)state.liveEdgeSq + elapsed / state.liveSegmentSec;
 }
@@ -990,7 +1023,7 @@ static double livePositionSq(void)
 // stream's first
 static double liveWindowStartSq(void)
 {
-   double start = liveEdgeNow() - state.liveWindowSegs + LIVE_WINDOW_MARGIN;
+   double start = liveEdgeNow() - state.liveWindowSegs + (state.liveEnded ? 0 : LIVE_WINDOW_MARGIN);
    return start > (double)state.liveFloorSq ? start : (double)state.liveFloorSq;
 }
 
@@ -1011,12 +1044,13 @@ static int isLiveBehindAtEdge(float behindSeconds)
    return behindSeconds <= LIVE_EDGE_SLACK_SEC + 0.5f * state.liveSegmentSec;
 }
 
-// a descriptor the resolve made ("dashseg|<firstSq>|<edgeSq>|[<playSq>|]<base>", video-source.c) with the edge
-// now and the segment to begin at (-1 = near the edge); "" for an empty or unknown one
+// a descriptor the resolve made ("dashseg|<firstSq>|<edgeSq>|[<playSq>|]<base>", or "dashvod|..." for an ended
+// stream - video-source.c) with the edge now and the segment to begin at (-1 = the default: near the edge, or an
+// ended stream's start); "" for an empty or unknown one
 static void writeLiveDescriptor(char *out, int cap, const char *descriptor, long edgeSq, long playSq)
 {
    out[0] = 0;
-   if (strncmp(descriptor, "dashseg|", 8) != 0) return;
+   if (strncmp(descriptor, "dashseg|", 8) != 0 && strncmp(descriptor, "dashvod|", 8) != 0) return;
    long firstSq = atol(descriptor + 8);
    const char *base = strchr(descriptor + 8, '|');   // before the edge
    if (base) base = strchr(base + 1, '|');           // before the segment to begin at, or the base
@@ -1027,7 +1061,7 @@ static void writeLiveDescriptor(char *out, int cap, const char *descriptor, long
       if (!base) return;
       base++;
    }
-   snprintf(out, cap, "dashseg|%ld|%ld|%ld|%s", firstSq, edgeSq, playSq, base);
+   snprintf(out, cap, "%.7s|%ld|%ld|%ld|%s", descriptor, firstSq, edgeSq, playSq, base);   // its own kind
 }
 
 // rebuilds a live stream's player at a segment (-1, or one that close to the edge: at the edge) - a rewind, a
@@ -1036,7 +1070,12 @@ static int reopenLiveAt(long playSq)
 {
    if (state.threadActive) return 0;   // a worker is still busy
    long edge = (long)liveEdgeNow();
-   if (playSq > edge - LIVE_START_BEHIND) playSq = -1;
+   if (state.liveEnded) {   // an ended stream: anywhere in its recording, never "at the edge"
+      if (playSq < state.liveFloorSq) playSq = state.liveFloorSq;
+      if (playSq > edge) playSq = edge;
+   } else if (playSq > edge - LIVE_START_BEHIND) {
+      playSq = -1;
+   }
    writeLiveDescriptor(state.liveVideoOpen, sizeof state.liveVideoOpen, state.videoUrl, edge, playSq);
    writeLiveDescriptor(state.liveAudioOpen, sizeof state.liveAudioOpen, state.audioUrl, edge, playSq);
    if (!state.liveVideoOpen[0]) { showToast("Couldn't rebuild the stream"); return 0; }
@@ -1054,7 +1093,11 @@ static int reopenLiveAt(long playSq)
 static void seekTo(float seconds, int atOrAfter)
 {
    if (!state.player) return;
-   if (isVideoEnded(state.player) && !state.isLive) { reopenAt(seconds); return; }
+   if (state.isLive) {   // no seek index: an ended stream is rebuilt at the segment (Replay at its end, too)
+      if (state.liveEnded) reopenLiveAt((long)(liveWindowStartSq() + seconds / state.liveSegmentSec));
+      return;
+   }
+   if (isVideoEnded(state.player)) { reopenAt(seconds); return; }
    if (atOrAfter) seekVideoPlayerPast(state.player, seconds);
    else           seekVideoPlayer(state.player, seconds);
 }
@@ -1131,7 +1174,7 @@ static void skipSegment(SponsorSegment *segment);
 // the edge is the way back to live too. With the rewind off a press says so.
 static void handleLiveInput(uint64_t nowUs)
 {
-   if (isPadButtonPressed(PAD_BTN_R1)) {
+   if (isPadButtonPressed(PAD_BTN_R1) && !state.liveEnded) {   // an ended stream has no live to go back to
       state.seeking = 0;
       if (isLiveBehindAtEdge(liveTimelineLength() - liveTimelinePosition())) showToast("Live");
       else if (reopenLiveAt(-1)) showToast("Back to live");
@@ -1154,8 +1197,8 @@ static void handleLiveInput(uint64_t nowUs)
       state.seeking = 0;
       long target = (long)(liveWindowStartSq() + state.seekTarget / state.liveSegmentSec);
       // forward up to live: back to live (when not there already); otherwise to the segment the target lies in,
-      // unless that is the one playing
-      if (state.seekTarget > state.seekFrom && isLiveBehindAtEdge(liveTimelineLength() - state.seekTarget)) {
+      // unless that is the one playing. An ended stream only knows the latter.
+      if (!state.liveEnded && state.seekTarget > state.seekFrom && isLiveBehindAtEdge(liveTimelineLength() - state.seekTarget)) {
          if (!isLiveBehindAtEdge(liveTimelineLength() - liveTimelinePosition())) reopenLiveAt(-1);
       } else if (target != (long)livePositionSq()) {
          reopenLiveAt(target);
@@ -1476,7 +1519,7 @@ static void chooseQuality(int choice)
    long liveAt = 0;
    if (state.isLive) {
       float position = state.seeking ? state.seekTarget : liveTimelinePosition();
-      liveAt = isLiveBehindAtEdge(liveTimelineLength() - position) ? -1
+      liveAt = !state.liveEnded && isLiveBehindAtEdge(liveTimelineLength() - position) ? -1
              : (long)(liveWindowStartSq() + position / state.liveSegmentSec);
    }
    float at = state.seeking ? state.seekTarget : getVideoPositionSeconds(state.player);
@@ -1655,9 +1698,10 @@ static int hintRowReserve(void)
 // widest - the position as long as the duration
 static int timeReserve(void)
 {
-   if (state.isLive) return uiGetBadgeWidth(&liveLabel) + LIVE_BEHIND_GAP + uiGetDigitsWidth(&timeDigits, "-00:00:00");
+   if (state.isLive && !state.liveEnded)
+      return uiGetBadgeWidth(&liveLabel) + LIVE_BEHIND_GAP + uiGetDigitsWidth(&timeDigits, "-00:00:00");
    char duration[16], total[24];
-   formatTime(duration, sizeof duration, (int)(getVideoDurationSeconds(state.player) + 0.5f));
+   formatTime(duration, sizeof duration, (int)(timelineLength() + 0.5f));
    snprintf(total, sizeof total, " / %s", duration);
    return uiGetDigitsWidth(&timeDigits, duration) + uiGetDigitsWidth(&totalDigits, total);
 }
@@ -1723,7 +1767,7 @@ static void updateHintCaptions(void)
    uiSetHintCaption(&hudHints, HINT_R1, state.isLive ? "Live" : "Chapter");
    int scrubbable = !state.isLive || state.liveDvr;
    uiSetHintShown(&hudHints, HINT_L1, !state.isLive);
-   uiSetHintShown(&hudHints, HINT_R1, 1);
+   uiSetHintShown(&hudHints, HINT_R1, !state.liveEnded);   // an ended stream has neither chapters nor a live
    uiSetHintShown(&hudHints, HINT_L2, scrubbable);
    uiSetHintShown(&hudHints, HINT_R2, scrubbable);
    uiSetHintShown(&hudHints, HINT_START, 1);   // the options menu, live streams included (autoplay)
@@ -1964,7 +2008,11 @@ static void updateStatLabels(void)
    char now[16], length[16];
    formatTime(now, sizeof now, (int)pos);
    formatTime(length, sizeof length, (int)(duration + 0.5f));
-   if (state.isLive) {
+   if (state.liveEnded) {   // a video's time, and where in the recording's segments
+      formatTime(now, sizeof now, (int)liveTimelinePosition());
+      formatTime(length, sizeof length, (int)(liveTimelineLength() + 0.5f));
+      snprintf(line, sizeof line, "Time  %s / %s   sq %ld of %ld", now, length, (long)livePositionSq(), state.liveEdgeSq);
+   } else if (state.isLive) {
       formatTime(now, sizeof now, (int)(liveTimelineLength() - liveTimelinePosition() + 0.5f));
       snprintf(line, sizeof line, "Live  -%s   sq %ld   DVR %s", now, (long)livePositionSq(), state.liveDvr ? "on" : "off");
    } else {
@@ -2086,11 +2134,12 @@ static void drawChips(void)
 
 // Row A: the chapter block on the left (with chapters only), the time on the right - or, on a live stream,
 // the LIVE badge where the time would be: red at the live edge, dark behind it (a rewind, a pause, a scrub) and
-// after how far behind ("-1:23"). The times are fixed-width digits; text on the gradient is outlined.
+// after how far behind ("-1:23"). An ended stream shows a video's time. The times are fixed-width digits; text
+// on the gradient is outlined.
 static void drawRowA(float position, float duration)
 {
    uint32_t outline = activeTheme->gradientBase;
-   if (state.isLive) {
+   if (state.isLive && !state.liveEnded) {
       float behind = duration - position;   // the live timeline ends at live
       int badgeX = HUD_RIGHT - uiGetBadgeWidth(&liveLabel);
       // a scrub shows its target's distance from live at once, the few seconds of slack only count for playing
@@ -2524,8 +2573,9 @@ static void termPlay(void)
    // save the resume position on the way out; a finished video is saved as 0 so it restarts next time.
    // only once a frame has actually played: a failed open or a resume seek that never landed must not
    // clobber a good saved position with 0. storage ignores non-id keys, so typed urls no-op.
-   if (state.player && state.firstFrameSeen && !state.isLive)
-      setWatchedPosition(requestedInput, isVideoEnded(state.player) ? 0 : (int)getVideoPositionSeconds(state.player));
+   // an ended live stream keeps its place like a video (the worker picks it up again)
+   if (state.player && state.firstFrameSeen && (!state.isLive || state.liveEnded))
+      setWatchedPosition(requestedInput, isVideoEnded(state.player) ? 0 : (int)timelinePosition());
    if (state.player || state.pendingPlayer) finishGfx();   // RSX may still be sampling a frame buffer
    if (state.player) { destroyVideoPlayer(state.player); state.player = NULL; }
    if (state.pendingPlayer) { destroyVideoPlayer(state.pendingPlayer); state.pendingPlayer = NULL; }

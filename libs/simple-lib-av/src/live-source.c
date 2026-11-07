@@ -45,7 +45,9 @@ static const char *SEGMENT_UA = "Mozilla/5.0 (PLAYSTATION 3; 4.9)";
 struct LiveSource {
    char     base[2048];   // "<...>/" - append "sq/<n>"
    long     nextSq;       // next segment number to fetch (prefetch-thread owned)
-   long     edgeSq;       // the live edge the source was opened with
+   long     edgeSq;       // the live edge the source was opened with (an ended stream's last segment)
+   int      ended;        // a stream that is over: edgeSq is the end
+   volatile int finished; // ...and its last segment is in: a read past it is the end of the stream
    volatile long firstSq; // the segment the stream began with, -1 until it is in
    int      firstDone;    // the first (init-bearing) segment has been emitted
    int      failStreak;   // consecutive failed fetches of the current segment, for log throttling
@@ -121,9 +123,10 @@ static int segmentsAhead(const LiveSource *source)
 
 // fetch the next segment straight into the window's free end (network, no lock: the reader only reads below the
 // window's end, and only this thread moves it), then strip its init and publish it (under lock). 0 ok, 1 edge,
-// -1 error.
+// 2 an ended stream's last segment is in, -1 error.
 static int fetchNextSegment(LiveSource *source)
 {
+   if (source->ended && source->nextSq > source->edgeSq) return 2;
    char url[2200];
    // A manifest-derived base takes a path segment ("<base>sq/<n>"). The X-Head-Seqnum fallback in
    // youtube.c (used when the client gets no dashManifestUrl) hands over a query-style base that
@@ -166,7 +169,7 @@ static int fetchNextSegment(LiveSource *source)
       // 204: not generated yet, we're at the live edge (googlevideo holds the request ~7.5 s first). A 404 behind
       // the edge is a segment the server no longer has - a rewind past its window (answered after ~8 s): before
       // anything of the stream went out, it begins at the live edge instead. Otherwise wait for the edge.
-      if (status == 404 && !source->firstDone && source->nextSq < source->edgeSq - START_BEHIND_EDGE) {
+      if (status == 404 && !source->ended && !source->firstDone && source->nextSq < source->edgeSq - START_BEHIND_EDGE) {
          logWarn("[live] sq/%ld is gone (404): beginning at the live edge, sq/%ld\n", source->nextSq,
                  source->edgeSq - START_BEHIND_EDGE);
          source->nextSq = source->edgeSq - START_BEHIND_EDGE;
@@ -223,13 +226,19 @@ static void prefetchThread(uint64_t arg)
       if (!fetch) { sleepMs(PREFETCH_IDLE_MS); continue; }
 
       int rc = fetchNextSegment(source);
+      if (rc == 2) {                              // an ended stream is all in: the reader ends after it
+         __sync_synchronize();
+         source->finished = 1;
+         logInfo("[live] the ended stream's last segment, sq/%ld, is in\n", source->edgeSq);
+         break;
+      }
       if (rc == 1) sleepMs(EDGE_POLL_MS);        // at the edge, wait then retry the same sq (it's live, more is coming)
       else if (rc < 0) sleepMs(RECONNECT_MS);    // transient failure: back off and retry the same sq
    }
    exitThread();
 }
 
-LiveSource *openLiveSource(const char *baseUrl, long startSq, long edgeSq, long playSq)
+LiveSource *openLiveSource(const char *baseUrl, long startSq, long edgeSq, long playSq, int ended)
 {
    LiveSource *source = (LiveSource *)calloc(1, sizeof *source);
    if (!source) return NULL;
@@ -241,14 +250,16 @@ LiveSource *openLiveSource(const char *baseUrl, long startSq, long edgeSq, long 
    if (!source->window) { closeLiveSource(source); return NULL; }
 
    strCopy(source->base, sizeof source->base, baseUrl);
-   long start = playSq >= 0 ? playSq : edgeSq - START_BEHIND_EDGE;
+   long start = playSq >= 0 ? playSq : ended ? startSq : edgeSq - START_BEHIND_EDGE;
+   if (ended && start > edgeSq) start = edgeSq;
    source->nextSq = start > startSq ? start : startSq;
    source->edgeSq = edgeSq;
+   source->ended = ended;
    source->firstSq = -1;
    createLock(&source->lock);
    source->lockReady = 1;
-   logInfo("[live] open sq %ld..%ld, starting at %ld%s\n", startSq, edgeSq, source->nextSq,
-           playSq >= 0 ? " (asked for)" : "");
+   logInfo("[live] open %s sq %ld..%ld, starting at %ld%s\n", ended ? "ended stream" : "live", startSq, edgeSq,
+           source->nextSq, playSq >= 0 ? " (asked for)" : "");
 
    source->running = 1;
    source->threadActive = spawnJoinableThread(&source->prefetchThread, prefetchThread, (uint64_t)(uintptr_t)source,
@@ -261,6 +272,10 @@ int64_t readLiveSource(LiveSource *source, void *buffer, uint64_t length)
 {
    for (;;) {
       if (source->cancel) return 0;
+      // read before the window is: finished goes up only after the last segment is in, so when it was up here,
+      // an empty read position below is the end of the stream and not a segment still coming in
+      int finished = source->finished;
+      __sync_synchronize();
       lock(&source->lock);
       if (source->position < source->windowStart) { unlock(&source->lock); return -1; }   // seeked before dropped history
       uint64_t available = source->windowStart + source->windowLen > source->position ? source->windowStart + source->windowLen - source->position : 0;
@@ -272,6 +287,7 @@ int64_t readLiveSource(LiveSource *source, void *buffer, uint64_t length)
          return (int64_t)take;
       }
       unlock(&source->lock);
+      if (finished) return 0;   // an ended stream read to its last byte
       sleepMs(READ_WAIT_MS);   // nothing buffered at the read position yet; let the prefetch catch up
    }
 }
