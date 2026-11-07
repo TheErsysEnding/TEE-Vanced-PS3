@@ -3,11 +3,12 @@
 Every release listed here was installed and used on a real PS3 (EVILNAT 4.92 DEX)
 before it was tagged. Anything that had not been is said so plainly.
 
-## v2.0.0 — not released yet
+## v2.0.0 — 2026-11-07
 
-Test builds only so far: V1.1 Test1 to Test10 and V2.0.0 Test11 and Test12
-were installed on TEE's console (EVILNAT 4.92 DEX) on 2026-11-07. The release
-is v2.0.0.
+Installed and used on TEE's console (EVILNAT 4.92 DEX) through twelve test
+builds on 2026-11-07 (V1.1 Test1 to Test10, V2.0.0 Test11 and Test12). The
+XMB tile and background say what this version brings, and where to find TEE:
+FULL HD 60 FPS, H.264 SUPPORT · TEE DECODER, linktr.ee/theersysending.
 
 ### Added
 

@@ -9,7 +9,7 @@ hardware. A fork of **[mohasi's Yo! Player](https://github.com/mohasi/ps3-dev)**
 (Apache-2.0) — see [NOTICE](NOTICE); the application and its libraries are his
 work. The H.264 decoder it plays most videos with now is TEE's own (below).
 
-**Status: v1.0.1.** Every version here has been installed and used on a real
+**Status: v2.0.0.** Every version here has been installed and used on a real
 console before being called done. See [CHANGELOG.md](CHANGELOG.md).
 
 ---
@@ -122,7 +122,7 @@ The package lands in `pkg/out/`, named after `APP_VERSION` in
 python3 genbuild.py                 # generate build-ps3.bat from the .vcxproj files
 ./tools/sync-work.sh                # mirror sources onto the build machine
 ssh <vm> "cd /d C:\ps3-dev && build-ps3.bat"
-./build-pkg-fromsource.sh TEE-Vanced-PS3-v1.0.1 "TEE Vanced PS3 V1.0.1"
+./build-pkg-fromsource.sh TEE-Vanced-PS3-v2.0.0 "TEE Vanced PS3 V2.0.0"
 ```
 
 Upstream is pinned (`UPSTREAM_REV` in `tools/build-env.sh`). mohasi's tree has
@@ -147,7 +147,7 @@ not contain the change. `build.sh` now checks this itself: it fetches the ELF to
 and that run's build stamp. By hand, on the build machine:
 
 ```sh
-ppu-lv2-strings yo-player.ppu.elf | grep "V1.0.1"
+ppu-lv2-strings yo-player.ppu.elf | grep "V2.0.0"
 ```
 
 ---
