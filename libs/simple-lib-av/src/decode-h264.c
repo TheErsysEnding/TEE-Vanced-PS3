@@ -1,4 +1,4 @@
-// decode-h264 - cellVdec H.264 decoder wrapper. See decode-h264.h.
+// decode-h264 - H.264 decoder wrapper: the TEE Decoder or cellVdec behind one interface. See decode-h264.h.
 //
 // cellVdec runs asynchronously on its own PPU thread + 4 SPUs and reports progress through a
 // callback: AUDONE (an access unit was consumed), PICOUT (a decoded picture is ready), ERROR. We
@@ -8,7 +8,13 @@
 // internal frame buffers, so waiting for AUDONE without pulling pictures deadlocks (and times out).
 // Instead decodeAuH264 just feeds (reporting BUSY back to the caller), isAuConsumedH264 tells the
 // caller when the AU buffer may be reused, and the caller keeps pulling pictures in between.
+//
+// The TEE Decoder (tee_decoder/, TEE's own, vendored unchanged - never edit it here) runs its own PPU thread
+// and 4 or 5 SPU thread groups. It copies every access unit it is fed, hands pictures out in display order with
+// the pts they were fed with, and is copied out of here into the caller's frame slot (tdec_copy_i420), so
+// nothing after this file changes. One TEE Decoder at a time: its platform layer is a singleton.
 #include "decode-h264.h"
+#include "tee_decoder/tee_decoder.h"
 #include "thread.h"             // createLock / lock / sleepMs
 #include "dbg.h"                // logInfo / logError
 #include <cell/codec/vdec.h>
@@ -16,6 +22,8 @@
 #include <cell/sysmodule.h>
 #include <sys/spu_initialize.h>
 #include <sys/sys_time.h>       // sys_time_get_current_time (diagnostic: decoder own-latency split)
+#include <sys/memory.h>         // sys_memory_get_user_memory_size (the TEE Decoder's memory check)
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdbool.h>
@@ -38,19 +46,40 @@ static uint64_t nowUs(void)
 #define VDEC_SPU_PRIORITY    200
 #define VDEC_PPU_STACK_SIZE  (16 * 1024)
 
+// The TEE Decoder, as TEE Vanced runs it. The memory settings are the lean ones TEE's guide gives for YouTube
+// (about 75 MB at 1080p instead of the default 112 MB): the records ring never below 8 MB (the largest
+// picture's CABAC records measured 3.9 MB, and a ring smaller than one picture retries forever), records and
+// input sizes powers of two. The SPE time-out sits below video-player.c's 3 s stall detector, so a silent SPE
+// becomes the decoder's own error (which ends its SPU groups) before the player flushes it.
+#define TEE_PICTURES         12
+#define TEE_INPUT_BYTES      (4u << 20)
+#define TEE_RECORDS_HD       (16u << 20)   // above 720 rows
+#define TEE_RECORDS_SD       (8u << 20)
+#define TEE_TIMEOUT_MS       2000
+#define TEE_FIXED_BYTES      (6u << 20)    // its slice ring and NAL buffer
+#define TEE_HEADROOM_BYTES   (8u << 20)    // left for the sound pipeline and the rest of playback
+#define TEE_BACKLOG_LIMIT    48             // AUs fed and not yet out as pictures (see getAuBacklogLimitH264)
+#define TEE_STATS_US         5000000ull     // one statistics line this often while it plays
+
+enum { BACKEND_VDEC = 1, BACKEND_TEE = 2 };
+
 struct H264Decoder {
+   int            backend;
+   int            width, height;   // coded size the caller sized its frame buffer for
+   int            catchUpSkip;     // may drop non-reference pictures while behind (see header)
+   volatile int   errored;
+
+   // cellVdec
    CellVdecHandle handle;
    void          *workMemory;
-   int            width, height;   // coded size the caller sized its frame buffer for
    sys_lwmutex_t  lock;
+   int            lockCreated;
 
    int            auFedCount;     // AUs handed to cellVdecDecodeAu (decode thread only)
    volatile int   auDoneCount;     // incremented by the callback on each AUDONE
    volatile int   picPending;      // decoded pictures reported but not yet retrieved
    volatile int   seqDone;         // EndSeq finished (set by the callback, cleared by reset)
-   volatile int   errored;
    int            auRejectedCount;   // AUs the decoder refused (a broken stream refuses every one)
-   int            catchUpSkip;      // may drop non-reference B pictures while behind (see header)
    int            picIncompleteCount;   // pictures that came out damaged
 
    // diagnostic: when each PICOUT fired, so a caller can split its feed->retrieve time into the
@@ -61,7 +90,59 @@ struct H264Decoder {
    volatile int   picoutWrite;    // callback advances
    int            picoutRead;      // getFrameH264 advances
    uint64_t       lastReadyUs;     // PICOUT time of the most recently retrieved picture
+
+   // TEE Decoder
+   tdec          *tee;
+   int            teeFed, teeOut;          // since open / the last flush: AUs taken, pictures handed out
+   int            teeEnded, teeDrained;    // end of stream told / every picture out after it
+   int            teeErrorLogged;
+   uint64_t       statsSinceUs;            // the statistics window
+   int            statsOut, statsRefused, statsDropped;
+   uint64_t       statsCopyUs, statsCopyMaxUs;
 };
+
+// ============================================================================
+// which backend
+// ============================================================================
+
+static H264Policy policy = H264_POLICY_AUTO;
+static int teeSpes = 4;          // 4 = 1 CABAC + 3 pixel, 5 = 1 CABAC + 4 pixel
+static int teeOff;               // the TEE Decoder failed while playing: cellVdec until the app restarts
+static int teeOpen;              // one TEE Decoder at a time
+static int spuInitialized;
+
+void setH264DecoderPolicy(H264Policy newPolicy, int spes)
+{
+   policy = newPolicy == H264_POLICY_SONY ? H264_POLICY_SONY : H264_POLICY_AUTO;
+   teeSpes = spes == 5 ? 5 : 4;
+}
+
+int isH264TeeUsable(void) { return policy == H264_POLICY_AUTO && !teeOff; }
+
+void disableH264TeeForSession(const char *why)
+{
+   if (!teeOff) logWarn("[decode-h264] TEE Decoder off until the app restarts: %s\n", why ? why : "?");
+   teeOff = 1;
+}
+
+// SPU runtime is process-global and the same for both backends: 6 SPUs at most, raw ones none. The TEE
+// Decoder asks for the same itself (and is told so harmlessly); never more - a 7th froze TEE's console.
+static void initSpusOnce(void)
+{
+   if (!spuInitialized) { sys_spu_initialize(6, 0); spuInitialized = 1; }
+}
+
+const char *getH264DecoderName(const H264Decoder *decoder)
+{
+   if (!decoder) return "none";
+   return decoder->backend == BACKEND_TEE ? "TEE Decoder" : "cellVdec";
+}
+
+int isTeeH264Decoder(const H264Decoder *decoder) { return decoder && decoder->backend == BACKEND_TEE; }
+
+// ============================================================================
+// cellVdec
+// ============================================================================
 
 static uint32_t vdecCallback(CellVdecHandle handle, CellVdecMsgType type, int32_t data, void *arg)
 {
@@ -109,14 +190,15 @@ H264Decoder *createH264Decoder(int width, int height, int level, int maxRefFrame
 {
    H264Decoder *decoder = (H264Decoder *)calloc(1, sizeof *decoder);
    if (!decoder) return 0;
+   decoder->backend = BACKEND_VDEC;
    decoder->width  = width;
    decoder->height = height;
    createLock(&decoder->lock);
+   decoder->lockCreated = 1;
 
    // SPU runtime + codec module are process-global: init the SPUs once, and tolerate a duplicate
    // module load if another decoder already brought it up.
-   static int spuInitialized;
-   if (!spuInitialized) { sys_spu_initialize(6, 0); spuInitialized = 1; }
+   initSpusOnce();
    int ret = cellSysmoduleLoadModule(CELL_SYSMODULE_VDEC_AVC);
    if (ret != CELL_OK && ret != CELL_SYSMODULE_ERROR_DUPLICATED) {
       logError("[decode-h264] load VDEC_AVC failed 0x%x\n", ret);
@@ -146,7 +228,7 @@ H264Decoder *createH264Decoder(int width, int height, int level, int maxRefFrame
    resource.ppuThreadStackSize = VDEC_PPU_STACK_SIZE;
    resource.spuThreadPriority  = VDEC_SPU_PRIORITY;
    resource.numOfSpus          = VDEC_SPU_COUNT;
-   resource.spursResource      = 0;   // NULL: use raw SPU threads, not a user SPURS instance
+   resource.spursResource      = 0;   // NULL: libvdec builds its own SPURS instance of numOfSpus SPUs
 
    CellVdecCb callback = { vdecCallback, decoder };
    ret = cellVdecOpenEx(&type, &resource, &callback, &decoder->handle);
@@ -155,7 +237,7 @@ H264Decoder *createH264Decoder(int width, int height, int level, int maxRefFrame
    ret = cellVdecStartSeq(decoder->handle);
    if (ret != CELL_OK) { logError("[decode-h264] StartSeq failed 0x%x\n", ret); cellVdecClose(decoder->handle); decoder->handle = 0; goto fail; }
 
-   logInfo("[decode-h264] opened %dx%d level %d, %d DPB buffers, workMem %d KB\n", width, height, level, gotBuffers, (int)(memSize / 1024));
+   logInfo("[decode-h264] cellVdec opened %dx%d level %d, %d DPB buffers, workMem %d KB\n", width, height, level, gotBuffers, (int)(memSize / 1024));
    return decoder;
 
 fail:
@@ -163,7 +245,7 @@ fail:
    return 0;
 }
 
-int decodeAuH264(H264Decoder *decoder, const uint8_t *data, int size, uint64_t pts)
+static int vdecDecodeAu(H264Decoder *decoder, const uint8_t *data, int size, uint64_t pts)
 {
    if (decoder->errored) return -1;
 
@@ -192,16 +274,6 @@ int decodeAuH264(H264Decoder *decoder, const uint8_t *data, int size, uint64_t p
    return -1;
 }
 
-int getAuBacklogH264(const H264Decoder *decoder)
-{
-   return decoder->auFedCount - decoder->auDoneCount;
-}
-
-void setH264CatchUpSkip(H264Decoder *decoder, int enable)
-{
-   if (decoder) decoder->catchUpSkip = enable ? 1 : 0;
-}
-
 // releases decoded pictures the callback has reported, one GetPicItem + GetPicture(NULL discard)
 // pair per PICOUT — the SDK samples never retrieve speculatively, only in response to a PICOUT
 static void discardReportedPictures(H264Decoder *decoder, const CellVdecPicFormat *format)
@@ -213,7 +285,7 @@ static void discardReportedPictures(H264Decoder *decoder, const CellVdecPicForma
    }
 }
 
-int resetH264Decoder(H264Decoder *decoder)
+static int vdecReset(H264Decoder *decoder)
 {
    // flush for a seek per the SDK protocol (pamf_dmux_trick_play, libavdecode): EndSeq retried while
    // the input queue is full, every flushed picture released as its PICOUT arrives until SEQDONE
@@ -252,7 +324,7 @@ int resetH264Decoder(H264Decoder *decoder)
    return 0;
 }
 
-int getFrameH264(H264Decoder *decoder, void *yuvOut, int *outWidth, int *outHeight, uint64_t *outPts)
+static int vdecGetFrame(H264Decoder *decoder, void *yuvOut, int *outWidth, int *outHeight, uint64_t *outPts)
 {
    if (decoder->errored) return -1;
    if (decoder->picPending <= 0) return 0;
@@ -299,13 +371,418 @@ int getFrameH264(H264Decoder *decoder, void *yuvOut, int *outWidth, int *outHeig
    return 1;
 }
 
+static void vdecDestroy(H264Decoder *decoder)
+{
+   if (decoder->handle) { cellVdecEndSeq(decoder->handle); cellVdecClose(decoder->handle); }
+   free(decoder->workMemory);
+   if (decoder->lockCreated) destroyLock(&decoder->lock);
+}
+
+// ============================================================================
+// TEE Decoder: can it decode this stream?
+// ============================================================================
+
+// What the TEE Decoder refuses, or would decode wrong without saying so (TEE's td_core.c / td_h264_hdr.c): it
+// takes High and Main profile, CABAC, 8 bit 4:2:0, progressive frames, one slice group, picture order count
+// type 0 or 2, no frame_num gaps, no scaling matrices, no constrained intra prediction, no redundant pictures,
+// a coded width that is a multiple of 128 up to 1920 x 1088. Read here from the stream's own SPS and PPS, so a
+// stream it cannot take never reaches it. Several slices per picture only shows while it plays: the decoder
+// stops with an error then, and video-player.c falls back to cellVdec.
+
+typedef struct { uint8_t data[256]; int size; int bit; int bad; } Rbsp;
+
+// the RBSP of one NAL unit (after its header byte): emulation prevention bytes removed
+static void loadRbsp(Rbsp *r, const uint8_t *nal, int size)
+{
+   r->size = 0; r->bit = 0; r->bad = 0;
+   int zeros = 0;
+   for (int i = 0; i < size; i++) {
+      if (zeros >= 2 && nal[i] == 3) { zeros = 0; continue; }
+      zeros = nal[i] == 0 ? zeros + 1 : 0;
+      if (r->size >= (int)sizeof r->data) { r->bad = 1; return; }
+      r->data[r->size++] = nal[i];
+   }
+}
+
+static uint32_t readBit(Rbsp *r)
+{
+   if (r->bit >= r->size * 8) { r->bad = 1; return 0; }
+   uint32_t value = (r->data[r->bit >> 3] >> (7 - (r->bit & 7))) & 1;
+   r->bit++;
+   return value;
+}
+
+static uint32_t readBits(Rbsp *r, int count)
+{
+   uint32_t value = 0;
+   while (count-- > 0) value = (value << 1) | readBit(r);
+   return value;
+}
+
+static uint32_t readUe(Rbsp *r)
+{
+   int zeros = 0;
+   while (!r->bad && readBit(r) == 0) if (++zeros > 31) { r->bad = 1; return 0; }
+   return ((1u << zeros) - 1) + readBits(r, zeros);
+}
+
+static int32_t readSe(Rbsp *r)
+{
+   uint32_t code = readUe(r);
+   return (code & 1) ? (int32_t)((code + 1) / 2) : -(int32_t)(code / 2);
+}
+
+// more_rbsp_data(): is there anything before the RBSP stop bit?
+static int moreRbspData(const Rbsp *r)
+{
+   int last = r->size - 1;
+   while (last >= 0 && r->data[last] == 0) last--;
+   if (last < 0) return 0;
+   int low = 0;
+   while (!((r->data[last] >> low) & 1)) low++;
+   return r->bit < last * 8 + (7 - low);
+}
+
+static int teeTakesSps(Rbsp *r, char *why, int cap)
+{
+   int profile = (int)readBits(r, 8);
+   readBits(r, 16);                        // constraint flags, level
+   readUe(r);                              // seq_parameter_set_id
+   if (profile != 77 && profile != 100) { snprintf(why, cap, "profile %d (it takes Main and High)", profile); return 0; }
+   if (profile == 100) {
+      uint32_t chroma = readUe(r);
+      if (chroma != 1) { snprintf(why, cap, "chroma format %u (it takes 4:2:0)", (unsigned)chroma); return 0; }
+      uint32_t lumaDepth = readUe(r), chromaDepth = readUe(r);
+      if (lumaDepth || chromaDepth) { snprintf(why, cap, "%u bit (it takes 8 bit)", (unsigned)(8 + lumaDepth)); return 0; }
+      readBit(r);                          // qpprime_y_zero_transform_bypass
+      if (readBit(r)) { snprintf(why, cap, "scaling matrices in the SPS"); return 0; }
+   }
+   readUe(r);                              // log2_max_frame_num_minus4
+   uint32_t pocType = readUe(r);
+   if (pocType == 0) readUe(r);
+   else if (pocType != 2) { snprintf(why, cap, "picture order count type %u", (unsigned)pocType); return 0; }
+   readUe(r);                              // max_num_ref_frames
+   if (readBit(r)) { snprintf(why, cap, "gaps in frame_num allowed"); return 0; }
+   readUe(r); readUe(r);                   // size in macroblocks (the coded size is checked by the caller)
+   if (!readBit(r)) { snprintf(why, cap, "interlaced (frame_mbs_only_flag 0)"); return 0; }
+   if (r->bad) { snprintf(why, cap, "an SPS it could not read"); return 0; }
+   return 1;
+}
+
+static int teeTakesPps(Rbsp *r, char *why, int cap)
+{
+   readUe(r); readUe(r);                   // pic / seq parameter set ids
+   if (!readBit(r)) { snprintf(why, cap, "CAVLC (it takes CABAC)"); return 0; }
+   readBit(r);                             // bottom_field_pic_order_in_frame_present
+   if (readUe(r) != 0) { snprintf(why, cap, "slice groups"); return 0; }
+   readUe(r); readUe(r);                   // num_ref_idx_l0/l1_default_active_minus1
+   readBit(r); readBits(r, 2);             // weighted prediction
+   readSe(r); readSe(r); readSe(r);        // pic_init_qp/qs, chroma_qp_index_offset
+   readBit(r);                             // deblocking_filter_control_present
+   if (readBit(r)) { snprintf(why, cap, "constrained intra prediction"); return 0; }
+   if (readBit(r)) { snprintf(why, cap, "redundant pictures"); return 0; }
+   if (moreRbspData(r)) {
+      readBit(r);                          // transform_8x8_mode
+      if (readBit(r)) { snprintf(why, cap, "scaling matrices in the PPS"); return 0; }
+   }
+   if (r->bad) { snprintf(why, cap, "a PPS it could not read"); return 0; }
+   return 1;
+}
+
+// every SPS and PPS in an Annex-B buffer
+static int teeTakesParameterSets(const uint8_t *data, int size, char *why, int cap)
+{
+   int spsCount = 0, ppsCount = 0;
+   for (int i = 0; i + 3 < size; ) {
+      if (!(data[i] == 0 && data[i + 1] == 0 && data[i + 2] == 1)) { i++; continue; }
+      int start = i + 3, end = start;
+      while (end + 2 < size && !(data[end] == 0 && data[end + 1] == 0 &&
+                                 (data[end + 2] == 1 || (data[end + 2] == 0 && end + 3 < size && data[end + 3] == 1))))
+         end++;
+      if (end + 2 >= size) end = size;
+      if (end > start) {
+         int type = data[start] & 0x1F;
+         if (type == 7 || type == 8) {
+            Rbsp rbsp;
+            loadRbsp(&rbsp, data + start + 1, end - start - 1);
+            if (rbsp.bad) { snprintf(why, cap, "a parameter set longer than %d bytes", (int)sizeof rbsp.data); return 0; }
+            if (type == 7) { spsCount++; if (!teeTakesSps(&rbsp, why, cap)) return 0; }
+            else           { ppsCount++; if (!teeTakesPps(&rbsp, why, cap)) return 0; }
+         }
+      }
+      i = end;
+   }
+   if (!spsCount || !ppsCount) { snprintf(why, cap, "no SPS or PPS in the stream header"); return 0; }
+   return 1;
+}
+
+// the first slice of an access unit has nal_ref_idc 0: no other picture refers to it, so catch-up may drop it
+static int isDisposableAu(const uint8_t *au, int size)
+{
+   for (int i = 0; i + 3 < size; i++) {
+      if (au[i] != 0 || au[i + 1] != 0 || au[i + 2] != 1) continue;
+      uint8_t header = au[i + 3];
+      int type = header & 0x1F;
+      if (type == 5) return 0;
+      if (type == 1) return ((header >> 5) & 3) == 0;
+      i += 3;
+   }
+   return 0;
+}
+
+// ============================================================================
+// TEE Decoder
+// ============================================================================
+
+// its log lines (from its own thread, the SPU event thread or the caller's) - rate-limited, it can repeat one
+// per picture on a stream it struggles with, and every logInfo is a file write. The line has no newline of its
+// own and is never used as a format.
+static void teeLog(const char *line)
+{
+   static uint64_t windowUs;
+   static int lines, dropped;
+   uint64_t now = sys_time_get_system_time();
+   if (now - windowUs > 1000000ull) {
+      if (dropped) logWarn("[tdec] %d log lines dropped\n", dropped);
+      windowUs = now; lines = 0; dropped = 0;
+   }
+   if (++lines > 20) { dropped++; return; }
+   logInfo("[tdec] %s\n", line);
+}
+
+static void logUserMemory(const char *when, unsigned needMb)
+{
+   sys_memory_info_t info;
+   if (sys_memory_get_user_memory_size(&info) != CELL_OK) return;
+   if (needMb) logInfo("[decode-h264] user memory %s: %u MB free of %u MB, the TEE Decoder needs about %u MB\n", when,
+                       (unsigned)(info.available_user_memory >> 20), (unsigned)(info.total_user_memory >> 20), needMb);
+   else        logInfo("[decode-h264] user memory %s: %u MB free of %u MB\n", when,
+                       (unsigned)(info.available_user_memory >> 20), (unsigned)(info.total_user_memory >> 20));
+}
+
+static H264Decoder *createTee(const H264StreamParams *params, char *why, int cap)
+{
+   if (teeOpen) { snprintf(why, cap, "another TEE Decoder is still open"); return 0; }
+   if (params->spsPatched) { snprintf(why, cap, "the SPS's reference count was rewritten for cellVdec"); return 0; }
+   if (params->width % 128 || params->width > 1920 || params->height > 1088 || params->height < 32) {
+      snprintf(why, cap, "coded size %dx%d (it takes widths that are a multiple of 128, up to 1920 x 1088)",
+               params->width, params->height);
+      return 0;
+   }
+   if (!teeTakesParameterSets(params->header, params->headerSize, why, cap)) return 0;
+
+   tdec_config config;
+   tdec_default(&config);
+   config.max_width     = params->width;
+   config.max_height    = params->height;
+   config.pictures      = TEE_PICTURES;
+   config.input_bytes   = TEE_INPUT_BYTES;
+   config.records_bytes = params->height > 720 ? TEE_RECORDS_HD : TEE_RECORDS_SD;
+   config.timeout_ms    = TEE_TIMEOUT_MS;
+   config.log           = teeLog;
+   if (teeSpes == 5) { config.ncabac = 1; config.npixel = 4; }   // tier 1 otherwise: 1 CABAC + 3 pixel
+
+   // all of it is allocated up front; leave room for the sound pipeline and the rest of playback. The kernel's
+   // number can be lower than what malloc could still serve (freed memory may stay in the heap), so this only
+   // refuses when it is clearly short - tdec_open itself fails cleanly when memory runs out.
+   size_t need = tdec_picture_memory_size(&config) + config.records_bytes + config.input_bytes + TEE_FIXED_BYTES;
+   sys_memory_info_t info;
+   if (sys_memory_get_user_memory_size(&info) == CELL_OK) {
+      logInfo("[decode-h264] user memory before the TEE Decoder: %u MB free of %u MB, it needs about %u MB\n",
+              (unsigned)(info.available_user_memory >> 20), (unsigned)(info.total_user_memory >> 20), (unsigned)(need >> 20));
+      if ((size_t)info.available_user_memory < need + TEE_HEADROOM_BYTES) {
+         snprintf(why, cap, "%u MB free, it needs about %u MB", (unsigned)(info.available_user_memory >> 20),
+                  (unsigned)((need + TEE_HEADROOM_BYTES) >> 20));
+         return 0;
+      }
+   }
+
+   H264Decoder *decoder = (H264Decoder *)calloc(1, sizeof *decoder);
+   if (!decoder) { snprintf(why, cap, "out of memory"); return 0; }
+   decoder->backend = BACKEND_TEE;
+   decoder->width   = params->width;
+   decoder->height  = params->height;
+
+   initSpusOnce();
+   char error[200];
+   error[0] = 0;
+   decoder->tee = tdec_open(&config, error, sizeof error);
+   if (!decoder->tee) {
+      snprintf(why, cap, "tdec_open: %s", error[0] ? error : "failed");
+      free(decoder);
+      return 0;
+   }
+   teeOpen = 1;
+   decoder->statsSinceUs = sys_time_get_system_time();
+   logInfo("[decode-h264] TEE Decoder %s opened for %dx%d: %d SPEs (1 CABAC + %d pixel), %d picture buffers\n",
+           TEE_DECODER_VERSION, params->width, params->height, teeSpes, teeSpes - 1, TEE_PICTURES);
+   logUserMemory("with the TEE Decoder open", 0);
+   return decoder;
+}
+
+static void teeStats(H264Decoder *decoder, uint64_t now)
+{
+   if (now - decoder->statsSinceUs < TEE_STATS_US) return;
+   int seconds = (int)((now - decoder->statsSinceUs) / 1000000ull);
+   if (seconds < 1) seconds = 1;
+   logInfo("[tdec] %d s: %d pictures out (%d/s), %d decoded since open or seek, %d feeds refused (input full), "
+           "%d dropped by catch-up, copy %d us average, %d us max\n", seconds, decoder->statsOut, decoder->statsOut / seconds,
+           tdec_pictures_decoded(decoder->tee), decoder->statsRefused, decoder->statsDropped,
+           decoder->statsOut ? (int)(decoder->statsCopyUs / (uint64_t)decoder->statsOut) : 0, (int)decoder->statsCopyMaxUs);
+   decoder->statsSinceUs = now;
+   decoder->statsOut = decoder->statsRefused = decoder->statsDropped = 0;
+   decoder->statsCopyUs = decoder->statsCopyMaxUs = 0;
+}
+
+static int teeFailed(H264Decoder *decoder)
+{
+   const char *error = tdec_error(decoder->tee);
+   if (!error) return 0;
+   if (!decoder->teeErrorLogged) { logError("[decode-h264] TEE Decoder stopped: %s\n", error); decoder->teeErrorLogged = 1; }
+   decoder->errored = 1;
+   return 1;
+}
+
+static int teeDecodeAu(H264Decoder *decoder, const uint8_t *data, int size, uint64_t pts)
+{
+   if (decoder->errored || teeFailed(decoder)) return -1;
+   if (decoder->catchUpSkip && isDisposableAu(data, size)) { decoder->statsDropped++; return 0; }
+   int taken = tdec_feed(decoder->tee, data, (size_t)size, TDEC_ANNEXB, (int64_t)pts);
+   if (taken == 1) { decoder->teeFed++; return 0; }
+   if (taken == 0) {
+      if (teeFailed(decoder)) return -1;   // after an error it reports "full" for ever
+      decoder->statsRefused++;
+      return 1;
+   }
+   logError("[decode-h264] the TEE Decoder refused an access unit of %d bytes (more than 2 MB?)\n", size);
+   decoder->errored = 1;
+   return -1;
+}
+
+static int teeGetFrame(H264Decoder *decoder, void *yuvOut, int *outWidth, int *outHeight, uint64_t *outPts)
+{
+   if (decoder->errored) return -1;
+   uint64_t now = sys_time_get_system_time();
+   tdec_picture picture;
+   int got = tdec_get_picture(decoder->tee, &picture);
+   if (got == 0) { teeStats(decoder, now); return 0; }
+   if (got < 0) {
+      if (teeFailed(decoder)) return -1;
+      decoder->teeDrained = 1;             // after end of stream: every picture is out
+      return 0;
+   }
+   if (picture.width > decoder->width || picture.height > decoder->height) {
+      logError("[decode-h264] the TEE Decoder put out %dx%d, more than the %dx%d it was opened for\n",
+               picture.width, picture.height, decoder->width, decoder->height);
+      tdec_release_picture(decoder->tee, &picture);
+      decoder->errored = 1;
+      return -1;
+   }
+   tdec_copy_i420(&picture, (uint8_t *)yuvOut);
+   uint64_t copyUs = sys_time_get_system_time() - now;
+   tdec_release_picture(decoder->tee, &picture);
+
+   decoder->teeOut++;
+   decoder->statsOut++;
+   decoder->statsCopyUs += copyUs;
+   if (copyUs > decoder->statsCopyMaxUs) decoder->statsCopyMaxUs = copyUs;
+   teeStats(decoder, now);
+
+   *outWidth  = picture.width;
+   *outHeight = picture.height;
+   *outPts    = (uint64_t)picture.pts;
+   return 1;
+}
+
+static int teeReset(H264Decoder *decoder)
+{
+   int ok = tdec_flush(decoder->tee) == 0;
+   decoder->teeFed = decoder->teeOut = 0;
+   decoder->teeEnded = decoder->teeDrained = 0;
+   if (!ok) {
+      const char *error = tdec_error(decoder->tee);
+      logError("[decode-h264] TEE Decoder flush failed: %s\n", error ? error : "?");
+      decoder->errored = 1;
+      return -1;
+   }
+   decoder->errored = 0;
+   decoder->teeErrorLogged = 0;
+   return 0;
+}
+
+// ============================================================================
+// the interface
+// ============================================================================
+
+H264Decoder *createH264DecoderFor(const H264StreamParams *params)
+{
+   if (isH264TeeUsable()) {
+      char why[200];
+      why[0] = 0;
+      H264Decoder *decoder = createTee(params, why, sizeof why);
+      if (decoder) return decoder;
+      logInfo("[decode-h264] TEE Decoder not used: %s - cellVdec instead\n", why);
+   } else {
+      logInfo("[decode-h264] cellVdec: %s\n", policy == H264_POLICY_SONY ? "video-decoder=sony or a live stream"
+                                                                         : "the TEE Decoder is off for this run");
+   }
+   return createH264Decoder(params->width, params->height, params->level, params->maxRefFrames);
+}
+
+int decodeAuH264(H264Decoder *decoder, const uint8_t *data, int size, uint64_t pts)
+{
+   return decoder->backend == BACKEND_TEE ? teeDecodeAu(decoder, data, size, pts) : vdecDecodeAu(decoder, data, size, pts);
+}
+
+int getAuBacklogH264(const H264Decoder *decoder)
+{
+   if (decoder->backend == BACKEND_TEE) return decoder->teeFed - decoder->teeOut;
+   return decoder->auFedCount - decoder->auDoneCount;
+}
+
+int getAuBacklogLimitH264(const H264Decoder *decoder, int auBufferCount)
+{
+   return decoder->backend == BACKEND_TEE ? TEE_BACKLOG_LIMIT : auBufferCount;
+}
+
+void setH264CatchUpSkip(H264Decoder *decoder, int enable)
+{
+   if (decoder) decoder->catchUpSkip = enable ? 1 : 0;
+}
+
+void endOfStreamH264(H264Decoder *decoder)
+{
+   if (!decoder || decoder->backend != BACKEND_TEE || decoder->teeEnded) return;
+   tdec_end_of_stream(decoder->tee);
+   decoder->teeEnded = 1;
+}
+
+int isH264Drained(const H264Decoder *decoder)
+{
+   return decoder && decoder->backend == BACKEND_TEE && decoder->teeDrained;
+}
+
+int resetH264Decoder(H264Decoder *decoder)
+{
+   return decoder->backend == BACKEND_TEE ? teeReset(decoder) : vdecReset(decoder);
+}
+
+int getFrameH264(H264Decoder *decoder, void *yuvOut, int *outWidth, int *outHeight, uint64_t *outPts)
+{
+   return decoder->backend == BACKEND_TEE ? teeGetFrame(decoder, yuvOut, outWidth, outHeight, outPts)
+                                          : vdecGetFrame(decoder, yuvOut, outWidth, outHeight, outPts);
+}
+
 uint64_t getDecoderReadyUs(const H264Decoder *decoder) { return decoder->lastReadyUs; }
 
 void destroyH264Decoder(H264Decoder *decoder)
 {
    if (!decoder) return;
-   if (decoder->handle) { cellVdecEndSeq(decoder->handle); cellVdecClose(decoder->handle); }
-   free(decoder->workMemory);
-   destroyLock(&decoder->lock);
+   if (decoder->backend == BACKEND_TEE) {
+      if (decoder->tee) { tdec_close(decoder->tee); teeOpen = 0; }
+      logUserMemory("after the TEE Decoder closed", 0);
+   } else {
+      vdecDestroy(decoder);
+   }
    free(decoder);
 }

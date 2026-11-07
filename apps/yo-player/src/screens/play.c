@@ -28,6 +28,7 @@
 #include "string-utilities.h"   // strCopy
 
 #include "video-player.h"
+#include "decode-h264.h"        // setH264DecoderPolicy / isH264TeeUsable: the TEE Decoder or cellVdec
 #include "audio.h"              // setAudioPcmFeedVolume
 #include "storage.h"            // resume position (get/setWatchedPosition)
 #include "settings.h"           // sponsorblock-mode (which segment categories auto-skip)
@@ -459,8 +460,15 @@ static void worker(uint64_t arg)
       if (isRenderableSubtitleLanguage(info->captions[i].languageCode))
          state.captionTracks[state.captionCount++] = info->captions[i];
 
-   const StreamFormat *video = pickBestVideo(info);
+   // which H.264 decoder this video may use: the TEE Decoder (TEE's own, on the SPEs) unless settings.txt says
+   // video-decoder=sony or it failed earlier in this run; it also opens 1080p60, which cellVdec cannot keep up
+   // with. Live streams stay on cellVdec for now. Process-wide, so every player this video builds (a reopen, an
+   // audio-track switch) follows the same choice.
+   setH264DecoderPolicy(getVideoDecoderSetting() == VIDEO_DECODER_SONY ? H264_POLICY_SONY : H264_POLICY_AUTO,
+                        getTeeDecoderSpes());
+   const StreamFormat *video = pickBestVideoForPlayback(info, isH264TeeUsable());
    if (!video) { fail("no playable mp4 video"); goto done; }
+   if (video->isLiveSegmented) setH264DecoderPolicy(H264_POLICY_SONY, getTeeDecoderSpes());
    // a muxed pick (itag 18) already carries audio; a video-only pick needs a separate audio track
    const StreamFormat *audio = video->hasAudio ? NULL : pickBestAudio(info);
    logInfo("[yt] play video itag %d %dx%d %s, audio itag %d\n", video->itag, video->width, video->height,
@@ -1554,7 +1562,8 @@ static void updateStatLabels(void)
    getAudioTrackInfo(state.player, &rate, &channels);
    float pos = getVideoPositionSeconds(state.player), duration = getVideoDurationSeconds(state.player);
 
-   snprintf(line, sizeof line, "Video  itag %d   %dx%d   H.264", state.vidItag, state.vidW, state.vidH);
+   snprintf(line, sizeof line, "Video  itag %d   %dx%d   H.264 (%s)", state.vidItag, state.vidW, state.vidH,
+            getVideoDecoderName(state.player));
    setLabelText(&statLabels[0], line);
    snprintf(line, sizeof line, "FPS  %d   (target %d)", state.measuredFps, state.vidFps);
    setLabelText(&statLabels[1], line);

@@ -22,9 +22,18 @@ static const char *DEFAULT_SETTINGS =
    "region=US\n"
    "# the country whose YouTube the lists come from: Trending and Live follow it, Search and Sports only\n"
    "# partly. a two-letter code as listed in Settings > Region, e.g. US, GB, DE, AT, CH, IT, TR, RU.\n"
-   "# the app itself stays in English.\n";
+   "# the app itself stays in English.\n"
+   "\n"
+   "video-decoder=auto\n"
+   "# auto = the TEE Decoder (TEE's own H.264 decoder on the SPEs: 1080p60) where it can decode the video,\n"
+   "# Sony's cellVdec otherwise; sony = cellVdec only (1080p at up to 30 fps, 720p at 60)\n"
+   "\n"
+   "tee-decoder-spes=4\n"
+   "# 4 = 1 CABAC + 3 pixel SPEs, 5 = 1 CABAC + 4 pixel (more headroom; with the sound all 6 SPEs are busy)\n";
 
 static SponsorblockMode sponsorblockMode = SPONSORBLOCK_ADS;
+static VideoDecoderSetting videoDecoder = VIDEO_DECODER_AUTO;
+static int teeDecoderSpes = 4;
 
 // ---- content region ----
 
@@ -159,6 +168,21 @@ void loadSettings(void)
       else logWarn("[settings] unknown sponsorblock-mode value, using ads\n");
    }
 
+   const char *decoder = findSettingValue(text, "video-decoder");
+   if (decoder) {
+      if      (settingValueEquals(decoder, "auto")) videoDecoder = VIDEO_DECODER_AUTO;
+      else if (settingValueEquals(decoder, "sony")) videoDecoder = VIDEO_DECODER_SONY;
+      else logWarn("[settings] unknown video-decoder value, using auto\n");
+   }
+   const char *spes = findSettingValue(text, "tee-decoder-spes");
+   if (spes) {
+      if      (settingValueEquals(spes, "4")) teeDecoderSpes = 4;
+      else if (settingValueEquals(spes, "5")) teeDecoderSpes = 5;
+      else logWarn("[settings] tee-decoder-spes takes 4 or 5, using 4\n");
+   }
+   logInfo("[settings] video-decoder %s, tee-decoder-spes %d\n", videoDecoder == VIDEO_DECODER_SONY ? "sony" : "auto",
+           teeDecoderSpes);
+
    const char *region = findSettingValue(text, "region");
    int index = region ? parseRegion(region) : -1;
    regionIndex = index >= 0 ? index : defaultRegionIndex();
@@ -240,3 +264,5 @@ int setContentRegionIndex(int index)
 }
 
 SponsorblockMode getSponsorblockMode(void) { return sponsorblockMode; }
+VideoDecoderSetting getVideoDecoderSetting(void) { return videoDecoder; }
+int getTeeDecoderSpes(void) { return teeDecoderSpes; }

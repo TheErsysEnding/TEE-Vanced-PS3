@@ -39,6 +39,9 @@ typedef struct {
 struct VideoPlayer {
    VideoDemuxer demuxer;
    H264Decoder *decoder;
+   H264StreamParams streamParams; // what the decoder was built for: rebuilt from it after a failure
+   int          inputEnded;       // the demuxer hit the end of the stream and the decoder was told
+   uint64_t     decoderFailureUs; // when the TEE Decoder last failed while playing (0 = never)
    int          allocW, allocH;   // coded frame-buffer dimensions (macroblock-aligned)
    int          catchUpAllowed;   // >30fps stream: decoder MAY drop B pictures while it is behind
    VideoFrameFreeFn freeFrame;    // releases the slot buffers (matches the allocator used)
@@ -125,6 +128,37 @@ static int claimEmptySlot(VideoPlayer *player)
    return found;
 }
 
+// feeds demuxed access units while the decoder takes them and its backlog is below the limit. Returns how many
+// it fed (0: the decoder is full, at its limit, or the input ended), -1 on an error. At the end of the input it
+// tells the decoder and sets inputEnded.
+//
+// The demuxer rotates AU_BUFFER_COUNT buffers, which cellVdec reads in place: it gets one AU per call, the
+// backlog kept as full as those buffers allow (the SDK notes throughput improves when the queue never runs dry)
+// without overwriting an AU it is still reading. The TEE Decoder copies every AU at once and wants its CABAC
+// stage far ahead of its pixel stage, so it gets several per call, up to a much deeper backlog.
+static int feedDecoder(VideoPlayer *player, int *startedAtKeyframe)
+{
+   int tee = isTeeH264Decoder(player->decoder);
+   int limit = getAuBacklogLimitH264(player->decoder, AU_BUFFER_COUNT);
+   int fed = 0;
+   while (fed < (tee ? 8 : 1) && player->running && player->seekRequestNs < 0 && !player->inputEnded) {
+      if (!player->hasPendingAu && getAuBacklogH264(player->decoder) >= limit) break;
+      if (!player->hasPendingAu) {
+         int r = readVideoAu(&player->demuxer, &player->pendingAu);
+         if (r < 0) return -1;
+         if (r == 0) { player->inputEnded = 1; endOfStreamH264(player->decoder); break; }
+         if (!*startedAtKeyframe) { if (!player->pendingAu.keyframe) continue; *startedAtKeyframe = 1; }
+         player->hasPendingAu = 1;
+      }
+      int result = decodeAuH264(player->decoder, player->pendingAu.data, player->pendingAu.size, player->pendingAu.pts);
+      if (result < 0) return -1;
+      if (result == 1) break;            // input queue full: retry this AU later
+      player->hasPendingAu = 0;
+      fed++;
+   }
+   return fed;
+}
+
 // decodes the next presentation-order frame into `yuv`. returns 1 with dims+pts, 0 at end of
 // stream, -1 on error. Feeds access units until the decoder emits a picture, always pulling pictures
 // while an AU is outstanding — the decoder can't consume input while its frame buffers are full.
@@ -136,33 +170,51 @@ static int decodeNextFrame(VideoPlayer *player, uint8_t *yuv, int *width, int *h
       if (got == 1) return 1;
       if (got < 0) return -1;
 
-      // the demuxer rotates AU_BUFFER_COUNT buffers; keep the decoder's command queue as full as they
-      // allow (the SDK notes throughput improves when the queue never runs dry) without overwriting
-      // an AU the decoder is still reading
-      if (!player->hasPendingAu && getAuBacklogH264(player->decoder) >= AU_BUFFER_COUNT) { sleepMs(1); stalledMs++; continue; }
-
-      if (!player->hasPendingAu) {
-         int r = readVideoAu(&player->demuxer, &player->pendingAu);
-         if (r < 0) return -1;
-         if (r == 0) {   // no more input: drain the pictures still in flight
-            for (int waited = 0; waited < END_OF_STREAM_DRAIN_MS && player->running; waited++) {
-               got = getFrameH264(player->decoder, yuv, width, height, pts);
-               if (got != 0) return got;
-               sleepMs(1);
-            }
-            return 0;
-         }
-         if (!*startedAtKeyframe) { if (!player->pendingAu.keyframe) continue; *startedAtKeyframe = 1; }
-         player->hasPendingAu = 1;
+      if (player->inputEnded) {   // no more input: drain the pictures still in flight
+         if (isH264Drained(player->decoder)) return 0;                       // TEE Decoder: all out
+         if (!isTeeH264Decoder(player->decoder) && stalledMs >= END_OF_STREAM_DRAIN_MS) return 0;
+         sleepMs(1); stalledMs++;
+         continue;
       }
 
-      int fed = decodeAuH264(player->decoder, player->pendingAu.data, player->pendingAu.size, player->pendingAu.pts);
+      int fed = feedDecoder(player, startedAtKeyframe);
       if (fed < 0) return -1;
-      if (fed == 0) { player->hasPendingAu = 0; stalledMs = 0; continue; }
+      if (fed > 0) { stalledMs = 0; continue; }
+      if (player->inputEnded) continue;
       sleepMs(1); stalledMs++;   // input queue full: give the decoder time, keep pulling pictures
    }
-   if (player->running && stalledMs >= DECODE_STALL_MS) { logError("[video-player] decoder stalled\n"); return -1; }
+   if (player->running && player->seekRequestNs < 0 && stalledMs >= DECODE_STALL_MS) {
+      if (player->inputEnded) return 0;   // the last pictures never came: end anyway
+      logError("[video-player] decoder stalled\n");
+      return -1;
+   }
    return 0;
+}
+
+// The TEE Decoder stopped while playing: an error it reported, a stream it cannot take after all (several
+// slices per picture only shows while decoding), or no picture for the stall window. Flush it once and go on
+// from the next keyframe; a second failure within 30 s, or a failed flush, hands the stream to cellVdec for
+// the rest of this run (disableH264TeeForSession). Returns 1 when decoding can go on. The old decoder is closed
+// before the next one opens, so their SPEs never add up.
+static int recoverDecoder(VideoPlayer *player, int *startedAtKeyframe)
+{
+   if (!player->decoder || !isTeeH264Decoder(player->decoder) || player->inputEnded) return 0;
+   uint64_t now = sys_time_get_system_time();
+   int again = player->decoderFailureUs && now - player->decoderFailureUs < 30000000ull;
+   player->decoderFailureUs = now;
+   player->hasPendingAu = 0;
+   *startedAtKeyframe = 0;
+   if (!again && resetH264Decoder(player->decoder) == 0) {
+      logWarn("[video-player] TEE Decoder flushed after a failure, going on from the next keyframe\n");
+      return 1;
+   }
+   disableH264TeeForSession(again ? "it failed twice within 30 s" : "its flush failed");
+   destroyH264Decoder(player->decoder);
+   player->decoder = createH264DecoderFor(&player->streamParams);   // cellVdec now
+   if (!player->decoder) { logError("[video-player] no decoder after the TEE Decoder failed\n"); return 0; }
+   setH264CatchUpSkip(player->decoder, 0);
+   logWarn("[video-player] playing on with %s from the next keyframe\n", getH264DecoderName(player->decoder));
+   return 1;
 }
 
 // flushes both pipelines and jumps to the seek target (decode thread only). The frame on screen
@@ -183,11 +235,13 @@ static void performSeek(VideoPlayer *player)
    // than going dark (a NULL decoder makes decode report end-of-stream until a later seek revives it)
    if (!player->decoder || resetH264Decoder(player->decoder) != 0) {
       logWarn("[video-player] decoder reset failed, recreating decoder\n");
+      if (isTeeH264Decoder(player->decoder)) disableH264TeeForSession("its flush failed at a seek");
       destroyH264Decoder(player->decoder);
-      player->decoder = createH264Decoder(player->allocW, player->allocH, player->demuxer.level, player->demuxer.h264.maxRefFrames);
+      player->decoder = createH264DecoderFor(&player->streamParams);
       setH264CatchUpSkip(player->decoder, 0);   // fresh decoder, fresh start: re-armed while behind
    }
    player->hasPendingAu = 0;
+   player->inputEnded = 0;
    // land on the fragment keyframe covering the target - or, for a sponsor skip, the next keyframe at/after it
    uint64_t landedNs = seekVideoDemuxer(&player->demuxer, targetNs, player->seekLandAfter);
    // audio follows the video keyframe, but on its own thread: its demuxer seek costs a network
@@ -243,10 +297,28 @@ static void decodeThread(uint64_t arg)
       if (player->seekRequestNs >= 0) { performSeek(player); startedAtKeyframe = 0; continue; }
 
       int slot = claimEmptySlot(player);
-      if (slot < 0) { sleepMs(2); continue; }   // ring full: wait for the UI to consume a frame
+      if (slot < 0) {   // ring full: wait for the UI to consume a frame
+         // ...but keep the TEE Decoder's input topped up meanwhile: fed only when a slot is free, its CABAC lead
+         // would shrink to the few pictures the ring holds, and that lead is what carries it over a hard picture
+         if (player->decoder && isTeeH264Decoder(player->decoder) && !player->inputEnded &&
+             feedDecoder(player, &startedAtKeyframe) < 0 && !recoverDecoder(player, &startedAtKeyframe)) {
+            lock(&player->lock);
+            if (player->seekRequestNs < 0) player->ended = 1;
+            unlock(&player->lock);
+            while (player->running && player->ended && player->seekRequestNs < 0) sleepMs(10);
+         }
+         sleepMs(2);
+         continue;
+      }
 
       int width, height; uint64_t pts;
       int got = player->decoder ? decodeNextFrame(player, player->slots[slot].yuv, &width, &height, &pts, &startedAtKeyframe) : -1;
+      if (got < 0 && player->running && player->seekRequestNs < 0 && recoverDecoder(player, &startedAtKeyframe)) {
+         lock(&player->lock);
+         player->slots[slot].state = SLOT_EMPTY;
+         unlock(&player->lock);
+         continue;
+      }
 
       // Catch-up gate. "Behind" only means something against the clock the picture is paced to -
       // the AU backlog cannot say it, since the decode thread keeps that queue full on purpose.
@@ -485,25 +557,35 @@ VideoPlayer *createVideoPlayerSplit(const char *videoPath, const char *audioPath
       player->allocW = roundUp16(player->demuxer.width);
       player->allocH = roundUp16(player->demuxer.height);
    }
-   player->decoder = createH264Decoder(player->allocW, player->allocH, player->demuxer.level, player->demuxer.h264.maxRefFrames);
-   if (!player->decoder) goto fail;
-
-   // 1080p decode tops out around 35fps on the SPUs. A blanket B_SKIP is the wrong answer - these
-   // encodes are ~87% disposable B-frames, so dropping them all leaves a ~7fps slideshow - but
-   // letting the decoder drop them ONLY while it is behind buys back real time on the anchor-heavy
-   // encodes (live, where there is little to lose) and leaves everything it already keeps up with
-   // decoded picture for picture.
-   if (player->demuxer.frameDurationNs && player->demuxer.frameDurationNs < 32000000ull) {
-      logWarn("[video-player] %d fps exceeds decoder throughput, catch-up skip enabled\n",
-              (int)(1000000000ull / player->demuxer.frameDurationNs));
-      player->catchUpAllowed = 1;   // armed; the decode thread engages it only while behind
-   }
-
-   // YUV 4:2:0 planar frames; cellVdecGetPicture requires 128-byte alignment, size a multiple of 128
+   // YUV 4:2:0 planar frames; cellVdecGetPicture requires 128-byte alignment, size a multiple of 128. Allocated
+   // before the decoder, so the decoder's memory check sees what is really left once they exist.
    size_t frameBytes = ((size_t)player->allocW * player->allocH * 3 / 2 + 127) & ~(size_t)127;
    for (int i = 0; i < FRAME_SLOTS; i++) {
       player->slots[i].yuv = (uint8_t *)allocFrame(frameBytes);
       if (!player->slots[i].yuv) goto fail;
+   }
+
+   // the TEE Decoder where it can take the stream (and the app allows it, see setH264DecoderPolicy), cellVdec
+   // otherwise - decode-h264.c reads the stream's own SPS and PPS to decide
+   player->streamParams.width        = player->allocW;
+   player->streamParams.height       = player->allocH;
+   player->streamParams.level        = player->demuxer.level;
+   player->streamParams.maxRefFrames = player->demuxer.h264.maxRefFrames;
+   player->streamParams.header       = player->demuxer.h264.header;
+   player->streamParams.headerSize   = player->demuxer.h264.headerSize;
+   player->streamParams.spsPatched   = player->demuxer.h264.spsPatched;
+   player->decoder = createH264DecoderFor(&player->streamParams);
+   if (!player->decoder) goto fail;
+
+   // 1080p decode tops out around 35fps on cellVdec's SPUs. A blanket B_SKIP is the wrong answer - these
+   // encodes are ~87% disposable B-frames, so dropping them all leaves a ~7fps slideshow - but
+   // letting the decoder drop them ONLY while it is behind buys back real time on the anchor-heavy
+   // encodes (live, where there is little to lose) and leaves everything it already keeps up with
+   // decoded picture for picture. The TEE Decoder keeps up with 1080p60, but the same net stays under it.
+   if (player->demuxer.frameDurationNs && player->demuxer.frameDurationNs < 32000000ull) {
+      logWarn("[video-player] %d fps on %s, catch-up skip enabled\n",
+              (int)(1000000000ull / player->demuxer.frameDurationNs), getH264DecoderName(player->decoder));
+      player->catchUpAllowed = 1;   // armed; the decode thread engages it only while behind
    }
 
    player->running = 1;
@@ -684,6 +766,11 @@ float getVideoPositionSeconds(const VideoPlayer *player)
 float getVideoDurationSeconds(const VideoPlayer *player)
 {
    return (float)player->demuxer.durationNs / 1.0e9f;
+}
+
+const char *getVideoDecoderName(const VideoPlayer *player)
+{
+   return player ? getH264DecoderName(player->decoder) : "none";
 }
 
 // audio track format for a stats overlay; rate/channels read 0 when there's no audio track.

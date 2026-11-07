@@ -12,19 +12,33 @@ static int decodableVideo(const StreamFormat *format)
    return 0;
 }
 
-const StreamFormat *pickBestVideo(const StreamInfo *info)
+// what the TEE Decoder (TEE's own, on the SPEs) takes on top: up to 1920 x 1080 at up to 60 fps - 1080p60 too -
+// when the coded width is a multiple of 128 (1920, 1280, 640, 256 wide; not 854 or 426), and not live, which
+// stays on cellVdec for now. decode-h264.c checks the stream itself when it opens and falls back to cellVdec.
+static int teeDecodableVideo(const StreamFormat *format)
+{
+   int codedWidth = (format->width + 15) & ~15;
+   return codedWidth % 128 == 0 && format->width <= 1920 && format->height <= 1080 && format->fps <= 60 &&
+          !format->isLiveSegmented;
+}
+
+static const StreamFormat *pickVideo(const StreamInfo *info, int teeUsable)
 {
    const StreamFormat *best = NULL;
    for (int i = 0; i < info->formatCount; i++) {
       const StreamFormat *format = &info->formats[i];
       if (!format->hasVideo || format->needsCipher || !format->url[0]) continue;
       if (strcmp(format->container, "mp4") != 0) continue;   // mp4 == avc1 for these itags
-      if (!decodableVideo(format)) continue;
+      if (!decodableVideo(format) && !(teeUsable && teeDecodableVideo(format))) continue;
       if (!best || format->height > best->height || (format->height == best->height && format->fps > best->fps))
          best = format;
    }
    return best;
 }
+
+const StreamFormat *pickBestVideo(const StreamInfo *info) { return pickVideo(info, 0); }
+
+const StreamFormat *pickBestVideoForPlayback(const StreamInfo *info, int teeUsable) { return pickVideo(info, teeUsable); }
 
 const StreamFormat *pickBestAudio(const StreamInfo *info)
 {

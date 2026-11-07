@@ -10,6 +10,10 @@
 // one. NULL if none is usable.
 const StreamFormat *pickBestVideo(const StreamInfo *info);
 
+// the same for playback while the TEE Decoder may be used (teeUsable): it also admits what that decoder plays,
+// 1080p60 among it. Downloads keep pickBestVideo, so their files stay what cellVdec and the XMB can play.
+const StreamFormat *pickBestVideoForPlayback(const StreamInfo *info, int teeUsable);
+
 // the AAC/mp4 audio-only stream to pair with a video-only pick, preferring itag 140 and not its
 // dynamic-range-compressed copy. On a video with several audio tracks the extractor has already narrowed
 // formats[] to the original track's stream. NULL if none.
