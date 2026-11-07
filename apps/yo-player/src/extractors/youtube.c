@@ -598,13 +598,17 @@ static void parseLiveFromSeqnum(StreamInfo *out, const char *kind)
    if (out->formatCount <= 0 || !out->formats[0].url[0]) return;
 
    char seqnum[40] = "";
-   char body[64];
+   // Only the head is wanted: a one-byte buffer reads none of the body. On a stream that had just ended the
+   // server sent the head at once and then held the 1-byte body until the connection broke, ~7.6 s later
+   // (TEE's console, 2026-11-07, Test11) - and the failed read made the probe throw away the head it had.
+   char body[1];
    HttpHeader headers[] = { { "User-Agent", PLAYER_UA }, { "Range", "bytes=0-0" } };
    // findHeader lowercases only the response side, so the name has to be lowercase here
    HttpHeaderCapture capture = { "x-head-seqnum", seqnum, sizeof seqnum };
    int length = 0, status = 0;
-   if (fetchHttpCapturing("GET", out->formats[0].url, headers, 2, NULL, 0,
-                          body, sizeof body, &length, &status, &capture) != 0) {
+   int rc = fetchHttpCapturing("GET", out->formats[0].url, headers, 2, NULL, 0,
+                               body, sizeof body, &length, &status, &capture);
+   if (rc != 0 && !seqnum[0]) {   // the head is taken before the body is read: it counts whenever it came
       logError("[yt] live seqnum probe failed (status=%d)\n", status);
       return;
    }
