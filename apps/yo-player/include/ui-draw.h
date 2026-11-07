@@ -212,9 +212,9 @@ void uiDrawLabelOutlined(const Label *label, uint32_t outlineArgb, int radius);
 // figures, so a counting time or volume figure would wobble as it changes. UiDigits pre-renders the
 // characters below once, in white, and draws a string of them with every digit stepping by the widest
 // digit's advance (each digit centred in that cell) and tinted when drawn. Other characters advance by
-// their own width; characters outside the set are skipped.
-#define UI_DIGIT_CHARS  "0123456789:/%. "
-#define UI_DIGIT_COUNT  15
+// their own width; characters outside the set are skipped. '-' is for how far a live stream plays behind.
+#define UI_DIGIT_CHARS  "0123456789:/%. -"
+#define UI_DIGIT_COUNT  16
 
 typedef struct {
    Label glyphs[UI_DIGIT_COUNT];    // one white label per UI_DIGIT_CHARS character (the space has none)

@@ -15,6 +15,17 @@ void loadSettings(void);   // reads settings.txt, creating it with defaults when
 
 SponsorblockMode getSponsorblockMode(void);
 
+// settings.txt video-decoder=auto|sony: the TEE Decoder where it can decode the video (auto, the default) or
+// Sony's cellVdec only; and tee-decoder-spes=4|5, the TEE Decoder's SPEs (1 CABAC + 3 or 4 pixel).
+typedef enum { VIDEO_DECODER_AUTO, VIDEO_DECODER_SONY } VideoDecoderSetting;
+VideoDecoderSetting getVideoDecoderSetting(void);
+int getTeeDecoderSpes(void);
+
+// settings.txt quality=auto|<height>: the highest video height to play (0 = auto, the best that plays smoothly).
+// setQualityCap changes it and saves it (0 saved, -1 not saved - the cap still applies for this run).
+int getQualityCap(void);
+int setQualityCap(int height);
+
 // ---- content region ----
 // Which country's YouTube the lists come from: the "gl" of every WEB request (Trending, Live, Search, channel
 // pages and their next pages). The language ("hl") stays English whatever the region, because the parsers read

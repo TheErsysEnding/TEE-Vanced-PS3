@@ -1,11 +1,15 @@
 # TEE Vanced PS3
 
+<p align="center">
+  <img src="branding/banner.png" alt="TEE Vanced PS3 - Full HD 60 fps, H.264 support, the TEE Decoder - linktr.ee/theersysending" width="560">
+</p>
+
 A YouTube client for the PlayStation 3, built from source and run on real
 hardware. A fork of **[mohasi's Yo! Player](https://github.com/mohasi/ps3-dev)**
-(Apache-2.0) — see [NOTICE](NOTICE); the application, its decoder and its
-libraries are his work.
+(Apache-2.0) — see [NOTICE](NOTICE); the application and its libraries are his
+work. The H.264 decoder it plays most videos with now is TEE's own (below).
 
-**Status: v1.0.1.** Every version here has been installed and used on a real
+**Status: v2.0.0.** Every version here has been installed and used on a real
 console before being called done. See [CHANGELOG.md](CHANGELOG.md).
 
 ---
@@ -66,6 +70,18 @@ a language nobody asked for. It now plays the original. When a video has
 several tracks, the player says so as it starts, and Square steps through them
 from where you are.
 
+**Its own H.264 decoder: 1080p60 at 60 fps.** The TEE Decoder runs on the
+PS3's SPEs and plays YouTube's 1080p60 at a full 60 frames a second, where
+Sony's `cellVdec` manages about 35 at 1080p - live streams included. Everything
+it cannot decode - Shorts, 480p - stays on `cellVdec`. A 60 fps video on the
+PS3's 59.94 Hz output shows one picture per vblank, with the sound 0.1% slower
+to match. START opens Options with the quality (Auto, or down to 144p for a slow
+connection), the chapters and autoplay.
+
+**Rewind a live stream.** Where the streamer left YouTube's rewind on, left/right
+and L2/R2 go back through the last 12 hours of a live stream and R1 returns to
+live; its quality can be switched like a video's.
+
 **Its own look, "Ember".** A warm dark ground in TEE orange, matching the icon,
 the Manrope typeface, and a focus that can be seen from the sofa.
 
@@ -106,7 +122,7 @@ The package lands in `pkg/out/`, named after `APP_VERSION` in
 python3 genbuild.py                 # generate build-ps3.bat from the .vcxproj files
 ./tools/sync-work.sh                # mirror sources onto the build machine
 ssh <vm> "cd /d C:\ps3-dev && build-ps3.bat"
-./build-pkg-fromsource.sh TEE-Vanced-PS3-v1.0.1 "TEE Vanced PS3 V1.0.1"
+./build-pkg-fromsource.sh TEE-Vanced-PS3-v2.0.0 "TEE Vanced PS3 V2.0.0"
 ```
 
 Upstream is pinned (`UPSTREAM_REV` in `tools/build-env.sh`). mohasi's tree has
@@ -131,14 +147,19 @@ not contain the change. `build.sh` now checks this itself: it fetches the ELF to
 and that run's build stamp. By hand, on the build machine:
 
 ```sh
-ppu-lv2-strings yo-player.ppu.elf | grep "V1.0.1"
+ppu-lv2-strings yo-player.ppu.elf | grep "V2.0.0"
 ```
 
 ---
 
 ## Installing
 
-Install the `.pkg` from the console's package manager. It writes its data to a
+<p align="center">
+  <img src="branding/ICON0.PNG" alt="TEE Vanced PS3's tile on the XMB" width="320">
+</p>
+
+Install the `.pkg` from the console's package manager; it appears on the XMB as
+the tile above, with its own background (`branding/PIC1.PNG`). It writes its data to a
 directory it picks at runtime — `/dev_hdd0/yo-player` cannot be created on every
 console, so it falls back through a list and logs which one it chose to
 `/dev_hdd0/tmp/TEE_Vanced/dbg.txt`. Your subscriptions, history and settings
@@ -167,6 +188,10 @@ reason.
 ## Licence
 
 Apache-2.0, the same as upstream — see [LICENSE](LICENSE) and [NOTICE](NOTICE).
-The TEE name, logo and the artwork in `branding/` are not part of that.
+The TEE Decoder in `libs/simple-lib-av/src/tee_decoder/` is under the GNU LGPL,
+version 2.1 or later (see `libs/simple-lib-av/tee_decoder.LICENSE`): anyone may
+use it, in free or closed software, commercially too; changes to the decoder
+itself stay open. The TEE name, logo and the artwork in `branding/` are not part
+of either licence.
 
-Contact: github@teebug.de
+Contact: github@teebug.de · More from TEE: [linktr.ee/theersysending](https://linktr.ee/theersysending)

@@ -3,6 +3,128 @@
 Every release listed here was installed and used on a real PS3 (EVILNAT 4.92 DEX)
 before it was tagged. Anything that had not been is said so plainly.
 
+## v2.0.0 — 2026-11-07
+
+Installed and used on TEE's console (EVILNAT 4.92 DEX) through twelve test
+builds on 2026-11-07 (V1.1 Test1 to Test10, V2.0.0 Test11 and Test12). The
+XMB tile and background say what this version brings, and where to find TEE:
+FULL HD 60 FPS, H.264 SUPPORT · TEE DECODER, linktr.ee/theersysending.
+
+### Added
+
+**TEE's own H.264 decoder.** The TEE Decoder (TEE's, on the SPEs, version
+1.3.0) decodes YouTube's 1080p60 at 60 fps, where Sony's `cellVdec` manages
+about 35 fps at 1080p. TEE Vanced now uses it for every video it can decode,
+and opens 1080p60 (itag 299) for it; before, every 60 fps video played at
+720p60. On the console 1080p60, 720p60, 360p and 144p all played on it, with
+sound, seeking and switching videos - and live streams in 1080p60.
+
+- It decodes High and Main profile H.264 with CABAC, 8 bit 4:2:0, progressive,
+  with a coded width that is a multiple of 128 up to 1920 x 1088 - YouTube's
+  1920-, 1280-, 640- and 256-wide streams. The app reads each stream's own SPS
+  and PPS before it opens the decoder; everything else, the 480p/240p sizes
+  (854 and 426 wide) among it, stays on `cellVdec`. A 1080p60 video that does
+  not get the TEE Decoder plays at 720p60 on `cellVdec`, as before.
+- It uses 4 SPEs (1 CABAC + 3 pixel), `cellAdec` 1 more for the sound: 5 of 6,
+  as with `cellVdec`. `tee-decoder-spes=5` in `settings.txt` gives it a fourth
+  pixel SPE (all 6 busy with the sound).
+- `video-decoder=sony` in `settings.txt` plays everything on `cellVdec` again.
+- If it fails while playing, the app flushes it and goes on from the next
+  keyframe; a second failure within 30 s hands the video to `cellVdec` until
+  the app is restarted.
+- The module is vendored unchanged in `libs/simple-lib-av/src/tee_decoder/`;
+  the build stops if it differs from `libs/simple-lib-av/tee_decoder.sha256`.
+
+**Smooth 60 fps on a 59.94 Hz screen (display sync).** A video whose frame
+rate is the screen's - 60 fps on the PS3's 59.94 Hz, or 30 fps at two vblanks
+a picture - now shows exactly one picture per vblank, and the sound plays
+0.1% slower to match (1.7 cents, not audible), steered so picture and sound
+stay together. Before, the clock had to drop a picture every 16.7 s, and the
+audio clock's 5 ms steps turned that into a few seconds of judder each time.
+
+**Choose the quality.** START shows the controls; with them up it opens
+Options: Quality, Chapters and Autoplay. Quality lists Auto and every quality
+of the video the player can play - for example 1080p60, 720p60, 360p, 144p.
+A pick switches at the same position and stays as the highest quality for the
+next videos too (`quality=` in `settings.txt`, e.g. for a slow connection),
+until Auto is picked again.
+
+**Live streams: rewind, quality, 1080p60.** A live stream used to play only
+from where it was, in 720p60 at most.
+
+- Where the streamer left YouTube's rewind (DVR) on, left/right go 5 s back
+  or ahead and L2/R2 a minute, up to 12 hours back, on a timeline of the
+  stream's window; R1 goes back to live. The player is rebuilt at the target -
+  a second or two of "Loading..." - and starts at the beginning of the segment
+  it lies in, up to one segment length (5, 2 or 1 s, by the stream) before it.
+- Where the streamer turned it off, there is no rewind, as on YouTube, and a
+  press says so. That was 4 of 6 streams in one look on 2026-11-07, mostly news.
+- The LIVE badge is red at live; behind it - a rewind, a pause - it turns dark,
+  after how far behind ("-1:23").
+- START > Quality lists a live stream's qualities too and switches at the
+  segment playing, or at live when it was live.
+- 1080p60 live (itag 299) plays on the TEE Decoder.
+- A live stream that has just ended - which YouTube serves for a while only
+  as its live segments, until it has made a video of it - plays as its
+  recording: from the start, or from where it was left, with a video's
+  timeline and time, left/right and L2/R2 to move through it, and Replay at
+  its end. It used to say "couldn't open stream" (in Yo! Player too).
+- Played on the console: 1080p60 live with 1 s and 2 s segments for minutes
+  at a time, rewinds up to 70 minutes back and back to live, quality switches
+  between 144p, 480p, 720p60 and 1080p60, and the 69-minute recording of a
+  1080p60 stream that had ended an hour before, moved through both ways.
+
+### Changed
+
+- O puts the controls away first, paused or not; only with nothing on the
+  picture does it leave the video. It used to leave at once.
+- START opens Options instead of the chapter list (Chapters is in it), and
+  Autoplay moved there from Square, which is now only the audio-track button.
+- The R3 panel names the decoder and says "Press R3 to hide"; on a live
+  stream it shows how far behind live it plays, the segment and whether the
+  rewind is on.
+- R1 on a live stream goes back to live (on a video it is still the next
+  chapter).
+
+### Fixed
+
+- **The app hung after seeking back from near the end of a video** (also in
+  Yo! Player). Once the last stretch of the file had been fetched, a seek back
+  was never fetched again: the picture stopped, and O froze the app (FTP and
+  webMAN still answered). The fetch now follows the seek, closing the player
+  cancels a read that waits, and a read that gets nothing for 30 s gives up.
+- **A live stream could stop with the sound playing on, and O then froze the
+  app** (also in Yo! Player, rarely). The live source cut a segment short when
+  its 8 MB buffer was full, and 1080p60 live has segments of up to 4 MB a 2 s
+  segment and up to 10 MB a 5 s one: the player then read the next segment's
+  bytes as picture data and waited for good. Every segment now goes in whole,
+  into a buffer sized for it.
+
+### Known issues
+
+- **Long live sessions fall behind live by 3.6 s an hour.** To show 60 fps
+  without judder on the PS3's 59.94 Hz output, the player runs 0.1% slow (see
+  display sync above), so after an hour on one live stream the picture is about
+  3.6 s further behind live and the badge says "-0:04". R1 catches up. Keeping
+  up by itself would mean dropping a picture every 16.7 s - the judder display
+  sync took away.
+- **A rare hang after a decoder error.** If one of the TEE Decoder's pixel SPEs
+  ever reports an error, stopping the decoder (a seek, leaving the video) can
+  wait for good. The app no longer freezes on it: leaving a video waits 5 s at
+  most, then leaves the decoder behind and plays everything on `cellVdec` until
+  the app is restarted (the next video may not open before that). It has not
+  happened in any test; if it does, please say so in the TEE Vanced thread on
+  PSX-Place, with `/dev_hdd0/tmp/TEE_Vanced/dbg.txt` if you can.
+  `video-decoder=sony` in `settings.txt` plays everything on `cellVdec`.
+
+### Licence
+
+- The TEE Decoder (`libs/simple-lib-av/src/tee_decoder/`) is under the GNU
+  LGPL 2.1 or later, as parts of it follow FFmpeg's libavcodec; the rest of
+  TEE Vanced stays Apache-2.0. NOTICE lists the runtime parts its SPU programs
+  carry (GCC runtime, PSL1GHT, newlib).
+- Its SPU programs no longer carry the build machine's path in their names.
+
 ## v1.0.1 — 2026-11-06
 
 ### Changed

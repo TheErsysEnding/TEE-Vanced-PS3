@@ -1,0 +1,66 @@
+/* TEE Decoder building block - made by tools/make_baustein.sh: the building block's own global symbols get
+   the prefix tdec__, so that none of them clashes with one of the app's. Included first by every .c here. */
+#ifndef TD_NAMES_H
+#define TD_NAMES_H
+#define dec_create tdec__dec_create
+#define dec_crop tdec__dec_crop
+#define dec_destroy tdec__dec_destroy
+#define dec_done tdec__dec_done
+#define dec_dpb_block tdec__dec_dpb_block
+#define dec_dpb_bytes_for tdec__dec_dpb_bytes_for
+#define dec_error tdec__dec_error
+#define dec_feed tdec__dec_feed
+#define dec_feed_end tdec__dec_feed_end
+#define dec_geometry tdec__dec_geometry
+#define dec_out_total tdec__dec_out_total
+#define dec_outq tdec__dec_outq
+#define dec_pictures_done tdec__dec_pictures_done
+#define dec_run_ticks tdec__dec_run_ticks
+#define dec_slot_pic tdec__dec_slot_pic
+#define dec_slots tdec__dec_slots
+#define dec_spe_stats tdec__dec_spe_stats
+#define dec_start tdec__dec_start
+#define dec_stats tdec__dec_stats
+#define dec_stats_cap tdec__dec_stats_cap
+#define dec_stats_rw tdec__dec_stats_rw
+#define dec_stop tdec__dec_stop
+#define dec_wake tdec__dec_wake
+#define dpb_begin tdec__dpb_begin
+#define dpb_end tdec__dpb_end
+#define dpb_free_slots tdec__dpb_free_slots
+#define dpb_hold tdec__dpb_hold
+#define dpb_init tdec__dpb_init
+#define dpb_release tdec__dpb_release
+#define dpb_reset tdec__dpb_reset
+#define dpb_slot_bytes tdec__dpb_slot_bytes
+#define h264_bits_init tdec__h264_bits_init
+#define h264_next_au tdec__h264_next_au
+#define h264_next_nal tdec__h264_next_nal
+#define h264_parse_pps tdec__h264_parse_pps
+#define h264_parse_slice_hdr tdec__h264_parse_slice_hdr
+#define h264_parse_sps tdec__h264_parse_sps
+#define h264_se tdec__h264_se
+#define h264_stop_bit tdec__h264_stop_bit
+#define h264_u tdec__h264_u
+#define h264_ue tdec__h264_ue
+#define h264_unescape tdec__h264_unescape
+#define plat_alloc tdec__plat_alloc
+#define plat_ea tdec__plat_ea
+#define plat_free tdec__plat_free
+#define plat_init tdec__plat_init
+#define plat_log tdec__plat_log
+#define plat_log_memory tdec__plat_log_memory
+#define plat_set_log tdec__plat_set_log
+#define plat_shutdown tdec__plat_shutdown
+#define plat_sleep_us tdec__plat_sleep_us
+#define plat_spe_send tdec__plat_spe_send
+#define plat_spes_start tdec__plat_spes_start
+#define plat_spes_stop tdec__plat_spes_stop
+#define plat_sync tdec__plat_sync
+#define plat_thread_join tdec__plat_thread_join
+#define plat_thread_start tdec__plat_thread_start
+#define plat_tick_mhz tdec__plat_tick_mhz
+#define plat_ticks tdec__plat_ticks
+#define plat_wait tdec__plat_wait
+#define plat_wake tdec__plat_wake
+#endif

@@ -530,8 +530,9 @@ static void extractBetween(const char *text, const char *open, const char *close
 
 // a live stream's itag urls are a rolling DVR window whose byte-0 init rolls off, so play by DASH segments
 // instead: parse the manifest and, for each adaptiveFormat, replace its url with that Representation's
-// segment base ("<base>sq/<n>/...") and record the available sq range (window start .. live edge).
-static void parseLiveManifest(const char *resp, const char *end, StreamInfo *out)
+// segment base ("<base>sq/<n>/...") and record the available sq range (window start .. live edge). kind is
+// "dashseg" for a live stream and "dashvod" for one that just ended, whose last segment is its end (video-source.c).
+static void parseLiveManifest(const char *resp, const char *end, StreamInfo *out, const char *kind)
 {
    char manifestUrl[1400];
    if (!jsonString(resp, end, "dashManifestUrl", manifestUrl, sizeof manifestUrl)) return;
@@ -576,7 +577,7 @@ static void parseLiveManifest(const char *resp, const char *end, StreamInfo *out
       format->liveStartSq = startSq;
       format->liveEdgeSq = edgeSq;
       // the player opens this through the live segment source (see video-source / live-source)
-      snprintf(format->url, sizeof format->url, "dashseg|%ld|%ld|%s", startSq, edgeSq, base);
+      snprintf(format->url, sizeof format->url, "%s|%ld|%ld|%s", kind, startSq, edgeSq, base);
       logInfo("[yt] live itag %d: sq %ld..%ld baseTail=%s\n", format->itag, startSq, edgeSq,
               (int)strlen(base) > 40 ? base + strlen(base) - 40 : base);
    }
@@ -590,19 +591,24 @@ static void parseLiveManifest(const char *resp, const char *end, StreamInfo *out
 // The manifest is not actually needed: googlevideo serves those same urls segment-wise via
 // "&sq=<n>" and reports the current live edge in the X-Head-Seqnum response header. Probe the
 // first format for that header and build the same dashseg descriptors parseLiveManifest would
-// have produced, in the query form ("<url>&sq=") that live-source appends the number to.
-static void parseLiveFromSeqnum(StreamInfo *out)
+// have produced, in the query form ("<url>&sq=") that live-source appends the number to. A stream that just
+// ended answers the same way, with its last segment as the head.
+static void parseLiveFromSeqnum(StreamInfo *out, const char *kind)
 {
    if (out->formatCount <= 0 || !out->formats[0].url[0]) return;
 
    char seqnum[40] = "";
-   char body[64];
+   // Only the head is wanted: a one-byte buffer reads none of the body. On a stream that had just ended the
+   // server sent the head at once and then held the 1-byte body until the connection broke, ~7.6 s later
+   // (TEE's console, 2026-11-07, Test11) - and the failed read made the probe throw away the head it had.
+   char body[1];
    HttpHeader headers[] = { { "User-Agent", PLAYER_UA }, { "Range", "bytes=0-0" } };
    // findHeader lowercases only the response side, so the name has to be lowercase here
    HttpHeaderCapture capture = { "x-head-seqnum", seqnum, sizeof seqnum };
    int length = 0, status = 0;
-   if (fetchHttpCapturing("GET", out->formats[0].url, headers, 2, NULL, 0,
-                          body, sizeof body, &length, &status, &capture) != 0) {
+   int rc = fetchHttpCapturing("GET", out->formats[0].url, headers, 2, NULL, 0,
+                               body, sizeof body, &length, &status, &capture);
+   if (rc != 0 && !seqnum[0]) {   // the head is taken before the body is read: it counts whenever it came
       logError("[yt] live seqnum probe failed (status=%d)\n", status);
       return;
    }
@@ -623,7 +629,7 @@ static void parseLiveFromSeqnum(StreamInfo *out)
       char rebuilt[MAX_STREAM_URL];
       // "&sq=" is 4 chars; snprintf truncates rather than overflows, so drop anything that
       // would not survive the round trip instead of handing the player a cut-off url.
-      if (snprintf(rebuilt, sizeof rebuilt, "dashseg|0|%ld|%s&sq=", edgeSq, format->url)
+      if (snprintf(rebuilt, sizeof rebuilt, "%s|0|%ld|%s&sq=", kind, edgeSq, format->url)
           >= (int)sizeof rebuilt) continue;
 
       strCopy(format->url, sizeof format->url, rebuilt);
@@ -696,16 +702,32 @@ static int extract(const char *input, StreamInfo *out)
    // rolled off - it needs the DASH manifest's explicit init + segment template rather than a static open.
    {
       int liveNow      = strstr(resp, "\"isLive\":true") != NULL;
+      // A stream that just ended: for a while YouTube serves its recording only as the live segments, sq 0 to the
+      // last one (204 past it), until it has made a video of it - opened as a file it has no moov ("couldn't open
+      // stream" on TEE's console, 2026-11-07). It plays like a live stream whose edge stays put and ends there.
+      int postLive     = !liveNow && strstr(resp, "\"isPostLiveDvr\":true") != NULL;
       const char *dash = strstr(resp, "\"dashManifestUrl\"");
       out->isLive = liveNow;
-      if (liveNow) {
-         logInfo("[yt] live stream (dash=%d formats=%d dur=%d)\n", dash ? 1 : 0, out->formatCount, out->durationSeconds);
-         parseLiveManifest(resp, end, out);
+      out->isPostLive = postLive;
+      if (liveNow || postLive) {
+         logInfo("[yt] %s (dash=%d formats=%d dur=%d)\n", liveNow ? "live stream" : "live stream that just ended",
+                 dash ? 1 : 0, out->formatCount, out->durationSeconds);
+         // the rewind: the streamer's DVR switch, and every adaptive format's segment length and window (the
+         // same for all of a stream's formats). Seen 2026-11-07: DVR on for 2 of 6 live streams, 5 s segments
+         // (2 s for low latency), a 12 h window; googlevideo still served segments 14 h back with DVR off.
+         out->liveDvr = strstr(resp, "\"isLiveDvrEnabled\":true") != NULL;
+         const char *streaming = strstr(resp, "\"streamingData\"");
+         jsonInt(streaming, end, "targetDurationSec", &out->liveSegmentSec);
+         jsonInt(streaming, end, "maxDvrDurationSec", &out->liveWindowSec);
+         logInfo("[yt] live rewind %s, %d s segments, window %d s\n", out->liveDvr ? "on" : "off",
+                 out->liveSegmentSec, out->liveWindowSec);
+         const char *kind = postLive ? "dashvod" : "dashseg";
+         parseLiveManifest(resp, end, out, kind);
          int segmented = 0;
          for (int i = 0; i < out->formatCount; i++)
             if (out->formats[i].isLiveSegmented) { segmented = 1; break; }
          // no dashManifestUrl in the reply (every token-exempt client): fall back to the edge probe
-         if (!segmented) parseLiveFromSeqnum(out);
+         if (!segmented) parseLiveFromSeqnum(out, kind);
       }
    }
 

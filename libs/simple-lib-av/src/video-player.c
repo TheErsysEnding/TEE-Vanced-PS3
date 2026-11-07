@@ -16,6 +16,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/sys_time.h>
+#include <sysutil/sysutil_sysparam.h>   // cellVideoOutGetState: the screen's refresh rate (display sync)
 
 // the decode thread runs ahead into this ring; the extra slots past PREROLL_FRAMES are cushion the
 // decoder banks during easy scenes and spends on hard (high-bitrate) frames without the picture stalling.
@@ -39,6 +40,9 @@ typedef struct {
 struct VideoPlayer {
    VideoDemuxer demuxer;
    H264Decoder *decoder;
+   H264StreamParams streamParams; // what the decoder was built for: rebuilt from it after a failure
+   int          inputEnded;       // the demuxer hit the end of the stream and the decoder was told
+   uint64_t     decoderFailureUs; // when the TEE Decoder last failed while playing (0 = never)
    int          allocW, allocH;   // coded frame-buffer dimensions (macroblock-aligned)
    int          catchUpAllowed;   // >30fps stream: decoder MAY drop B pictures while it is behind
    VideoFrameFreeFn freeFrame;    // releases the slot buffers (matches the allocator used)
@@ -52,6 +56,7 @@ struct VideoPlayer {
    sys_ppu_thread_t thread;
    int              threadActive;
    volatile int     running;      // decode thread runs while set
+   volatile int     decodeExited; // the decode thread has left (destroyVideoPlayer waits for this, bounded)
    volatile int     ended;        // demux hit end of stream
 
    // audio pipeline (absent for files without an AAC track: video plays silent)
@@ -68,6 +73,11 @@ struct VideoPlayer {
    volatile int     audioAlive;         // audio thread is running (cleared on exit/error)
    volatile int     audioClockValid;    // audioClockBasePts anchored by the first decoded frame
    uint64_t         audioClockBasePts;  // pts (ns) of the first PCM frame handed to the mixer feed
+
+   // the audio clock smoothed for the picture (see presentationClockNs): how far it is from wall time, filtered
+   // by the UI thread at every present, read by the decode thread for its catch-up check
+   volatile int     clockSmoothValid;
+   volatile int64_t clockOffsetNs;
 
    // seek: the UI posts a target; the decode thread performs it (parking the audio thread while both
    // pipelines flush), then decode restarts from the nearest earlier cued keyframe
@@ -87,6 +97,23 @@ struct VideoPlayer {
    uint64_t currentPts;           // pts of the frame currently displayed
    int      displayIndex;         // slot being displayed, or -1
    uint64_t audioWaitStartUs;     // when pre-roll first started waiting on the audio clock (0 = not yet)
+
+   // presentation statistics (getVideoFrame, under lock): a line goes to the log for every second in which a
+   // picture was dropped as late or none was ready - the stutter a viewer sees, with what was behind it
+   uint64_t statsSecondUs;
+   int      statsShown, statsLate, statsRepeats, statsStarved, statsReadyMin;
+
+   // display sync (see pickSyncedFrame): a video whose frame rate matches the screen's (60 fps on 59.94 Hz, 30 on
+   // 59.94 at two vblanks a picture) shows exactly one picture per vblank, and the sound's tempo is steered by a
+   // hair so the clock keeps up - instead of the clock dropping a picture every 1 / (60 - 59.94) = 16.7 s
+   int      syncPerFrame;       // vblanks per picture when the rates match (1 or 2), 0 = no display sync
+   double   syncBaseSpeed;      // the sound's tempo that matches: screen rate / (syncPerFrame x frame rate)
+   uint64_t syncVblankUs;       // one vblank of the screen
+   int      syncActive;         // frame-locked right now (UI thread, under lock)
+   uint64_t syncLastUs;         // when the last present ran
+   int      syncVblanks;        // vblanks counted toward the next picture
+   int      syncSpeedSet;       // the sound's tempo is not 1.0 at the moment
+   uint64_t syncLogUs;          // when the last display-sync line went to the log
 };
 
 // defined below the decode thread but used by performSeek's audio-revive path
@@ -98,16 +125,52 @@ static void audioDecodeThread(uint64_t arg);
 #define CATCHUP_ENGAGE_NS  250000000ull   // 250 ms behind: give up on decoding every picture
 #define CATCHUP_RELEASE_NS  60000000ull   // back within 60 ms: decode in full again
 
+// where the audio is: the samples the mixer has consumed since the clock was anchored
+static uint64_t audioClockNs(VideoPlayer *player)
+{
+   return player->audioClockBasePts +
+          getAudioPcmFeedPlayedFrames() * 1000000000ull / (uint64_t)getAudioSource(player)->audioRate;
+}
+
+#define CLOCK_SNAP_NS   40000000ll   // further than this from the audio (a seek, a stall): jump, don't glide
+#define CLOCK_FILTER    32           // the smoothed clock moves 1/32 of the way to the audio at every present
+
 // the clock the picture is paced against: the audio feed while it runs, wall time otherwise.
 // Shared by the presentation loop and the decode thread's catch-up check so both judge by the
 // same measure.
+//
+// The audio clock only moves once per mixer block (256 samples at 48 kHz, 5.3 ms), and with the mixer
+// thread's wake-up jitter on top: a staircase. Paced straight against it, a 60 fps picture due within a few ms
+// of a vblank flipped between that vblank and the next from one present to the other - and a 60 fps video on a
+// 59.94 Hz screen drifts through exactly that alignment every 1 / (60 - 59.94) = 16.7 s. For about 6 s each time
+// the presenter dropped 8 pictures a second as late and repeated as many: the judder TEE saw at 1080p60 on the
+// TEE Decoder (Test3, 2026-11-07: fewest ready frames 6 of 8 throughout, so never the decoder). So the picture
+// runs on wall time plus a filtered estimate of the audio's offset from it: that follows the audio's drift, not
+// its steps, and the 16.7 s beat costs one dropped picture instead of six seconds of judder.
 static uint64_t presentationClockNs(VideoPlayer *player, uint64_t nowUs)
 {
-   if (player->audioClockValid && player->started)
-      return player->audioClockBasePts +
-             getAudioPcmFeedPlayedFrames() * 1000000000ull / (uint64_t)getAudioSource(player)->audioRate;
+   if (player->audioClockValid && player->started) {
+      if (player->paused) return player->currentPts;
+      if (player->clockSmoothValid) return (uint64_t)((int64_t)(nowUs * 1000) + player->clockOffsetNs);
+      return audioClockNs(player);
+   }
    if (player->paused) return player->currentPts;
    return player->basePts + (nowUs - player->baseWallUs) * 1000;
+}
+
+// UI thread, once per present (under player->lock): steers the smoothed clock toward the audio clock
+static void steerPresentationClock(VideoPlayer *player, uint64_t nowUs)
+{
+   if (!player->audioClockValid || !player->started || player->paused) { player->clockSmoothValid = 0; return; }
+   int64_t offset = (int64_t)audioClockNs(player) - (int64_t)(nowUs * 1000);
+   int64_t error  = offset - player->clockOffsetNs;
+   if (!player->clockSmoothValid || error > CLOCK_SNAP_NS || error < -CLOCK_SNAP_NS) {
+      player->clockOffsetNs = offset;
+      __sync_synchronize();
+      player->clockSmoothValid = 1;
+   } else {
+      player->clockOffsetNs += error / CLOCK_FILTER;
+   }
 }
 
 // ============================================================================
@@ -125,6 +188,40 @@ static int claimEmptySlot(VideoPlayer *player)
    return found;
 }
 
+// feeds demuxed access units while the decoder takes them and its backlog is below the limit. Returns how many
+// it fed (0: the decoder is full, at its limit, or the input ended), -1 on an error. At the end of the input it
+// tells the decoder and sets inputEnded.
+//
+// The demuxer rotates AU_BUFFER_COUNT buffers, which cellVdec reads in place: it gets one AU per call, the
+// backlog kept as full as those buffers allow (the SDK notes throughput improves when the queue never runs dry)
+// without overwriting an AU it is still reading. The TEE Decoder copies every AU at once and wants its CABAC
+// stage far ahead of its pixel stage, so it gets several per call, up to a much deeper backlog.
+static int feedDecoder(VideoPlayer *player, int *startedAtKeyframe)
+{
+   int tee = isTeeH264Decoder(player->decoder);
+   int limit = getAuBacklogLimitH264(player->decoder, AU_BUFFER_COUNT);
+   int fed = 0;
+   while (fed < (tee ? 8 : 1) && player->running && player->seekRequestNs < 0 && !player->inputEnded) {
+      if (!player->hasPendingAu && getAuBacklogH264(player->decoder) >= limit) break;
+      if (!player->hasPendingAu) {
+         uint64_t readStartUs = sys_time_get_system_time();
+         int r = readVideoAu(&player->demuxer, &player->pendingAu);
+         uint64_t readUs = sys_time_get_system_time() - readStartUs;
+         if (readUs > 30000) logWarn("[video-player] reading the next access unit took %d ms\n", (int)(readUs / 1000));
+         if (r < 0) return -1;
+         if (r == 0) { player->inputEnded = 1; endOfStreamH264(player->decoder); break; }
+         if (!*startedAtKeyframe) { if (!player->pendingAu.keyframe) continue; *startedAtKeyframe = 1; }
+         player->hasPendingAu = 1;
+      }
+      int result = decodeAuH264(player->decoder, player->pendingAu.data, player->pendingAu.size, player->pendingAu.pts);
+      if (result < 0) return -1;
+      if (result == 1) break;            // input queue full: retry this AU later
+      player->hasPendingAu = 0;
+      fed++;
+   }
+   return fed;
+}
+
 // decodes the next presentation-order frame into `yuv`. returns 1 with dims+pts, 0 at end of
 // stream, -1 on error. Feeds access units until the decoder emits a picture, always pulling pictures
 // while an AU is outstanding — the decoder can't consume input while its frame buffers are full.
@@ -136,33 +233,51 @@ static int decodeNextFrame(VideoPlayer *player, uint8_t *yuv, int *width, int *h
       if (got == 1) return 1;
       if (got < 0) return -1;
 
-      // the demuxer rotates AU_BUFFER_COUNT buffers; keep the decoder's command queue as full as they
-      // allow (the SDK notes throughput improves when the queue never runs dry) without overwriting
-      // an AU the decoder is still reading
-      if (!player->hasPendingAu && getAuBacklogH264(player->decoder) >= AU_BUFFER_COUNT) { sleepMs(1); stalledMs++; continue; }
-
-      if (!player->hasPendingAu) {
-         int r = readVideoAu(&player->demuxer, &player->pendingAu);
-         if (r < 0) return -1;
-         if (r == 0) {   // no more input: drain the pictures still in flight
-            for (int waited = 0; waited < END_OF_STREAM_DRAIN_MS && player->running; waited++) {
-               got = getFrameH264(player->decoder, yuv, width, height, pts);
-               if (got != 0) return got;
-               sleepMs(1);
-            }
-            return 0;
-         }
-         if (!*startedAtKeyframe) { if (!player->pendingAu.keyframe) continue; *startedAtKeyframe = 1; }
-         player->hasPendingAu = 1;
+      if (player->inputEnded) {   // no more input: drain the pictures still in flight
+         if (isH264Drained(player->decoder)) return 0;                       // TEE Decoder: all out
+         if (!isTeeH264Decoder(player->decoder) && stalledMs >= END_OF_STREAM_DRAIN_MS) return 0;
+         sleepMs(1); stalledMs++;
+         continue;
       }
 
-      int fed = decodeAuH264(player->decoder, player->pendingAu.data, player->pendingAu.size, player->pendingAu.pts);
+      int fed = feedDecoder(player, startedAtKeyframe);
       if (fed < 0) return -1;
-      if (fed == 0) { player->hasPendingAu = 0; stalledMs = 0; continue; }
+      if (fed > 0) { stalledMs = 0; continue; }
+      if (player->inputEnded) continue;
       sleepMs(1); stalledMs++;   // input queue full: give the decoder time, keep pulling pictures
    }
-   if (player->running && stalledMs >= DECODE_STALL_MS) { logError("[video-player] decoder stalled\n"); return -1; }
+   if (player->running && player->seekRequestNs < 0 && stalledMs >= DECODE_STALL_MS) {
+      if (player->inputEnded) return 0;   // the last pictures never came: end anyway
+      logError("[video-player] decoder stalled\n");
+      return -1;
+   }
    return 0;
+}
+
+// The TEE Decoder stopped while playing: an error it reported, a stream it cannot take after all (several
+// slices per picture only shows while decoding), or no picture for the stall window. Flush it once and go on
+// from the next keyframe; a second failure within 30 s, or a failed flush, hands the stream to cellVdec for
+// the rest of this run (disableH264TeeForSession). Returns 1 when decoding can go on. The old decoder is closed
+// before the next one opens, so their SPEs never add up.
+static int recoverDecoder(VideoPlayer *player, int *startedAtKeyframe)
+{
+   if (!player->decoder || !isTeeH264Decoder(player->decoder) || player->inputEnded) return 0;
+   uint64_t now = sys_time_get_system_time();
+   int again = player->decoderFailureUs && now - player->decoderFailureUs < 30000000ull;
+   player->decoderFailureUs = now;
+   player->hasPendingAu = 0;
+   *startedAtKeyframe = 0;
+   if (!again && resetH264Decoder(player->decoder) == 0) {
+      logWarn("[video-player] TEE Decoder flushed after a failure, going on from the next keyframe\n");
+      return 1;
+   }
+   disableH264TeeForSession(again ? "it failed twice within 30 s" : "its flush failed");
+   destroyH264Decoder(player->decoder);
+   player->decoder = createH264DecoderFor(&player->streamParams);   // cellVdec now
+   if (!player->decoder) { logError("[video-player] no decoder after the TEE Decoder failed\n"); return 0; }
+   setH264CatchUpSkip(player->decoder, 0);
+   logWarn("[video-player] playing on with %s from the next keyframe\n", getH264DecoderName(player->decoder));
+   return 1;
 }
 
 // flushes both pipelines and jumps to the seek target (decode thread only). The frame on screen
@@ -183,11 +298,13 @@ static void performSeek(VideoPlayer *player)
    // than going dark (a NULL decoder makes decode report end-of-stream until a later seek revives it)
    if (!player->decoder || resetH264Decoder(player->decoder) != 0) {
       logWarn("[video-player] decoder reset failed, recreating decoder\n");
+      if (isTeeH264Decoder(player->decoder)) disableH264TeeForSession("its flush failed at a seek");
       destroyH264Decoder(player->decoder);
-      player->decoder = createH264Decoder(player->allocW, player->allocH, player->demuxer.level, player->demuxer.h264.maxRefFrames);
+      player->decoder = createH264DecoderFor(&player->streamParams);
       setH264CatchUpSkip(player->decoder, 0);   // fresh decoder, fresh start: re-armed while behind
    }
    player->hasPendingAu = 0;
+   player->inputEnded = 0;
    // land on the fragment keyframe covering the target - or, for a sponsor skip, the next keyframe at/after it
    uint64_t landedNs = seekVideoDemuxer(&player->demuxer, targetNs, player->seekLandAfter);
    // audio follows the video keyframe, but on its own thread: its demuxer seek costs a network
@@ -205,6 +322,8 @@ static void performSeek(VideoPlayer *player)
    player->audioClockValid = 0;
    player->audioWaitStartUs = 0;         // fresh pre-roll: each seek gets the full window to wait for audio,
                                          // else a stale timer trips instantly and video starts on the wall clock
+   player->statsSecondUs = 0;            // the stutter statistics start over with the new position
+   player->statsShown = player->statsLate = player->statsRepeats = player->statsStarved = 0;
    unlock(&player->lock);
 
    // hold the audio feed until the first post-seek frame actually presents (getVideoFrame releases it), so
@@ -243,10 +362,28 @@ static void decodeThread(uint64_t arg)
       if (player->seekRequestNs >= 0) { performSeek(player); startedAtKeyframe = 0; continue; }
 
       int slot = claimEmptySlot(player);
-      if (slot < 0) { sleepMs(2); continue; }   // ring full: wait for the UI to consume a frame
+      if (slot < 0) {   // ring full: wait for the UI to consume a frame
+         // ...but keep the TEE Decoder's input topped up meanwhile: fed only when a slot is free, its CABAC lead
+         // would shrink to the few pictures the ring holds, and that lead is what carries it over a hard picture
+         if (player->decoder && isTeeH264Decoder(player->decoder) && !player->inputEnded &&
+             feedDecoder(player, &startedAtKeyframe) < 0 && !recoverDecoder(player, &startedAtKeyframe)) {
+            lock(&player->lock);
+            if (player->seekRequestNs < 0) player->ended = 1;
+            unlock(&player->lock);
+            while (player->running && player->ended && player->seekRequestNs < 0) sleepMs(10);
+         }
+         sleepMs(2);
+         continue;
+      }
 
       int width, height; uint64_t pts;
       int got = player->decoder ? decodeNextFrame(player, player->slots[slot].yuv, &width, &height, &pts, &startedAtKeyframe) : -1;
+      if (got < 0 && player->running && player->seekRequestNs < 0 && recoverDecoder(player, &startedAtKeyframe)) {
+         lock(&player->lock);
+         player->slots[slot].state = SLOT_EMPTY;
+         unlock(&player->lock);
+         continue;
+      }
 
       // Catch-up gate. "Behind" only means something against the clock the picture is paced to -
       // the AU backlog cannot say it, since the decode thread keeps that queue full on purpose.
@@ -272,6 +409,8 @@ static void decodeThread(uint64_t arg)
          while (player->running && player->ended && player->seekRequestNs < 0) sleepMs(10);
       }
    }
+   __sync_synchronize();
+   player->decodeExited = 1;
    exitThread();
 }
 
@@ -430,6 +569,45 @@ static void audioOpenThread(uint64_t arg)
 
 static int roundUp16(int value) { return (value + 15) & ~15; }
 
+// the screen's refresh rate as the console drives it, 0 if unknown
+static double screenRefreshHz(void)
+{
+   CellVideoOutState state;
+   if (cellVideoOutGetState(CELL_VIDEO_OUT_PRIMARY, 0, &state) < 0) return 0.0;
+   uint16_t rates = state.displayMode.refreshRates;
+   if (rates & CELL_VIDEO_OUT_REFRESH_RATE_59_94HZ) return 60000.0 / 1001.0;
+   if (rates & CELL_VIDEO_OUT_REFRESH_RATE_60HZ)    return 60.0;
+   if (rates & CELL_VIDEO_OUT_REFRESH_RATE_50HZ)    return 50.0;
+   if (rates & CELL_VIDEO_OUT_REFRESH_RATE_30HZ)    return 30.0;
+   return 0.0;
+}
+
+// display sync when the video's frame rate is the screen's (or half of it) to within 1%: then one picture per
+// vblank (or per two) plays it at the screen's pace, and the sound follows at screen rate / (n x frame rate)
+static void setUpDisplaySync(VideoPlayer *player)
+{
+   double screenHz = screenRefreshHz();
+   if (screenHz <= 0.0 || !player->demuxer.frameDurationNs) {
+      logInfo("[video-player] display sync off: screen rate %s, frame rate %s\n", screenHz > 0.0 ? "known" : "unknown",
+              player->demuxer.frameDurationNs ? "known" : "unknown");
+      return;
+   }
+   double fps = 1.0e9 / (double)player->demuxer.frameDurationNs;
+   for (int perFrame = 1; perFrame <= 2 && !player->syncPerFrame; perFrame++) {
+      double ratio = screenHz / ((double)perFrame * fps);
+      if (ratio > 0.99 && ratio < 1.01) { player->syncPerFrame = perFrame; player->syncBaseSpeed = ratio; }
+   }
+   player->syncVblankUs = (uint64_t)(1.0e6 / screenHz + 0.5);
+   // integers only: this printf has no floating point
+   if (player->syncPerFrame)
+      logInfo("[video-player] display sync on: screen %d mHz, video %d mHz, %d vblank(s) a picture, sound tempo %d ppm\n",
+              (int)(screenHz * 1000.0 + 0.5), (int)(fps * 1000.0 + 0.5), player->syncPerFrame,
+              (int)(player->syncBaseSpeed * 1.0e6 + 0.5));
+   else
+      logInfo("[video-player] display sync off: screen %d mHz, video %d mHz\n", (int)(screenHz * 1000.0 + 0.5),
+              (int)(fps * 1000.0 + 0.5));
+}
+
 // heap fallbacks when the caller supplies no frame allocator
 static void *allocFrameFromHeap(size_t size) { return memalign(128, size); }
 static void freeFrameToHeap(void *buffer) { free(buffer); }
@@ -485,26 +663,37 @@ VideoPlayer *createVideoPlayerSplit(const char *videoPath, const char *audioPath
       player->allocW = roundUp16(player->demuxer.width);
       player->allocH = roundUp16(player->demuxer.height);
    }
-   player->decoder = createH264Decoder(player->allocW, player->allocH, player->demuxer.level, player->demuxer.h264.maxRefFrames);
-   if (!player->decoder) goto fail;
-
-   // 1080p decode tops out around 35fps on the SPUs. A blanket B_SKIP is the wrong answer - these
-   // encodes are ~87% disposable B-frames, so dropping them all leaves a ~7fps slideshow - but
-   // letting the decoder drop them ONLY while it is behind buys back real time on the anchor-heavy
-   // encodes (live, where there is little to lose) and leaves everything it already keeps up with
-   // decoded picture for picture.
-   if (player->demuxer.frameDurationNs && player->demuxer.frameDurationNs < 32000000ull) {
-      logWarn("[video-player] %d fps exceeds decoder throughput, catch-up skip enabled\n",
-              (int)(1000000000ull / player->demuxer.frameDurationNs));
-      player->catchUpAllowed = 1;   // armed; the decode thread engages it only while behind
-   }
-
-   // YUV 4:2:0 planar frames; cellVdecGetPicture requires 128-byte alignment, size a multiple of 128
+   // YUV 4:2:0 planar frames; cellVdecGetPicture requires 128-byte alignment, size a multiple of 128. Allocated
+   // before the decoder, so the decoder's memory check sees what is really left once they exist.
    size_t frameBytes = ((size_t)player->allocW * player->allocH * 3 / 2 + 127) & ~(size_t)127;
    for (int i = 0; i < FRAME_SLOTS; i++) {
       player->slots[i].yuv = (uint8_t *)allocFrame(frameBytes);
       if (!player->slots[i].yuv) goto fail;
    }
+
+   // the TEE Decoder where it can take the stream (and the app allows it, see setH264DecoderPolicy), cellVdec
+   // otherwise - decode-h264.c reads the stream's own SPS and PPS to decide
+   player->streamParams.width        = player->allocW;
+   player->streamParams.height       = player->allocH;
+   player->streamParams.level        = player->demuxer.level;
+   player->streamParams.maxRefFrames = player->demuxer.h264.maxRefFrames;
+   player->streamParams.header       = player->demuxer.h264.header;
+   player->streamParams.headerSize   = player->demuxer.h264.headerSize;
+   player->streamParams.spsPatched   = player->demuxer.h264.spsPatched;
+   player->decoder = createH264DecoderFor(&player->streamParams);
+   if (!player->decoder) goto fail;
+
+   // 1080p decode tops out around 35fps on cellVdec's SPUs. A blanket B_SKIP is the wrong answer - these
+   // encodes are ~87% disposable B-frames, so dropping them all leaves a ~7fps slideshow - but
+   // letting the decoder drop them ONLY while it is behind buys back real time on the anchor-heavy
+   // encodes (live, where there is little to lose) and leaves everything it already keeps up with
+   // decoded picture for picture. The TEE Decoder keeps up with 1080p60, but the same net stays under it.
+   if (player->demuxer.frameDurationNs && player->demuxer.frameDurationNs < 32000000ull) {
+      logWarn("[video-player] %d fps on %s, catch-up skip enabled\n",
+              (int)(1000000000ull / player->demuxer.frameDurationNs), getH264DecoderName(player->decoder));
+      player->catchUpAllowed = 1;   // armed; the decode thread engages it only while behind
+   }
+   setUpDisplaySync(player);
 
    player->running = 1;
    player->threadActive = (spawnJoinableThread(&player->thread, decodeThread, (uint64_t)(uintptr_t)player,
@@ -524,13 +713,30 @@ fail:
    return 0;
 }
 
+#define DESTROY_WAIT_MS 5000   // how long teardown waits for the decode thread to leave
+
 void destroyVideoPlayer(VideoPlayer *player)
 {
    if (!player) return;
    player->running = 0;
    cancelVideoDemuxer(&player->demuxer);                                  // unblock a live read waiting on the edge
    if (player->hasAudioDemuxer) cancelVideoDemuxer(&player->audioDemuxer);
-   if (player->threadActive) joinThread(player->thread);
+   if (player->threadActive) {
+      // The decode thread leaves within a frame or two once running is down and the reads are cancelled - unless it
+      // is stuck in the TEE Decoder (tdec_flush after a failure or at a seek, when an SPE never stops: the module's
+      // known hang). Waiting on it froze the whole app. After DESTROY_WAIT_MS the player is left to that thread:
+      // only the sound goes (the next player needs the mixer feed), everything else stays allocated, as the
+      // thread may still use it, and the TEE Decoder stays off for the rest of the run.
+      for (int waited = 0; !player->decodeExited && waited < DESTROY_WAIT_MS; waited += 10) sleepMs(10);
+      if (!player->decodeExited) {
+         logError("[video-player] the decode thread did not stop in %d ms (the TEE Decoder hangs?): player left behind\n",
+                  DESTROY_WAIT_MS);
+         disableH264TeeForSession("it hung");
+         releaseAudioPipeline(player);
+         return;
+      }
+      joinThread(player->thread);
+   }
    releaseAudioPipeline(player);
    destroyH264Decoder(player->decoder);
    closeVideoDemuxer(&player->demuxer);
@@ -555,6 +761,49 @@ static const uint8_t *takeHeldFrame(VideoPlayer *player, int *width, int *height
    if (held >= 0) { heldBuffer = player->slots[held].yuv; *width = player->slots[held].width; *height = player->slots[held].height; }
    unlock(&player->lock);
    return heldBuffer;
+}
+
+#define SYNC_CORRECTION_NS  10000000000ll   // the sound's tempo moves by error / 10 s ...
+#define SYNC_MAX_CORRECTION 0.005           // ... by 0.5% at most (8.6 cents, and only while it closes a gap)
+
+// Display sync (caller holds player->lock): the picture advances by the vblanks that went by since the last
+// present - one picture per vblank, or per two - not by the clock, so the beat between a 60 fps video and a
+// 59.94 Hz screen never makes it skip. The sound's tempo is steered so the clock stays with the picture (see
+// getVideoFrame). Only a real gap goes back to dropping or holding: the picture more than 1.5 pictures behind
+// the clock skips one, more than 1.5 ahead waits. Returns the slot to show, -1 to keep the current one.
+static int pickSyncedFrame(VideoPlayer *player, uint64_t nowUs, uint64_t clock)
+{
+   int64_t vblankUs = (int64_t)player->syncVblankUs;
+   int elapsed = (int)(((int64_t)(nowUs - player->syncLastUs) + vblankUs / 2) / vblankUs);
+   if (elapsed < 0) elapsed = 0;
+   player->syncLastUs = nowUs;
+   player->syncVblanks += elapsed;
+   int advance = player->syncVblanks / player->syncPerFrame;
+   player->syncVblanks -= advance * player->syncPerFrame;
+
+   int64_t frameNs = (int64_t)player->demuxer.frameDurationNs;
+   int64_t errorNs = (int64_t)player->currentPts - (int64_t)clock;   // > 0: the picture is ahead of the sound
+   int best = -1;
+   if (errorNs < -frameNs * 6) {   // far behind (a stall): straight to the picture that is due, as without sync
+      uint64_t bestPts = 0;
+      for (int i = 0; i < FRAME_SLOTS; i++)
+         if (player->slots[i].state == SLOT_READY && player->slots[i].pts <= clock && (best < 0 || player->slots[i].pts >= bestPts)) { best = i; bestPts = player->slots[i].pts; }
+      return best;
+   }
+   if (errorNs < -frameNs * 3 / 2) advance++;                        // behind: skip one picture to catch up
+   else if (errorNs > frameNs * 3 / 2) advance = 0;                  // ahead: hold this one
+
+   uint64_t after = player->currentPts;
+   for (int step = 0; step < advance; step++) {
+      int next = -1;
+      for (int i = 0; i < FRAME_SLOTS; i++)
+         if (player->slots[i].state == SLOT_READY && player->slots[i].pts > after &&
+             (next < 0 || player->slots[i].pts < player->slots[next].pts)) next = i;
+      if (next < 0) break;   // nothing newer decoded yet: show what is there, or repeat
+      best = next;
+      after = player->slots[next].pts;
+   }
+   return best;
 }
 
 const uint8_t *getVideoFrame(VideoPlayer *player, int *width, int *height)
@@ -604,28 +853,87 @@ const uint8_t *getVideoFrame(VideoPlayer *player, int *width, int *height)
       player->baseWallUs = nowUs;
    }
 
+   steerPresentationClock(player, nowUs);
    uint64_t clock = presentationClockNs(player, nowUs);
 
-   // pick the latest ready frame whose pts is due; drop older ready frames (skip if we fell behind)
-   int best = -1; uint64_t bestPts = 0;
-   for (int i = 0; i < FRAME_SLOTS; i++)
-      if (player->slots[i].state == SLOT_READY && player->slots[i].pts <= clock && (best < 0 || player->slots[i].pts >= bestPts)) { best = i; bestPts = player->slots[i].pts; }
+   int best = -1, readyCount = 0; uint64_t bestPts = 0;
+   for (int i = 0; i < FRAME_SLOTS; i++) if (player->slots[i].state == SLOT_READY) readyCount++;
 
+   // display sync while the sound runs (see pickSyncedFrame); it locks on from a picture chosen by the clock
+   int synced = player->syncPerFrame && player->audioClockValid && player->audioFeedOpen && !player->paused;
+   if (synced && player->syncActive) {
+      best = pickSyncedFrame(player, nowUs, clock);
+      if (best >= 0) bestPts = player->slots[best].pts;
+   } else {
+      // pick the latest ready frame whose pts is due; drop older ready frames (skip if we fell behind)
+      for (int i = 0; i < FRAME_SLOTS; i++)
+         if (player->slots[i].state == SLOT_READY && player->slots[i].pts <= clock && (best < 0 || player->slots[i].pts >= bestPts)) { best = i; bestPts = player->slots[i].pts; }
+      if (synced && best >= 0) { player->syncActive = 1; player->syncLastUs = nowUs; player->syncVblanks = 0; }
+   }
+   if (!synced) player->syncActive = 0;
+
+   int late = 0;
    if (best >= 0) {
       for (int i = 0; i < FRAME_SLOTS; i++) {
          if (player->slots[i].state == SLOT_RETIRING) player->slots[i].state = SLOT_EMPTY;                // GPU is done with it by now
          else if (player->slots[i].state == SLOT_DISPLAYING) player->slots[i].state = SLOT_RETIRING;      // hold one present for the frame in flight
-         else if (player->slots[i].state == SLOT_READY && player->slots[i].pts < bestPts) player->slots[i].state = SLOT_EMPTY;   // drop skipped
+         else if (player->slots[i].state == SLOT_READY && player->slots[i].pts < bestPts) { player->slots[i].state = SLOT_EMPTY; late++; }   // drop skipped
       }
       player->slots[best].state = SLOT_DISPLAYING;
       player->displayIndex = best;
       player->currentPts   = bestPts;
    }
 
+   // display sync: the sound's tempo keeps the clock with the picture - the screen's rate over the video's, plus a
+   // correction that closes the gap between them (picture ahead: the sound a hair faster). Back to 1.0 otherwise.
+   char syncLine[160];
+   syncLine[0] = 0;
+   if (synced && player->syncActive) {
+      int64_t errorNs = (int64_t)player->currentPts - (int64_t)clock;
+      double correction = (double)errorNs / (double)SYNC_CORRECTION_NS;
+      if (correction >  SYNC_MAX_CORRECTION) correction =  SYNC_MAX_CORRECTION;
+      if (correction < -SYNC_MAX_CORRECTION) correction = -SYNC_MAX_CORRECTION;
+      double speed = player->syncBaseSpeed * (1.0 + correction);
+      setAudioPcmFeedSpeed(speed);
+      player->syncSpeedSet = 1;
+      if (nowUs - player->syncLogUs >= 10000000ull) {
+         player->syncLogUs = nowUs;
+         snprintf(syncLine, sizeof syncLine, "[video-player] display sync: picture %d ms %s the sound, sound tempo %d ppm\n",
+                  (int)((errorNs < 0 ? -errorNs : errorNs) / 1000000), errorNs < 0 ? "behind" : "ahead of",
+                  (int)(speed * 1.0e6 + 0.5));
+      }
+   } else if (player->syncSpeedSet) {
+      setAudioPcmFeedSpeed(1.0);
+      player->syncSpeedSet = 0;
+   }
+
+   // the stutter statistics: a present with a new picture, pictures dropped as late, a present with none due,
+   // and none ready at all (the decoder behind, not just early)
+   char statsLine[200];
+   statsLine[0] = 0;
+   if (!player->paused) {
+      if (!player->statsSecondUs) { player->statsSecondUs = nowUs; player->statsReadyMin = FRAME_SLOTS; }
+      if (best >= 0) player->statsShown++; else player->statsRepeats++;
+      if (best < 0 && readyCount == 0) player->statsStarved++;
+      player->statsLate += late;
+      if (readyCount < player->statsReadyMin) player->statsReadyMin = readyCount;
+      if (nowUs - player->statsSecondUs >= 1000000ull) {
+         if (player->statsLate || player->statsStarved)
+            snprintf(statsLine, sizeof statsLine, "[video-player] 1 s: %d pictures shown, %d dropped as late, %d presents "
+                     "without a new one (%d with none ready), fewest ready %d of %d\n", player->statsShown, player->statsLate,
+                     player->statsRepeats, player->statsStarved, player->statsReadyMin, FRAME_SLOTS);
+         player->statsSecondUs = nowUs;
+         player->statsShown = player->statsLate = player->statsRepeats = player->statsStarved = 0;
+         player->statsReadyMin = FRAME_SLOTS;
+      }
+   }
+
    int idx = player->displayIndex;
    const uint8_t *buffer = 0;
    if (idx >= 0) { buffer = player->slots[idx].yuv; *width = player->slots[idx].width; *height = player->slots[idx].height; }
    unlock(&player->lock);
+   if (statsLine[0]) logInfo("%s", statsLine);   // outside the lock: a file write must not hold up the decode thread
+   if (syncLine[0]) logInfo("%s", syncLine);
 
    // release the audio held through pre-roll (mixer call must run outside player->lock)
    if (releaseAudio && player->audioFeedOpen) pauseAudioPcmFeed(0);
@@ -642,6 +950,7 @@ void setVideoPaused(VideoPlayer *player, int paused)
    } else if (!paused && player->paused) {
       player->paused = 0;
       player->baseWallUs += nowUs - player->pauseWallUs;   // don't count paused time against the clock
+      player->clockSmoothValid = 0;                        // the smoothed clock picks the audio up afresh
    }
    unlock(&player->lock);
    if (player->audioFeedOpen) pauseAudioPcmFeed(paused);
@@ -681,9 +990,28 @@ float getVideoPositionSeconds(const VideoPlayer *player)
    return (float)player->currentPts / 1.0e9f;   // stream pts count from the start of the file
 }
 
+uint64_t getVideoPositionNs(const VideoPlayer *player) { return player->currentPts; }
+
 float getVideoDurationSeconds(const VideoPlayer *player)
 {
    return (float)player->demuxer.durationNs / 1.0e9f;
+}
+
+long getVideoLiveFirstSq(const VideoPlayer *player)
+{
+   if (!player || !player->demuxer.isMp4) return -1;
+   const VideoSource *source = &player->demuxer.container.mp4.source;
+   return source->isOpen && source->isLive ? getLiveSourceFirstSq(source->live) : -1;
+}
+
+const char *getVideoDecoderName(const VideoPlayer *player)
+{
+   return player ? getH264DecoderName(player->decoder) : "none";
+}
+
+int isVideoOnTeeDecoder(const VideoPlayer *player)
+{
+   return player && isTeeH264Decoder(player->decoder);
 }
 
 // audio track format for a stats overlay; rate/channels read 0 when there's no audio track.

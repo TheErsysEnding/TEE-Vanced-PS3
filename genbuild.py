@@ -64,6 +64,39 @@ def split_list(value):
     return [p.strip() for p in value.split(";") if p.strip()]
 
 
+# TEE's own H.264 decoder, vendored unchanged into the av library (see libs/simple-lib-av/tee_decoder.sha256).
+# Its folder must match the manifest file for file and byte for byte - sync-work.sh never deletes anything,
+# so a file a later module version dropped would otherwise stay behind and be compiled - and its PSL1GHT
+# platform layer is not for the Cell SDK (td_plat_cell.c is).
+TEE_DECODER_DIR = "src/tee_decoder"
+TEE_DECODER_MANIFEST = "tee_decoder.sha256"
+TEE_DECODER_SKIP = {"td_plat_ps3.c"}
+
+
+def check_tee_decoder(project_dir):
+    """Stops the build unless the vendored TEE Decoder folder is exactly what its manifest lists."""
+    import hashlib
+    folder = project_dir / TEE_DECODER_DIR
+    manifest = project_dir / TEE_DECODER_MANIFEST
+    if not folder.is_dir():
+        return
+    if not manifest.is_file():
+        sys.exit(f"genbuild: {folder} has no manifest {manifest}")
+    want = {}
+    for line in manifest.read_text(encoding="utf-8").splitlines():
+        if line.strip() and not line.startswith("#"):
+            digest, name = line.split(None, 1)
+            want[name.strip()] = digest
+    have = {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in folder.iterdir() if p.is_file()}
+    extra = sorted(set(have) - set(want))
+    missing = sorted(set(want) - set(have))
+    changed = sorted(n for n in set(want) & set(have) if want[n] != have[n])
+    if extra or missing or changed:
+        sys.exit(f"genbuild: the TEE Decoder folder does not match {manifest.name}: "
+                 f"extra {extra}, missing {missing}, changed {changed} - never edit the module inside the app")
+    print(f"  TEE Decoder: {len(have)} files match {manifest.name}")
+
+
 def load(project_rel, name):
     """-> dict with sources, includes, defines, extra flags, config type."""
     path = REPO / project_rel / f"{name}.vcxproj"
@@ -77,8 +110,12 @@ def load(project_rel, name):
     # exactly, so this changes nothing for an untouched checkout - it just means a source file added by this
     # fork builds without having to edit mohasi's .vcxproj (which we never commit to).
     listed = {s.replace("\\", "/").lower() for s in sources}
+    check_tee_decoder(REPO / project_rel)
     for found in sorted((REPO / project_rel / "src").rglob("*.c")):
         rel = found.relative_to(REPO / project_rel).as_posix()
+        if rel.startswith(TEE_DECODER_DIR + "/") and found.name in TEE_DECODER_SKIP:
+            print(f"  note: {name} leaves out {rel} (the TEE Decoder's PSL1GHT platform layer)")
+            continue
         if rel.lower() not in listed:
             print(f"  note: {name} picks up {rel} (not in the .vcxproj)")
             sources.append(rel.replace("/", "\\"))
