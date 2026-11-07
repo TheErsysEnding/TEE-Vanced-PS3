@@ -2,8 +2,8 @@
 
 A YouTube client for the PlayStation 3, built from source and run on real
 hardware. A fork of **[mohasi's Yo! Player](https://github.com/mohasi/ps3-dev)**
-(Apache-2.0) — see [NOTICE](NOTICE); the application, its decoder and its
-libraries are his work.
+(Apache-2.0) — see [NOTICE](NOTICE); the application and its libraries are his
+work. The H.264 decoder it plays most videos with now is TEE's own (below).
 
 **Status: v1.0.1.** Every version here has been installed and used on a real
 console before being called done. See [CHANGELOG.md](CHANGELOG.md).
@@ -65,6 +65,14 @@ to take whichever track came last, so a video could start in a machine voice in
 a language nobody asked for. It now plays the original. When a video has
 several tracks, the player says so as it starts, and Square steps through them
 from where you are.
+
+**Its own H.264 decoder: 1080p60 at 60 fps.** The TEE Decoder runs on the
+PS3's SPEs and plays YouTube's 1080p60 at a full 60 frames a second, where
+Sony's `cellVdec` manages about 35 at 1080p. Everything it cannot decode - live
+streams, Shorts, 480p - stays on `cellVdec`. A 60 fps video on the PS3's
+59.94 Hz output shows one picture per vblank, with the sound 0.1% slower to
+match. START opens Options with the quality (Auto, or down to 144p for a slow
+connection), the chapters and autoplay.
 
 **Its own look, "Ember".** A warm dark ground in TEE orange, matching the icon,
 the Manrope typeface, and a focus that can be seen from the sofa.
@@ -167,6 +175,10 @@ reason.
 ## Licence
 
 Apache-2.0, the same as upstream — see [LICENSE](LICENSE) and [NOTICE](NOTICE).
-The TEE name, logo and the artwork in `branding/` are not part of that.
+The TEE Decoder in `libs/simple-lib-av/src/tee_decoder/` is under the GNU LGPL,
+version 2.1 or later (see `libs/simple-lib-av/tee_decoder.LICENSE`): anyone may
+use it, in free or closed software, commercially too; changes to the decoder
+itself stay open. The TEE name, logo and the artwork in `branding/` are not part
+of either licence.
 
 Contact: github@teebug.de

@@ -5,9 +5,8 @@ before it was tagged. Anything that had not been is said so plainly.
 
 ## v1.1 — not released yet
 
-Test builds only so far. The test builds V1.1 Test1 to Test7 were installed on
-TEE's console (EVILNAT 4.92 DEX) on 2026-11-07; the release itself waits for a
-new build of the decoder module (see the end of this section).
+Test builds only so far: V1.1 Test1 to Test7 were installed on TEE's console
+(EVILNAT 4.92 DEX) on 2026-11-07.
 
 ### Added
 
@@ -64,9 +63,23 @@ until Auto is picked again.
   webMAN still answered). The fetch now follows the seek, closing the player
   cancels a read that waits, and a read that gets nothing for 30 s gives up.
 
-**Before a release:** the decoder module has no licence yet, and its SPU
-programs carry the build machine's path in their `.note.spu_name` section;
-both need TEE's decision and a new module build.
+### Known issue
+
+- **A rare hang after a decoder error.** If one of the TEE Decoder's pixel SPEs
+  ever reports an error, stopping the decoder (a seek, leaving the video) can
+  wait for good, and the app hangs. It has not happened in any test. If TEE
+  Vanced ever freezes while a 1080p or 720p video plays or as you leave one,
+  please say so in the TEE Vanced thread on PSX-Place, with
+  `/dev_hdd0/tmp/TEE_Vanced/dbg.txt` if you can. `video-decoder=sony` in
+  `settings.txt` plays everything on `cellVdec` meanwhile.
+
+### Licence
+
+- The TEE Decoder (`libs/simple-lib-av/src/tee_decoder/`) is under the GNU
+  LGPL 2.1 or later, as parts of it follow FFmpeg's libavcodec; the rest of
+  TEE Vanced stays Apache-2.0. NOTICE lists the runtime parts its SPU programs
+  carry (GCC runtime, PSL1GHT, newlib).
+- Its SPU programs no longer carry the build machine's path in their names.
 
 ## v1.0.1 — 2026-11-06
 
