@@ -773,11 +773,52 @@ int getFrameH264(H264Decoder *decoder, void *yuvOut, int *outWidth, int *outHeig
 
 uint64_t getDecoderReadyUs(const H264Decoder *decoder) { return decoder->lastReadyUs; }
 
+#define TEE_CLOSE_WAIT_MS 5000
+
+static volatile int teeCloseDone;
+
+static void teeCloseThread(uint64_t arg)
+{
+   tdec_close((tdec *)(uintptr_t)arg);
+   __sync_synchronize();
+   teeCloseDone = 1;
+   exitThread();
+}
+
+// tdec_close on a thread of its own, waited for TEE_CLOSE_WAIT_MS: the module can hang in it - an SPE that never
+// stops, its known issue after a pixel-SPE error (see the notes for the Mac master) - and the caller is the UI
+// thread, so a hang froze the whole app (Test9, a 1080p60 live stream fed a cut segment). 1 once closed, 0 when it
+// did not come back.
+static int closeTeeBounded(tdec *tee)
+{
+   sys_ppu_thread_t thread;
+   teeCloseDone = 0;
+   if (spawnJoinableThread(&thread, teeCloseThread, (uint64_t)(uintptr_t)tee, THREAD_PRIORITY_DEFAULT,
+                           THREAD_STACK_SIZE_64KB, "tdec-close") != 0) {
+      tdec_close(tee);   // no thread for it: close it here, as before
+      return 1;
+   }
+   for (int waited = 0; !teeCloseDone && waited < TEE_CLOSE_WAIT_MS; waited += 10) sleepMs(10);
+   if (!teeCloseDone) return 0;
+   joinThread(thread);
+   return 1;
+}
+
 void destroyH264Decoder(H264Decoder *decoder)
 {
    if (!decoder) return;
    if (decoder->backend == BACKEND_TEE) {
-      if (decoder->tee) { tdec_close(decoder->tee); teeOpen = 0; }
+      if (decoder->tee) {
+         if (!closeTeeBounded(decoder->tee)) {
+            // left to the thread closing it, with its memory and its SPEs: freed it would be written into. The
+            // TEE Decoder stays off - and counted open - for the rest of the run; the app goes on.
+            logError("[decode-h264] the TEE Decoder did not close in %d ms (an SPE that never stops): left open\n",
+                     TEE_CLOSE_WAIT_MS);
+            disableH264TeeForSession("it did not close");
+            return;
+         }
+         teeOpen = 0;
+      }
       logUserMemory("after the TEE Decoder closed", 0);
    } else {
       vdecDestroy(decoder);

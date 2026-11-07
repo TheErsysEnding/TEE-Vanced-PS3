@@ -56,6 +56,7 @@ struct VideoPlayer {
    sys_ppu_thread_t thread;
    int              threadActive;
    volatile int     running;      // decode thread runs while set
+   volatile int     decodeExited; // the decode thread has left (destroyVideoPlayer waits for this, bounded)
    volatile int     ended;        // demux hit end of stream
 
    // audio pipeline (absent for files without an AAC track: video plays silent)
@@ -408,6 +409,8 @@ static void decodeThread(uint64_t arg)
          while (player->running && player->ended && player->seekRequestNs < 0) sleepMs(10);
       }
    }
+   __sync_synchronize();
+   player->decodeExited = 1;
    exitThread();
 }
 
@@ -710,13 +713,30 @@ fail:
    return 0;
 }
 
+#define DESTROY_WAIT_MS 5000   // how long teardown waits for the decode thread to leave
+
 void destroyVideoPlayer(VideoPlayer *player)
 {
    if (!player) return;
    player->running = 0;
    cancelVideoDemuxer(&player->demuxer);                                  // unblock a live read waiting on the edge
    if (player->hasAudioDemuxer) cancelVideoDemuxer(&player->audioDemuxer);
-   if (player->threadActive) joinThread(player->thread);
+   if (player->threadActive) {
+      // The decode thread leaves within a frame or two once running is down and the reads are cancelled - unless it
+      // is stuck in the TEE Decoder (tdec_flush after a failure or at a seek, when an SPE never stops: the module's
+      // known hang). Waiting on it froze the whole app. After DESTROY_WAIT_MS the player is left to that thread:
+      // only the sound goes (the next player needs the mixer feed), everything else stays allocated, as the
+      // thread may still use it, and the TEE Decoder stays off for the rest of the run.
+      for (int waited = 0; !player->decodeExited && waited < DESTROY_WAIT_MS; waited += 10) sleepMs(10);
+      if (!player->decodeExited) {
+         logError("[video-player] the decode thread did not stop in %d ms (the TEE Decoder hangs?): player left behind\n",
+                  DESTROY_WAIT_MS);
+         disableH264TeeForSession("it hung");
+         releaseAudioPipeline(player);
+         return;
+      }
+      joinThread(player->thread);
+   }
    releaseAudioPipeline(player);
    destroyH264Decoder(player->decoder);
    closeVideoDemuxer(&player->demuxer);

@@ -2486,8 +2486,10 @@ static void drawPlay(void)
             state.liveAnchored = 1;
             if (state.liveOpenedAtEdge) {
                state.liveLatencySec = (float)((liveEdgeNow() + 1.0 - (double)state.liveFirstSq) * state.liveSegmentSec);
-               logInfo("[yt] live: playing %.1f s behind the newest segment's end at sq %ld\n", state.liveLatencySec,
-                       state.liveFirstSq);
+               // whole milliseconds: the app's printf has no floating point (a %f printed nothing, and the
+               // number after it went wrong - "sq 0" in Test9's log)
+               logInfo("[yt] live: playing %d ms behind the newest segment's end, from sq %ld\n",
+                       (int)(state.liveLatencySec * 1000.0f), state.liveFirstSq);
             }
          }
          int dx, dy, dw, dh;
