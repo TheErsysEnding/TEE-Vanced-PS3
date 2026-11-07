@@ -5,8 +5,9 @@ before it was tagged. Anything that had not been is said so plainly.
 
 ## v2.0.0 — not released yet
 
-Test builds only so far: V1.1 Test1 to Test10 were installed on TEE's console
-(EVILNAT 4.92 DEX) on 2026-11-07. The release is v2.0.0.
+Test builds only so far: V1.1 Test1 to Test10 and V2.0.0 Test11 and Test12
+were installed on TEE's console (EVILNAT 4.92 DEX) on 2026-11-07. The release
+is v2.0.0.
 
 ### Added
 
@@ -62,9 +63,15 @@ from where it was, in 720p60 at most.
 - START > Quality lists a live stream's qualities too and switches at the
   segment playing, or at live when it was live.
 - 1080p60 live (itag 299) plays on the TEE Decoder.
+- A live stream that has just ended - which YouTube serves for a while only
+  as its live segments, until it has made a video of it - plays as its
+  recording: from the start, or from where it was left, with a video's
+  timeline and time, left/right and L2/R2 to move through it, and Replay at
+  its end. It used to say "couldn't open stream" (in Yo! Player too).
 - Played on the console: 1080p60 live with 1 s and 2 s segments for minutes
-  at a time, rewinds up to 70 minutes back and back to live, and quality
-  switches between 144p, 480p, 720p60 and 1080p60.
+  at a time, rewinds up to 70 minutes back and back to live, quality switches
+  between 144p, 480p, 720p60 and 1080p60, and the 69-minute recording of a
+  1080p60 stream that had ended an hour before, moved through both ways.
 
 ### Changed
 
