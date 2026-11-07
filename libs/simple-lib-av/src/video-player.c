@@ -72,6 +72,11 @@ struct VideoPlayer {
    volatile int     audioClockValid;    // audioClockBasePts anchored by the first decoded frame
    uint64_t         audioClockBasePts;  // pts (ns) of the first PCM frame handed to the mixer feed
 
+   // the audio clock smoothed for the picture (see presentationClockNs): how far it is from wall time, filtered
+   // by the UI thread at every present, read by the decode thread for its catch-up check
+   volatile int     clockSmoothValid;
+   volatile int64_t clockOffsetNs;
+
    // seek: the UI posts a target; the decode thread performs it (parking the audio thread while both
    // pipelines flush), then decode restarts from the nearest earlier cued keyframe
    volatile int64_t seekRequestNs;      // pending target in ns, -1 = none
@@ -106,16 +111,52 @@ static void audioDecodeThread(uint64_t arg);
 #define CATCHUP_ENGAGE_NS  250000000ull   // 250 ms behind: give up on decoding every picture
 #define CATCHUP_RELEASE_NS  60000000ull   // back within 60 ms: decode in full again
 
+// where the audio is: the samples the mixer has consumed since the clock was anchored
+static uint64_t audioClockNs(VideoPlayer *player)
+{
+   return player->audioClockBasePts +
+          getAudioPcmFeedPlayedFrames() * 1000000000ull / (uint64_t)getAudioSource(player)->audioRate;
+}
+
+#define CLOCK_SNAP_NS   40000000ll   // further than this from the audio (a seek, a stall): jump, don't glide
+#define CLOCK_FILTER    32           // the smoothed clock moves 1/32 of the way to the audio at every present
+
 // the clock the picture is paced against: the audio feed while it runs, wall time otherwise.
 // Shared by the presentation loop and the decode thread's catch-up check so both judge by the
 // same measure.
+//
+// The audio clock only moves once per mixer block (256 samples at 48 kHz, 5.3 ms), and with the mixer
+// thread's wake-up jitter on top: a staircase. Paced straight against it, a 60 fps picture due within a few ms
+// of a vblank flipped between that vblank and the next from one present to the other - and a 60 fps video on a
+// 59.94 Hz screen drifts through exactly that alignment every 1 / (60 - 59.94) = 16.7 s. For about 6 s each time
+// the presenter dropped 8 pictures a second as late and repeated as many: the judder TEE saw at 1080p60 on the
+// TEE Decoder (Test3, 2026-11-07: fewest ready frames 6 of 8 throughout, so never the decoder). So the picture
+// runs on wall time plus a filtered estimate of the audio's offset from it: that follows the audio's drift, not
+// its steps, and the 16.7 s beat costs one dropped picture instead of six seconds of judder.
 static uint64_t presentationClockNs(VideoPlayer *player, uint64_t nowUs)
 {
-   if (player->audioClockValid && player->started)
-      return player->audioClockBasePts +
-             getAudioPcmFeedPlayedFrames() * 1000000000ull / (uint64_t)getAudioSource(player)->audioRate;
+   if (player->audioClockValid && player->started) {
+      if (player->paused) return player->currentPts;
+      if (player->clockSmoothValid) return (uint64_t)((int64_t)(nowUs * 1000) + player->clockOffsetNs);
+      return audioClockNs(player);
+   }
    if (player->paused) return player->currentPts;
    return player->basePts + (nowUs - player->baseWallUs) * 1000;
+}
+
+// UI thread, once per present (under player->lock): steers the smoothed clock toward the audio clock
+static void steerPresentationClock(VideoPlayer *player, uint64_t nowUs)
+{
+   if (!player->audioClockValid || !player->started || player->paused) { player->clockSmoothValid = 0; return; }
+   int64_t offset = (int64_t)audioClockNs(player) - (int64_t)(nowUs * 1000);
+   int64_t error  = offset - player->clockOffsetNs;
+   if (!player->clockSmoothValid || error > CLOCK_SNAP_NS || error < -CLOCK_SNAP_NS) {
+      player->clockOffsetNs = offset;
+      __sync_synchronize();
+      player->clockSmoothValid = 1;
+   } else {
+      player->clockOffsetNs += error / CLOCK_FILTER;
+   }
 }
 
 // ============================================================================
@@ -696,6 +737,7 @@ const uint8_t *getVideoFrame(VideoPlayer *player, int *width, int *height)
       player->baseWallUs = nowUs;
    }
 
+   steerPresentationClock(player, nowUs);
    uint64_t clock = presentationClockNs(player, nowUs);
 
    // pick the latest ready frame whose pts is due; drop older ready frames (skip if we fell behind)
@@ -759,6 +801,7 @@ void setVideoPaused(VideoPlayer *player, int paused)
    } else if (!paused && player->paused) {
       player->paused = 0;
       player->baseWallUs += nowUs - player->pauseWallUs;   // don't count paused time against the clock
+      player->clockSmoothValid = 0;                        // the smoothed clock picks the audio up afresh
    }
    unlock(&player->lock);
    if (player->audioFeedOpen) pauseAudioPcmFeed(paused);
