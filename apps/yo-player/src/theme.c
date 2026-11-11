@@ -18,45 +18,44 @@ static char themesPath[96], themesBackup[96], settingsPath[96];
 
 #define SETTINGS_BUFFER 4096
 
-// TEE: the app's own palette, taken straight from the icon so the console entry and the app are one
-// thing - #ff8a00 orange, the warm near-black ground and the cream text the user's other tools use
-// (TEE Video2Audio, TEEconverter). Since v1.0 these are the "Ember" design tokens (UEBERGABE 3.1/3.2):
-// the same orange, a slightly cooler ground, and helper textures instead of flat rectangles - the focus
-// glow is now a soft texture tinted with focusGlow rather than a second, wider ring.
+// TEE: the app's own palette. Since V3.0.0 it is ice blue on a deep blue-black (Variant B of TEE's three mockups,
+// 2026-11-11): the warm near-black with TEE orange of v1.0 - v2.0 ("Ember") went, because people took the app for,
+// or joked about it as, an adult site's look; it was meant as Black Ops 2's. The tokens are Ember's (UEBERGABE
+// 3.1/3.2) with the same jobs and the same lightness steps, only the hue changed: the accent is #38BDF8, the grounds
+// lean blue, the text is a cool off-white. The LIVE badge stays red and the letterbox black.
 static const Theme themeTee = {
-   .appBg            = 0xFF0E0C0A,
-   .surface          = 0xFF211C16,
-   .accent           = 0xFFFF8A00,
-   .focusBorder      = 0xFFFF8A00,
-   .focusGlow        = 0x73FF8A00,
-   .textPrimary      = 0xFFF5EFE6,
+   .appBg            = 0xFF091117,
+   .surface          = 0xFF162A35,
+   .accent           = 0xFF38BDF8,
+   .focusBorder      = 0xFF38BDF8,
+   .focusGlow        = 0x7338BDF8,
+   .textPrimary      = 0xFFF0F7FB,
    // Secondary text carries the button hints, the "Latest:" lines and every settings value, and it was
    // measured unreadable on the user's TV at 18px. A television is dimmer and further away than the
    // monitor this was picked on, so secondary sits much closer to primary here than a desktop palette
-   // would put it - legibility first, hierarchy second. Ember's text-2 is a little darker than the old
-   // value, which is why the same release raises the smallest reading text to 20 px.
-   .textSecondary    = 0xFFBDB3A5,
-   .badgeFill        = 0xD60A0806,
-   .scrim            = 0xD90A0805,
-   .rowHighlight     = 0x33FF8A00,
-   .seekTrack        = 0x4DF5EFE6,
-   .seekNotch        = 0xFF0E0C0A,
+   // would put it - legibility first, hierarchy second (the blue one keeps Ember's lightness).
+   .textSecondary    = 0xFFB0C2CF,
+   .badgeFill        = 0xD6060B0F,
+   .scrim            = 0xD906090D,
+   .rowHighlight     = 0x3338BDF8,
+   .seekTrack        = 0x4DF0F7FB,
+   .seekNotch        = 0xFF091117,
    .watchedThumbTint = 0xFF8C8C8C,   // 55 % brightness, opaque so the focus ring can't bleed through a watched tile
-   .surface1         = 0xFF17140F,
-   .surface3         = 0xFF2C251D,
-   .textTertiary     = 0xFF8F8578,   // only at 20 px or more, for the same reason as textSecondary above
-   .accentSoft       = 0x33FF8A00,
-   .accentText       = 0xFFFFAF52,
-   .onAccent         = 0xFF1A1208,
+   .surface1         = 0xFF0F1B23,
+   .surface3         = 0xFF1F3846,
+   .textTertiary     = 0xFF8DA4B3,   // only at 20 px or more, for the same reason as textSecondary above
+   .accentSoft       = 0x3338BDF8,
+   .accentText       = 0xFF7DD3FC,
+   .onAccent         = 0xFF04121A,
    .live             = 0xFFE5484D,
-   .knobGlow         = 0x80FF8A00,
-   .hintFill         = 0x1FF5EFE6,
-   .hintFillOnVideo  = 0x24F5EFE6,
-   .chipOnVideo      = 0xB814100C,
-   .panelOnVideo     = 0xDB14100C,
-   .progressTrack    = 0x47F5EFE6,
-   .hairline         = 0x14F5EFE6,
-   .gradientBase     = 0xFF080604,
+   .knobGlow         = 0x8038BDF8,
+   .hintFill         = 0x1FF0F7FB,
+   .hintFillOnVideo  = 0x24F0F7FB,
+   .chipOnVideo      = 0xB80A141A,
+   .panelOnVideo     = 0xDB0A141A,
+   .progressTrack    = 0x47F0F7FB,
+   .hairline         = 0x14F0F7FB,
+   .gradientBase     = 0xFF05090D,
    .letterbox        = 0xFF000000,   // video bars stay black whatever the theme: a tinted bar reads as part of the picture
    .focusThickness   = 4,
 };
@@ -97,12 +96,12 @@ static const ThemeColorField COLOR_FIELDS[] = {
 };
 #define COLOR_FIELD_COUNT ((int)(sizeof COLOR_FIELDS / sizeof COLOR_FIELDS[0]))
 
-// Says a themes.txt was written for the Ember palette. A file without it is from before v1.0 and still
-// holds the old [TEE] colours, which would override the new built-in on every launch - the new look would
-// simply never appear. initTheme treats such a file the way it treats one from before the rebrand: copied
-// to themes.txt.bak, then replaced. The marker is on the header's second line because the check only reads
-// the first 4 KB of the file.
-#define THEMES_FILE_MARKER "palette: ember-1"
+// Says a themes.txt was written for the current palette. A file without it is from an older version and still
+// holds that version's [TEE] colours (v1.0 - v2.0: Ember's orange), which would override the new built-in on every
+// launch - the new look would simply never appear. initTheme treats such a file the way it treats one from before
+// the rebrand: copied to themes.txt.bak, then replaced. The marker is on the header's second line because the
+// check only reads the first 4 KB of the file. (V3.0.0: "ember-1" became "ice-1" with the blue palette.)
+#define THEMES_FILE_MARKER "palette: ice-1"
 
 static const char *THEMES_FILE_HEADER =
    "# TEE Vanced themes - edit over FTP; changes apply on the next launch.\n"
@@ -127,7 +126,7 @@ static const char *THEMES_FILE_HEADER =
    "seekTrack=#FFFFFF66\n"
    "seekNotch=#000000\n"
    "watchedThumbTint=#4D4D4D\n"
-   // the v1.0 keys: without them this block would inherit TEE's orange highlights next to its red
+   // the v1.0 keys: without them this block would inherit TEE's blue highlights next to its red
    "surface1=#181818\n"
    "surface3=#383838\n"
    "textTertiary=#AAAAAA\n"
@@ -208,7 +207,7 @@ void initTheme(void)
       logError("[theme] could not read %s - left it as it is\n", themesPath);
    }
    if (!present || existing == 0 || backedUp) {
-      const char *reason = !stale ? "first launch" : preRebrand ? "replaced a pre-rebrand file" : "replaced a pre-Ember file";
+      const char *reason = !stale ? "first launch" : preRebrand ? "replaced a pre-rebrand file" : "replaced an older palette's file";
       int rc = writeThemeTemplate(&registry, themesPath, THEMES_FILE_HEADER);
       if (rc == 0) logInfo("[theme] wrote %s (%s)\n", themesPath, reason);
       else         logError("[theme] couldn't create %s\n", themesPath);

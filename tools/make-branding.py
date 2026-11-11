@@ -5,9 +5,9 @@ Two files, both consumed by the package build:
   ICON0.PNG  320x176  - the tile in the XMB game column
   PIC1.PNG  1920x1080 - the full-screen background the XMB shows while the tile is selected
 
-The palette is the one the user's other tools already use (TEE Video2Audio, TEEconverter), so the console
-entry looks like it belongs to the same family:
-  #ff8a00 orange (brand), #ffbe5c light orange, #eadfce warm off-white, #9a8c74 muted, #14100a background.
+Since V3.0.0 the palette is the app's ice blue (it was the orange of TEE's other tools until v2.0.0; see
+tools/recolor-branding.py, which turned the shipped files blue - Montserrat is not on the build machine):
+  #38bdf8 ice blue (brand), #7dd3fc light blue, #eaf2f7 cool off-white, #8aa0b0 muted, #071016 background.
 
 The XMB draws the game's title and its own chrome over the LEFT half of PIC1, so everything that has to stay
 readable lives on the right.
@@ -27,13 +27,13 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 OUT = ROOT / "branding"
 OUT.mkdir(exist_ok=True)
 
-BRAND = (255, 138, 0)
-LIGHT = (255, 190, 92)
-CREAM = (234, 223, 206)
-MUTED = (154, 140, 116)
-INK = (20, 16, 10)
-BG_TOP = (32, 25, 15)
-BG_BOTTOM = (16, 13, 8)
+BRAND = (56, 189, 248)
+LIGHT = (125, 211, 252)
+CREAM = (234, 242, 247)
+MUTED = (138, 160, 176)
+INK = (4, 18, 26)
+BG_TOP = (14, 28, 38)
+BG_BOTTOM = (7, 13, 18)
 
 HEAVY = "/usr/share/fonts/opentype/montserrat/Montserrat-ExtraBold.otf"
 MEDIUM = "/usr/share/fonts/opentype/montserrat/Montserrat-SemiBold.otf"

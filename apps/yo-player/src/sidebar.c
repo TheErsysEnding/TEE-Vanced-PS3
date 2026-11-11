@@ -14,7 +14,7 @@
 #include <string.h>
 
 // Ember's rail at 1920x1080. Collapsed (Bild 1 and 3) it is a 112-px column with no surface of its own: the
-// orange logo tile, then one 64x64 slot per entry, 14 apart, and Settings alone at the foot.
+// accent logo tile, then one 64x64 slot per entry, 14 apart, and Settings alone at the foot.
 #define LOGO_X         26
 #define LOGO_Y         48         // the top of the safe area
 #define LOGO_SIZE      60
@@ -209,8 +209,8 @@ static void drawCollapsed(int screenH, int active)
    }
 }
 
-// The expanded panel. The highlight (where X would go) is the accent-soft row with an orange icon and its
-// name in accent-text; the entry the content belongs to keeps its orange icon and reads in text-1 while the
+// The expanded panel. The highlight (where X would go) is the accent-soft row with an accent icon and its
+// name in accent-text; the entry the content belongs to keeps its accent icon and reads in text-1 while the
 // highlight is elsewhere, so both stay visible at once; the rest are text-2.
 static void drawExpanded(int screenH)
 {
