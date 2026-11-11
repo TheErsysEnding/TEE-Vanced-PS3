@@ -12,8 +12,8 @@ tools/recolor-branding.py, which turned the shipped files blue - Montserrat is n
 The XMB draws the game's title and its own chrome over the LEFT half of PIC1, so everything that has to stay
 readable lives on the right.
 
-Since v2.0.0 both also say what the TEE Decoder brings (FULL HD 60 FPS, H.264) and carry the linktree where it is
-seen - on the tile, and as a plate under the claim on the background (it used to be a faint line in a corner).
+Since v2.0.0 both also say what TEE's decoders bring (V3.0.0: 1440p 60 FPS SUPPORT, TEE DECODER; v2.0.0 said FULL HD
+60 FPS, H.264) and carry the linktree where it is seen - on the tile, and as a plate under the claim on the background (it used to be a faint line in a corner).
 That text is Manrope, the app's own font, read straight from the bytes the app embeds - no installed font needed
 for it; the wordmark stays Montserrat.
 """
@@ -70,8 +70,8 @@ def pill(draw, x, y, text, fnt, fill, ink, pad_x, height, outline=None, width=0)
 def draw_icon_extras(img):
     """The tile's claim across the top, and the linktree under the wordmark."""
     d = ImageDraw.Draw(img)
-    end = pill(d, 22, 12, "FULL HD 60 FPS", manrope("extrabold", 14), BRAND, INK, 9, 24)
-    d.text((end + 8, 17), "H.264 · TEE DECODER", font=manrope("extrabold", 12), fill=LIGHT)
+    end = pill(d, 22, 12, "1440p 60 FPS SUPPORT", manrope("extrabold", 13), BRAND, INK, 9, 24)
+    d.text((end + 8, 17), "TEE DECODER", font=manrope("extrabold", 11), fill=LIGHT)
     d.text((22, 143), LINKTREE, font=manrope("extrabold", 15), fill=CREAM)
 
 
@@ -79,8 +79,8 @@ def draw_background_extras(img):
     """Under the background's subtitle: the claim, and the linktree as a plate that can be seen from the sofa."""
     d = ImageDraw.Draw(img)
     x = 1306
-    pill(d, x, 690, "FULL HD 60 FPS", manrope("extrabold", 34), BRAND, INK, 26, 64)
-    d.text((x, 778), "H.264 SUPPORT · TEE DECODER", font=manrope("extrabold", 34), fill=LIGHT)
+    pill(d, x, 690, "1440p 60 FPS SUPPORT", manrope("extrabold", 34), BRAND, INK, 26, 64)
+    d.text((x, 778), "TEE DECODER", font=manrope("extrabold", 34), fill=LIGHT)
     d.text((x, 880), "Updates & more from TEE:", font=manrope("semibold", 24), fill=MUTED)
     pill(d, x, 922, LINKTREE, manrope("extrabold", 34), (34, 26, 16), CREAM, 26, 64, outline=BRAND, width=3)
 
