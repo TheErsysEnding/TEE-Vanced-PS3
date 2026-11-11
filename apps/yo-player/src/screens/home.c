@@ -1085,7 +1085,7 @@ static void drawHome(void)
    drawHeader();
    uiDrawHints(&hintsTop,    hintsTopRight(), HEADER_HINTS_Y,    UI_ALIGN_RIGHT);
    uiDrawHints(&hintsBottom, UI_SAFE_RIGHT,   UI_HINTS_BOTTOM_Y, UI_ALIGN_RIGHT);
-   drawDownloadOverlay(home.screenW);
+   // (V3.0.0) the download shows in the rail now (sidebar.c): the old chip bottom right would lie over the cards
 
    drawSidebar(home.screenH);
 

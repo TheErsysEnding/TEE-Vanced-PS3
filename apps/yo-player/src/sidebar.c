@@ -11,6 +11,8 @@
 #include "ui-fonts.h"         // uiInitLabel / uiLabelYForCenter: the entry names are Manrope like all UI text
 #include "ui-draw.h"          // rounded fills, uiWithAlpha, UI_SCREEN_W
 #include "account.h"          // signed in or not: the account entry's name and icon
+#include "downloads.h"        // getDownloadStatus: the download indicator
+#include <stdio.h>             // snprintf
 #include <string.h>
 
 // Ember's rail at 1920x1080. Collapsed (Bild 1 and 3) it is a 112-px column with no surface of its own: the
@@ -48,6 +50,18 @@
 // used to do in the draw path on every move of the highlight.
 #define TEXT_TINTABLE 0xFFFFFFFFu
 
+// (V3.0.0) the download indicator, in the gap between History and the account entry: the arrow, "1/10" (the
+// running download's place in the batch) and its progress - a white bar that fills green
+#define DL_ICON_TOP    808
+#define DL_ICON_SIZE   26
+#define DL_COUNT_MID   848        // the count's capitals centred here
+#define DL_COUNT_SIZE  18         // 18/800
+#define DL_BAR_Y       866
+#define DL_BAR_H       6
+#define DL_BAR_TRACK   0xFFF0F7FBu
+#define DL_BAR_FILL    0xFF22C55Eu
+#define DL_TEXT_SIZE   22         // expanded: "Downloading 45 %" beside it
+
 // Four of the eleven have an exact glyph in the embedded set (search, clock, history, cog). The other seven
 // have none - there is no home, play, trending, broadcast, subscription, playlist or person symbol in it - so they
 // borrow the nearest honest reading rather than a made-up one: a pointing hand for what was picked out for you, an
@@ -78,6 +92,8 @@ static Label labels[SIDE_COUNT];
 static Icon  accountIcon;      // SIDE_ACCOUNT while signed in: the open lock ...
 static Label accountLabel;     // ... and "Account"
 static Label logoLabel, wordmarkLabel;
+static Icon  dlIcon;
+static Label dlCountLabel, dlTextLabel;
 static int   current = SIDE_SUBS;   // what the content is showing
 static int   picked  = SIDE_SUBS;   // where the highlight sits while focused
 static int   focused;
@@ -111,6 +127,9 @@ void initSidebar(void)
       if (needed > panelWidth) panelWidth = needed;
    }
    initIcon(&accountIcon, ICON_LOCK_OPEN, ICON_SIZE);
+   initIcon(&dlIcon, ICON_DOWNLOAD, DL_ICON_SIZE);
+   uiInitLabel(&dlCountLabel, UI_WEIGHT_EXTRABOLD, 0, 0, AUTO, DL_COUNT_SIZE, TEXT_TINTABLE, TEXT_NOWRAP, "");
+   uiInitLabel(&dlTextLabel, LABEL_WEIGHT, 0, 0, AUTO, DL_TEXT_SIZE, TEXT_TINTABLE, TEXT_NOWRAP, "");
    uiInitLabel(&accountLabel, LABEL_WEIGHT, 0, 0, AUTO, LABEL_SIZE, TEXT_TINTABLE, TEXT_NOWRAP, "Account");
 }
 
@@ -199,9 +218,31 @@ static void drawLogo(int expanded)
 
 // The collapsed rail: no surface of its own, just the logo and the icons on the page background, with
 // `active` on its accent-soft square in the accent colour and the others at 62 % of text-1.
+// the download indicator (both states): nothing while no download runs or waits
+static void drawDownloadStatus(int expanded)
+{
+   int index, total, percent;
+   if (!getDownloadStatus(&index, &total, &percent)) return;
+   char text[32];
+   snprintf(text, sizeof text, "%d/%d", index, total);
+   setLabelText(&dlCountLabel, text);   // rasterises only when the text changes
+   if (dlIcon.tex && dlIcon.tex->h > 0) drawIconCentered(&dlIcon, ICON_CENTER_X, DL_ICON_TOP - dlIcon.offsetY, activeTheme->accent);
+   drawTinted(&dlCountLabel, ICON_CENTER_X - dlCountLabel.tt.tex.w / 2,
+              uiLabelYForCenter(&dlCountLabel, DL_COUNT_MID - 11, 22), activeTheme->textPrimary);
+   uiDrawProgressBar(SLOT_X + 6, DL_BAR_Y, SLOT_SIZE - 12, DL_BAR_H, (float)percent / 100.0f, DL_BAR_TRACK, DL_BAR_FILL,
+                     DL_BAR_H / 2);
+   if (expanded) {
+      snprintf(text, sizeof text, "Downloading %d%%", percent);
+      setLabelText(&dlTextLabel, text);
+      drawTinted(&dlTextLabel, LABEL_X, uiLabelYForCenter(&dlTextLabel, DL_ICON_TOP, DL_BAR_Y + DL_BAR_H - DL_ICON_TOP),
+                 activeTheme->textPrimary);
+   }
+}
+
 static void drawCollapsed(int screenH, int active)
 {
    drawLogo(0);
+   drawDownloadStatus(0);
    for (int i = 0; i < SIDE_COUNT; i++) {
       int y = slotY(i, screenH);
       if (i == active) uiFillRounded(SLOT_X, y, SLOT_SIZE, SLOT_SIZE, SLOT_RADIUS, activeTheme->accentSoft);
@@ -218,6 +259,7 @@ static void drawExpanded(int screenH)
    uiFillRect(0, 0, panelWidth, screenH, activeTheme->surface1);
    uiFillRect(panelWidth - EDGE_W, 0, EDGE_W, screenH, activeTheme->hairline);
    drawLogo(1);
+   drawDownloadStatus(1);
 
    for (int i = 0; i < SIDE_COUNT; i++) {
       int y = slotY(i, screenH);

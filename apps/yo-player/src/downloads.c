@@ -58,6 +58,8 @@ static struct {
    volatile int     percent;
    char             activeTitle[160];
    char             activeId[16];  // videoId of the running download (for dedupe; valid while active)
+   int              batchTotal;    // (V3.0.0) downloads asked for since the queue last ran empty ...
+   int              batchDone;     // ... and how many of them are finished (or failed): the rail's "1/10"
 
    int              initialized;
 } dl;
@@ -185,6 +187,9 @@ static void downloadWorker(uint64_t arg)
       unlock(&dl.mutex);
 
       runOneDownload(&item);
+      lock(&dl.mutex);
+      dl.batchDone++;
+      unlock(&dl.mutex);
    }
    exitThread();
 }
@@ -202,6 +207,8 @@ void enqueueDownload(const SearchResult *item)
    if (!dl.cancelAll && !duplicate) {
       if (dl.count >= MAX_QUEUE) full = 1;
       else {
+         if (!dl.active && dl.count == 0) dl.batchTotal = dl.batchDone = 0;   // a new batch
+         dl.batchTotal++;
          strCopy(dl.queue[dl.count].videoId, sizeof dl.queue[dl.count].videoId, item->videoId);
          strCopy(dl.queue[dl.count].title,   sizeof dl.queue[dl.count].title,   item->title);
          dl.count++;
@@ -249,6 +256,20 @@ void updateDownloadOverlay(void)
    if (count > 0) snprintf(queued, sizeof queued, "(+%d)", count);
    setLabelText(&queueLabel, queued);
    snprintf(percentText, sizeof percentText, " %d%%", dl.percent);
+}
+
+int getDownloadStatus(int *index, int *total, int *percent)
+{
+   if (!dl.initialized) return 0;
+   lock(&dl.mutex);
+   int busy = dl.active || dl.count > 0;
+   int done = dl.batchDone, all = dl.batchTotal, now = dl.percent;
+   unlock(&dl.mutex);
+   if (!busy || all <= 0) return 0;
+   if (index)   *index   = done + 1 > all ? all : done + 1;
+   if (total)   *total   = all;
+   if (percent) *percent = now < 0 ? 0 : now > 100 ? 100 : now;
+   return 1;
 }
 
 static int overlayShown(void)

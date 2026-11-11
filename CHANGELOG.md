@@ -25,6 +25,9 @@ SPEs alone (no RSX prediction yet - that will be the RSX test builds). Played in
   a round chip with a white symbol, L1 ... START / SELECT a key cap with its name (the console's full-colour art
   is gone). Home shows the selected video big above one row of cards: its 1280 x 720 picture (fetched once the
   selection rests) behind its title, channel, duration, a Watched / Watch Later / LIVE chip and how much is left.
+- **Test 5 Blue**: a download shows in the rail - the arrow, its place in the batch ("1/10") and a white bar
+  that fills green; the open rail says "Downloading 45%" beside it. (Home's old chip bottom right is gone: it
+  lay over the cards.) A finished download is handed to the XMB's Video column as before (checked in RPCS3).
 - **One package for every console.** The EBOOT is signed as an NPDRM SELF (as the HEN package of v2.0.0 was), so
   the same package installs on PS3HEN and on CFW/DEX. On CFW/DEX the data folder then becomes /dev_hdd0/tee-vanced;
   the files of the old one are copied over once.

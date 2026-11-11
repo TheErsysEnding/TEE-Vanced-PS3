@@ -28,3 +28,7 @@ void drawDownloadOverlay(int screenWidth);
 void drawDownloadOverlayAt(int x, int y, UiAlign align);
 // the chip's width as it would be drawn now, 0 while no download is running
 int  getDownloadOverlayWidth(void);
+
+// (V3.0.0) for the rail's download indicator: 1 while downloads run or wait, with the running one's place in
+// this batch (*index of *total - "1/10"; the batch starts over once the queue has run empty) and its percent
+int  getDownloadStatus(int *index, int *total, int *percent);
