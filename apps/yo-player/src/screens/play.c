@@ -286,7 +286,7 @@ typedef enum { STAGE_LOADING, STAGE_FAILED, STAGE_PLAYING } Stage;
 #define OPTION_ROWS         3
 #define OPTION_TEXT_MAX_W   720
 enum { OPTION_QUALITY, OPTION_CHAPTERS, OPTION_AUTOPLAY };
-typedef struct { int itag, width, height, fps; char url[MAX_STREAM_URL]; } QualityChoice;
+typedef struct { int itag, width, height, fps, isVp9; char url[MAX_STREAM_URL]; } QualityChoice;
 
 static struct {
    volatile Stage   stage;
@@ -537,6 +537,7 @@ static void worker(uint64_t arg)
    // audio-track switch) follows the same choice.
    setH264DecoderPolicy(getVideoDecoderSetting() == VIDEO_DECODER_SONY ? H264_POLICY_SONY : H264_POLICY_AUTO,
                         getTeeDecoderSpes());
+   setVideoVp9Spes(getVp9Spes());
    int teeUsable = isH264TeeUsable();
    // the best playable format, up to the viewer's quality cap (settings quality=, START > Quality)
    const StreamFormat *video = pickVideoForPlayback(info, teeUsable, getQualityCap());
@@ -576,7 +577,7 @@ static void worker(uint64_t arg)
       for (int i = 0; i < count; i++) {
          QualityChoice *choice = &state.qualities[state.qualityCount++];
          choice->itag = choices[i]->itag; choice->width = choices[i]->width;
-         choice->height = choices[i]->height; choice->fps = choices[i]->fps;
+         choice->height = choices[i]->height; choice->fps = choices[i]->fps; choice->isVp9 = choices[i]->isVp9;
          strCopy(choice->url, sizeof choice->url, choices[i]->url);
          if (choices[i] == video) state.qualityPick = i;
       }
@@ -612,6 +613,24 @@ static void worker(uint64_t arg)
    // open the decoder: both streams ride the http module by range request. an audio open
    // failure inside the player just means silent playback. NULL if it can't be demuxed/decoded.
    state.pendingPlayer = createPlayerFor(video, audio, liveResumeSq);
+
+   // (V3.0.0) 1440p VP9 the TEE VP9 building block did not open (memory, an SPE): the best H.264 instead
+   if (!state.pendingPlayer && video->isVp9) {
+      const StreamFormat *fallback = pickVideoForPlayback(info, teeUsable, 1080);
+      if (fallback) {
+         logWarn("[yt] TEE VP9 did not take itag %d: playing itag %d %dx%d instead\n", video->itag, fallback->itag,
+                 fallback->width, fallback->height);
+         video = fallback;
+         if (video->hasAudio) audio = NULL;
+         state.vidItag = video->itag; state.vidW = video->width; state.vidH = video->height; state.vidFps = video->fps;
+         state.audItag = audio ? audio->itag : (video->hasAudio ? video->itag : 0);
+         strCopy(state.videoUrl, sizeof state.videoUrl, video->url);
+         strCopy(state.audioUrl, sizeof state.audioUrl, audio ? audio->url : "");
+         state.qualityPick = -1;
+         for (int i = 0; i < state.qualityCount; i++) if (state.qualities[i].itag == video->itag) state.qualityPick = i;
+         state.pendingPlayer = createPlayerFor(video, audio, liveResumeSq);
+      }
+   }
 
    // a format only the TEE Decoder keeps up with (1080p60) that ended up on cellVdec - the TEE Decoder did not
    // open, for want of memory or because of the stream's own SPS - plays what cellVdec can instead, as before
@@ -1476,6 +1495,14 @@ static void qualityName(char *out, int cap, int height, int fps)
    else          snprintf(out, cap, "%dp", height);
 }
 
+// (V3.0.0) the row Auto plays: the best quality that is not VP9 - 1440p VP9 plays only when picked (no sound with
+// all 6 SPEs on the picture)
+static int autoQualityIndex(void)
+{
+   for (int i = 0; i < state.qualityCount; i++) if (!state.qualities[i].isVp9) return i;
+   return 0;
+}
+
 static void setOptionLabels(void)
 {
    char text[96], name[24];
@@ -1493,12 +1520,14 @@ static void setOptionLabels(void)
 static void setQualityLabels(void)
 {
    char text[64], name[24];
-   qualityName(name, sizeof name, state.qualities[0].height, state.qualities[0].fps);
+   int autoIndex = autoQualityIndex();
+   qualityName(name, sizeof name, state.qualities[autoIndex].height, state.qualities[autoIndex].fps);
    snprintf(text, sizeof text, "Auto (%s)%s", name, getQualityCap() ? "" : "  - on");
    setLabelText(&qualityLabels[0], text);
    for (int i = 0; i < state.qualityCount; i++) {
       qualityName(name, sizeof name, state.qualities[i].height, state.qualities[i].fps);
-      snprintf(text, sizeof text, "%s%s", name, getQualityCap() && i == state.qualityPick ? "  - on" : "");
+      snprintf(text, sizeof text, "%s%s%s", name, state.qualities[i].isVp9 ? (getVp9Spes() == 6 ? " VP9 (no sound)" : " VP9") : "",
+               getQualityCap() && i == state.qualityPick ? "  - on" : "");
       setLabelText(&qualityLabels[i + 1], text);
    }
 }
@@ -1508,7 +1537,7 @@ static void setQualityLabels(void)
 static void chooseQuality(int choice)
 {
    if (state.qualityCount == 0) return;
-   int index = choice < 0 ? 0 : choice;   // Auto plays the best one (the list is sorted best first)
+   int index = choice < 0 ? autoQualityIndex() : choice;   // Auto plays the best one that is not VP9 (sorted best first)
    setQualityCap(choice < 0 ? 0 : state.qualities[index].height);
    if (index == state.qualityPick) { showControls(); return; }
    if (state.threadActive || !state.player || state.stage != STAGE_PLAYING) { showToast("Busy - try again"); return; }
@@ -2543,7 +2572,14 @@ static void drawPlay(void)
          }
          int dx, dy, dw, dh;
          getGfxLetterboxRect(w, h, &dx, &dy, &dw, &dh);
-         drawGfxYuvFrame(dx, dy, dw, dh, frame, w, h);
+         // drawn where the decoder put it: a packed H.264 frame, or a VP9 picture in the decoder's own buffer
+         VideoFrameLayout layout;
+         if (getVideoFrameLayout(state.player, &layout)) {
+            GfxYuvPlanes planes = { layout.y, layout.u, layout.v, layout.pitchY, layout.pitchC, layout.planeW, layout.planeH,
+                                    layout.planeWC, layout.planeHC, layout.left, layout.top, layout.width, layout.height,
+                                    layout.leftC, layout.topC };
+            drawGfxYuvPlanes(dx, dy, dw, dh, &planes);
+         }
       }
       measureFps(frame);
       int overlayUp = state.chaptersVisible || state.descriptionVisible || state.optionsVisible;   // a full-screen overlay hides the HUD noise

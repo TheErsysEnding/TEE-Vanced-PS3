@@ -10,6 +10,7 @@
 #include "h264.h"
 #include "decode-h264.h"
 #include "decode-aac.h"
+#include "tee_vp9/tee_vp9.h"   // TEE's VP9 decoder on the SPEs (vendored unchanged, see tee_vp9.sha256)
 #include "audio.h"
 #include "thread.h"
 #include "dbg.h"
@@ -28,14 +29,30 @@
 
 // RETIRING holds a replaced frame for one extra present: the RSX may still be sampling it for the
 // frame in flight, so the decoder must not refill it until the following present.
-enum { SLOT_EMPTY, SLOT_FILLING, SLOT_READY, SLOT_DISPLAYING, SLOT_RETIRING };
+// RELEASE (VP9 only): done with, but its picture still belongs to the TEE VP9 decoder - the decode thread gives
+// it back (tvp9_release_picture: the module wants get and release from one thread) and empties the slot.
+enum { SLOT_EMPTY, SLOT_FILLING, SLOT_READY, SLOT_DISPLAYING, SLOT_RETIRING, SLOT_RELEASE };
 
 typedef struct {
-   uint8_t *yuv;        // YUV 4:2:0 planar, RSX-visible when the UI supplied the allocator
+   uint8_t *yuv;        // YUV 4:2:0 planar, RSX-visible when the UI supplied the allocator (NULL for VP9)
    uint64_t pts;        // nanoseconds
    int      width, height;
    int      state;
+   tvp9_picture vp9;    // VP9: the decoder's picture this slot shows, drawn from the decoder's own memory
+   int      hasVp9;     // vp9 holds a picture that goes back to the decoder when the slot is done with
 } FrameSlot;
+
+// VP9 (TEE VP9 building block): the slots hold the decoder's pictures, not copies of them. A held picture keeps
+// one of its buffers, so the ring stays short: 2 on screen (DISPLAYING + RETIRING) and 2 ready - the decoder's
+// own queue of finished pictures is the cushion beyond. A 1440p picture is 5.5 MB: copying 60 a second on the
+// PPU (330 MB/s) is what the module's guide warns against.
+#define VP9_SLOTS          4
+#define VP9_PREROLL_FRAMES 2
+#define VP9_PICTURES       12     // the decoder's picture buffers (its default 10 + 2 for the ring above): 78 MB
+#define VP9_PICTURES_MIN   10     // ... if 12 do not fit
+#define VP9_RATE_PICTURES  30     // a WebM without a frame duration: the rate is measured over this many pictures
+
+static int vp9Spes = 6;           // see setVideoVp9Spes
 
 struct VideoPlayer {
    VideoDemuxer demuxer;
@@ -46,6 +63,13 @@ struct VideoPlayer {
    int          allocW, allocH;   // coded frame-buffer dimensions (macroblock-aligned)
    int          catchUpAllowed;   // >30fps stream: decoder MAY drop B pictures while it is behind
    VideoFrameFreeFn freeFrame;    // releases the slot buffers (matches the allocator used)
+
+   // VP9 (the demuxer found a V_VP9 track): the TEE VP9 building block instead of the H.264 decoder
+   tvp9        *vp9;
+   void        *vp9Memory;        // its picture buffers, from the UI's allocator (mapped for the RSX, 1 MB aligned)
+   uint64_t     vp9StatsUs;       // when the decoder's numbers last went to the log
+   uint64_t     vp9FirstPts;      // the rate measurement for a WebM without a frame duration
+   int          vp9RatePictures;
 
    VideoAu      pendingAu;        // demuxed AU not yet accepted by the decoder (queues were full)
    int          hasPendingAu;
@@ -119,6 +143,7 @@ struct VideoPlayer {
 // defined below the decode thread but used by performSeek's audio-revive path
 static VideoDemuxer *getAudioSource(VideoPlayer *player);
 static void audioDecodeThread(uint64_t arg);
+static void setUpDisplaySync(VideoPlayer *player);   // a VP9 stream whose rate the decode thread measured
 
 // how far the freshly decoded picture may fall behind the clock before the decoder is allowed to
 // drop non-reference B pictures, and where it stops again. Hysteresis so it cannot flap per frame.
@@ -155,6 +180,11 @@ static uint64_t presentationClockNs(VideoPlayer *player, uint64_t nowUs)
       return audioClockNs(player);
    }
    if (player->paused) return player->currentPts;
+   // VP9 without sound (all 6 SPEs on the picture): with display sync the wall clock runs at the screen's pace -
+   // 0.999 for 60 fps on 59.94 Hz - so one picture per vblank never falls behind it (the sound does this with its
+   // tempo when there is sound)
+   if (player->vp9 && player->syncPerFrame && !player->audioFeedOpen)
+      return player->basePts + (uint64_t)((double)(nowUs - player->baseWallUs) * 1000.0 * player->syncBaseSpeed);
    return player->basePts + (nowUs - player->baseWallUs) * 1000;
 }
 
@@ -177,15 +207,128 @@ static void steerPresentationClock(VideoPlayer *player, uint64_t nowUs)
 // decode thread
 // ============================================================================
 
+// VP9 (caller holds player->lock, decode thread): gives the pictures of the slots the UI is done with back to
+// the decoder and empties those slots
+static void releaseVp9Slots(VideoPlayer *player)
+{
+   for (int i = 0; i < FRAME_SLOTS; i++) {
+      FrameSlot *slot = &player->slots[i];
+      if (slot->state != SLOT_RELEASE) continue;
+      if (slot->hasVp9) tvp9_release_picture(player->vp9, &slot->vp9);
+      slot->hasVp9 = 0;
+      slot->state = SLOT_EMPTY;
+   }
+}
+
+// the UI is done with a slot (caller holds player->lock): empty - or, with a VP9 picture in it, RELEASE, so the
+// decode thread gives the picture back first
+static void retireSlot(VideoPlayer *player, int i)
+{
+   player->slots[i].state = player->slots[i].hasVp9 ? SLOT_RELEASE : SLOT_EMPTY;
+}
+
+// what a slot shows: its YUV buffer, or a VP9 picture's luma (non-NULL is all getVideoFrame's callers ask)
+static const uint8_t *slotPicture(const FrameSlot *slot)
+{
+   return slot->hasVp9 ? slot->vp9.y : slot->yuv;
+}
+
 // claims a free slot for the decode thread to fill; returns its index or -1 if the ring is full.
 static int claimEmptySlot(VideoPlayer *player)
 {
    int found = -1;
    lock(&player->lock);
+   if (player->vp9) {
+      releaseVp9Slots(player);
+      int inUse = 0;
+      for (int i = 0; i < FRAME_SLOTS; i++) if (player->slots[i].state != SLOT_EMPTY) inUse++;
+      if (inUse >= VP9_SLOTS) { unlock(&player->lock); return -1; }
+   }
    for (int i = 0; i < FRAME_SLOTS; i++)
       if (player->slots[i].state == SLOT_EMPTY) { player->slots[i].state = SLOT_FILLING; found = i; break; }
    unlock(&player->lock);
    return found;
+}
+
+// VP9: feeds the demuxer's blocks while the decoder takes them (it copies each one at once and says "full" -
+// 0 - when it has enough). Returns how many it fed, -1 on a read error. At the end of the input it tells the
+// decoder and sets inputEnded.
+static int feedVp9(VideoPlayer *player, int *startedAtKeyframe)
+{
+   int fed = 0;
+   while (fed < 8 && player->running && player->seekRequestNs < 0 && !player->inputEnded) {
+      if (!player->hasPendingAu) {
+         uint64_t readStartUs = sys_time_get_system_time();
+         int r = readVideoAu(&player->demuxer, &player->pendingAu);
+         uint64_t readUs = sys_time_get_system_time() - readStartUs;
+         if (readUs > 30000) logWarn("[video-player] reading the next VP9 block took %d ms\n", (int)(readUs / 1000));
+         if (r < 0) return -1;
+         if (r == 0) { player->inputEnded = 1; tvp9_end_of_stream(player->vp9); break; }
+         if (!*startedAtKeyframe) { if (!player->pendingAu.keyframe) continue; *startedAtKeyframe = 1; }
+         player->hasPendingAu = 1;
+      }
+      int result = tvp9_feed(player->vp9, player->pendingAu.data, (size_t)player->pendingAu.size, (int64_t)player->pendingAu.pts);
+      if (result == 0) break;            // the decoder has enough: retry this block later
+      if (result < 0) logWarn("[video-player] the VP9 decoder refused a block of %d bytes\n", player->pendingAu.size);
+      player->hasPendingAu = 0;
+      fed++;
+   }
+   return fed;
+}
+
+// VP9: the next picture into *pic. 1 with a picture, 0 at the end of the stream, -1 on an error.
+static int decodeNextVp9(VideoPlayer *player, tvp9_picture *pic, int *startedAtKeyframe)
+{
+   int stalledMs = 0;
+   while (stalledMs < DECODE_STALL_MS && player->running && player->seekRequestNs < 0) {
+      int got = tvp9_get_picture(player->vp9, pic);
+      if (got == 1) return 1;
+      if (got < 0) {
+         const char *why = tvp9_error(player->vp9);
+         if (!why) return 0;              // every picture after the end of the stream is out
+         logError("[video-player] TEE VP9 stopped: %s\n", why);
+         return -1;
+      }
+      if (player->inputEnded) { sleepMs(1); stalledMs++; continue; }   // the decoder drains, then says -1
+      int fed = feedVp9(player, startedAtKeyframe);
+      if (fed < 0) return -1;
+      if (fed > 0) { stalledMs = 0; continue; }
+      if (player->inputEnded) continue;
+      sleepMs(1); stalledMs++;
+   }
+   if (player->running && player->seekRequestNs < 0 && stalledMs >= DECODE_STALL_MS) {
+      if (player->inputEnded) return 0;
+      logError("[video-player] TEE VP9 gave no picture for %d ms\n", DECODE_STALL_MS);
+      return -1;
+   }
+   return 0;
+}
+
+// VP9, after each picture (decode thread): the decoder's numbers to the log every 10 s, and - for a WebM whose
+// track has no frame duration - the frame rate from the first pictures' time stamps, so display sync can lock on
+static void afterVp9Picture(VideoPlayer *player, const tvp9_picture *pic)
+{
+   uint64_t nowUs = sys_time_get_system_time();
+   if (!player->vp9StatsUs) player->vp9StatsUs = nowUs;
+   else if (nowUs - player->vp9StatsUs >= 10000000ull) {
+      player->vp9StatsUs = nowUs;
+      tvp9_stats stats;
+      tvp9_get_stats(player->vp9, &stats);
+      // integers only: this printf has no floating point
+      logInfo("[video-player] TEE VP9: %d frames, %d pictures, %d.%d pictures/s while busy, entropy %d us, pixel %d us a frame\n",
+              stats.frames, stats.pictures, (int)stats.fps, (int)(stats.fps * 10.0) % 10,
+              (int)(stats.entropy_ms * 1000.0), (int)(stats.pixel_ms * 1000.0));
+   }
+   if (player->demuxer.frameDurationNs) return;
+   if (player->vp9RatePictures == 0) player->vp9FirstPts = (uint64_t)pic->pts;
+   if (++player->vp9RatePictures <= VP9_RATE_PICTURES) return;
+   uint64_t span = (uint64_t)pic->pts > player->vp9FirstPts ? (uint64_t)pic->pts - player->vp9FirstPts : 0;
+   player->vp9RatePictures = 0;
+   if (!span) return;
+   lock(&player->lock);
+   player->demuxer.frameDurationNs = span / VP9_RATE_PICTURES;
+   setUpDisplaySync(player);
+   unlock(&player->lock);
 }
 
 // feeds demuxed access units while the decoder takes them and its backlog is below the limit. Returns how many
@@ -294,9 +437,25 @@ static void performSeek(VideoPlayer *player)
    }
    if (!player->running) return;   // released by teardown, not by a parked audio thread: don't seek a dying player
 
+   // VP9: every picture the decoder does not need on screen goes back first, then the flush. The two on screen
+   // (DISPLAYING, RETIRING) stay up until the new position's pictures arrive; their buffers belong to the
+   // decoder again after the flush (a release of one from before it is ignored).
+   if (player->vp9) {
+      lock(&player->lock);
+      for (int i = 0; i < FRAME_SLOTS; i++) {
+         FrameSlot *slot = &player->slots[i];
+         if (slot->state != SLOT_READY && slot->state != SLOT_RELEASE) continue;
+         if (slot->hasVp9) tvp9_release_picture(player->vp9, &slot->vp9);
+         slot->hasVp9 = 0;
+         slot->state = SLOT_EMPTY;
+      }
+      unlock(&player->lock);
+      if (tvp9_flush(player->vp9) != 0) logError("[video-player] TEE VP9 flush failed: %s\n", tvp9_error(player->vp9));
+      player->vp9RatePictures = 0;
+   }
    // flush the decoder; if the reset wedged it (EndSeq fatal) or it already died, rebuild it rather
    // than going dark (a NULL decoder makes decode report end-of-stream until a later seek revives it)
-   if (!player->decoder || resetH264Decoder(player->decoder) != 0) {
+   else if (!player->decoder || resetH264Decoder(player->decoder) != 0) {
       logWarn("[video-player] decoder reset failed, recreating decoder\n");
       if (isTeeH264Decoder(player->decoder)) disableH264TeeForSession("its flush failed at a seek");
       destroyH264Decoder(player->decoder);
@@ -365,8 +524,11 @@ static void decodeThread(uint64_t arg)
       if (slot < 0) {   // ring full: wait for the UI to consume a frame
          // ...but keep the TEE Decoder's input topped up meanwhile: fed only when a slot is free, its CABAC lead
          // would shrink to the few pictures the ring holds, and that lead is what carries it over a hard picture
-         if (player->decoder && isTeeH264Decoder(player->decoder) && !player->inputEnded &&
-             feedDecoder(player, &startedAtKeyframe) < 0 && !recoverDecoder(player, &startedAtKeyframe)) {
+         // (VP9 the same: its entropy stage runs ahead of its pixel stage on what it was fed)
+         int feedFailed = player->vp9 ? (!player->inputEnded && feedVp9(player, &startedAtKeyframe) < 0)
+                        : (player->decoder && isTeeH264Decoder(player->decoder) && !player->inputEnded &&
+                           feedDecoder(player, &startedAtKeyframe) < 0 && !recoverDecoder(player, &startedAtKeyframe));
+         if (feedFailed) {
             lock(&player->lock);
             if (player->seekRequestNs < 0) player->ended = 1;
             unlock(&player->lock);
@@ -377,7 +539,18 @@ static void decodeThread(uint64_t arg)
       }
 
       int width, height; uint64_t pts;
-      int got = player->decoder ? decodeNextFrame(player, player->slots[slot].yuv, &width, &height, &pts, &startedAtKeyframe) : -1;
+      int got;
+      if (player->vp9) {
+         tvp9_picture *pic = &player->slots[slot].vp9;
+         got = decodeNextVp9(player, pic, &startedAtKeyframe);
+         if (got == 1) {
+            width = pic->width; height = pic->height; pts = (uint64_t)pic->pts;
+            player->slots[slot].hasVp9 = 1;   // published with SLOT_READY under the lock below
+            afterVp9Picture(player, pic);
+         }
+      } else {
+         got = player->decoder ? decodeNextFrame(player, player->slots[slot].yuv, &width, &height, &pts, &startedAtKeyframe) : -1;
+      }
       if (got < 0 && player->running && player->seekRequestNs < 0 && recoverDecoder(player, &startedAtKeyframe)) {
          lock(&player->lock);
          player->slots[slot].state = SLOT_EMPTY;
@@ -608,6 +781,56 @@ static void setUpDisplaySync(VideoPlayer *player)
               (int)(fps * 1000.0 + 0.5));
 }
 
+void setVideoVp9Spes(int spes) { vp9Spes = spes == 5 ? 5 : 6; }
+
+int isVideoVp9(const VideoPlayer *player) { return player && player->vp9; }
+
+static void logVp9Line(const char *line) { logInfo("[tee-vp9] %s\n", line); }
+
+// VP9: opens the TEE VP9 building block for the stream (createVideoPlayerSplit, before the decode thread). Its
+// picture buffers come from the UI's allocator - RSX-visible, 1 MB aligned - so the RSX draws the pictures where
+// the decoder wrote them; no H.264 frame slots are allocated. With all 6 SPEs on the picture the sound is closed
+// (cellAdec would be a 7th, and a 7th SPU thread froze the console). 0 ok, -1 failed.
+static int openVp9(VideoPlayer *player, VideoFrameAllocFn allocFrame)
+{
+   tvp9_config config;
+   tvp9_default(&config);
+   config.log = logVp9Line;
+   if (vp9Spes == 5) { config.entropy_spes = 1; config.pixel_spes = 4; }
+   // buffers for the stream's size, not the module's 2560 x 1440 default: a 1080p stream needs less memory
+   if (player->demuxer.width > 0 && player->demuxer.height > 0 &&
+       player->demuxer.width <= config.max_width && player->demuxer.height <= config.max_height) {
+      config.max_width  = player->demuxer.width;
+      config.max_height = player->demuxer.height;
+   }
+   char err[160];
+   err[0] = 0;
+   for (int pictures = VP9_PICTURES; pictures >= VP9_PICTURES_MIN && !player->vp9; pictures -= 2) {
+      config.pictures = pictures;
+      size_t bytes = tvp9_picture_memory_size(&config);
+      player->vp9Memory = allocFrame(bytes);
+      if (!player->vp9Memory || ((uintptr_t)player->vp9Memory & 0xFFFFF)) {
+         snprintf(err, sizeof err, "no 1 MB aligned block of %d MB for %d pictures", (int)(bytes >> 20), pictures);
+         if (player->vp9Memory) player->freeFrame(player->vp9Memory);
+         player->vp9Memory = 0;
+         continue;
+      }
+      config.picture_memory = player->vp9Memory;
+      config.picture_memory_bytes = bytes;
+      player->vp9 = tvp9_open(&config, err, sizeof err);
+      if (!player->vp9) { player->freeFrame(player->vp9Memory); player->vp9Memory = 0; }
+      else logInfo("[video-player] TEE VP9 %s: %dx%d stream, %d + %d SPEs, %d pictures (%d MB + %d MB)%s\n", TEE_VP9_VERSION,
+                   player->demuxer.width, player->demuxer.height, config.entropy_spes, config.pixel_spes, pictures,
+                   (int)(bytes >> 20), (int)(tvp9_memory_size(&config) >> 20), vp9Spes == 6 ? ", no sound" : "");
+   }
+   if (!player->vp9) { logError("[video-player] TEE VP9 did not open: %s\n", err); return -1; }
+   if (vp9Spes == 6 && player->hasAudioDemuxer) {   // no SPE left for the sound
+      closeVideoDemuxer(&player->audioDemuxer);
+      player->hasAudioDemuxer = 0;
+   }
+   return 0;
+}
+
 // heap fallbacks when the caller supplies no frame allocator
 static void *allocFrameFromHeap(size_t size) { return memalign(128, size); }
 static void freeFrameToHeap(void *buffer) { free(buffer); }
@@ -646,6 +869,11 @@ VideoPlayer *createVideoPlayerSplit(const char *videoPath, const char *audioPath
       logWarn("[video-player] separate audio stream failed to open, playing silent\n");
 
    if (!videoOk) goto fail;
+
+   if (player->demuxer.isVp9) {
+      if (openVp9(player, allocFrame) != 0) goto fail;
+      goto decoderReady;
+   }
 
    // the decoder must be built for the stream's CODED size, which the SPS alone knows: the container
    // reports the DISPLAY size, and encoders pad beyond it (Intel QuickSync codes 720 as 736 and crops
@@ -693,6 +921,7 @@ VideoPlayer *createVideoPlayerSplit(const char *videoPath, const char *audioPath
               (int)(1000000000ull / player->demuxer.frameDurationNs), getH264DecoderName(player->decoder));
       player->catchUpAllowed = 1;   // armed; the decode thread engages it only while behind
    }
+decoderReady:
    setUpDisplaySync(player);
 
    player->running = 1;
@@ -739,6 +968,8 @@ void destroyVideoPlayer(VideoPlayer *player)
    }
    releaseAudioPipeline(player);
    destroyH264Decoder(player->decoder);
+   if (player->vp9) tvp9_close(player->vp9);                         // the SPEs stop (by force if one hangs)
+   if (player->vp9Memory) player->freeFrame(player->vp9Memory);
    closeVideoDemuxer(&player->demuxer);
    if (player->hasAudioDemuxer) closeVideoDemuxer(&player->audioDemuxer);
    for (int i = 0; i < FRAME_SLOTS; i++) if (player->slots[i].yuv) player->freeFrame(player->slots[i].yuv);
@@ -758,7 +989,7 @@ static const uint8_t *takeHeldFrame(VideoPlayer *player, int *width, int *height
 {
    int held = player->displayIndex;
    const uint8_t *heldBuffer = 0;
-   if (held >= 0) { heldBuffer = player->slots[held].yuv; *width = player->slots[held].width; *height = player->slots[held].height; }
+   if (held >= 0) { heldBuffer = slotPicture(&player->slots[held]); *width = player->slots[held].width; *height = player->slots[held].height; }
    unlock(&player->lock);
    return heldBuffer;
 }
@@ -824,7 +1055,7 @@ const uint8_t *getVideoFrame(VideoPlayer *player, int *width, int *height)
       uint64_t earliest = 0; int found = -1, readyCount = 0;
       for (int i = 0; i < FRAME_SLOTS; i++)
          if (player->slots[i].state == SLOT_READY) { readyCount++; if (found < 0 || player->slots[i].pts < earliest) { earliest = player->slots[i].pts; found = i; } }
-      int decoderWarm  = readyCount >= PREROLL_FRAMES || player->ended;      // a short clip may never fill the ring
+      int decoderWarm  = readyCount >= (player->vp9 ? VP9_PREROLL_FRAMES : PREROLL_FRAMES) || player->ended;   // a short clip may never fill the ring
       int audioWaiting = player->audioAlive && !player->audioClockValid;     // a dead/absent audio pipeline never holds video
 
       // don't wait forever for audio to anchor the clock: on a stalled audio stream it never decodes a
@@ -860,7 +1091,8 @@ const uint8_t *getVideoFrame(VideoPlayer *player, int *width, int *height)
    for (int i = 0; i < FRAME_SLOTS; i++) if (player->slots[i].state == SLOT_READY) readyCount++;
 
    // display sync while the sound runs (see pickSyncedFrame); it locks on from a picture chosen by the clock
-   int synced = player->syncPerFrame && player->audioClockValid && player->audioFeedOpen && !player->paused;
+   int synced = player->syncPerFrame && !player->paused &&
+                ((player->audioClockValid && player->audioFeedOpen) || (player->vp9 && !player->audioFeedOpen));
    if (synced && player->syncActive) {
       best = pickSyncedFrame(player, nowUs, clock);
       if (best >= 0) bestPts = player->slots[best].pts;
@@ -875,9 +1107,9 @@ const uint8_t *getVideoFrame(VideoPlayer *player, int *width, int *height)
    int late = 0;
    if (best >= 0) {
       for (int i = 0; i < FRAME_SLOTS; i++) {
-         if (player->slots[i].state == SLOT_RETIRING) player->slots[i].state = SLOT_EMPTY;                // GPU is done with it by now
+         if (player->slots[i].state == SLOT_RETIRING) retireSlot(player, i);                             // GPU is done with it by now
          else if (player->slots[i].state == SLOT_DISPLAYING) player->slots[i].state = SLOT_RETIRING;      // hold one present for the frame in flight
-         else if (player->slots[i].state == SLOT_READY && player->slots[i].pts < bestPts) { player->slots[i].state = SLOT_EMPTY; late++; }   // drop skipped
+         else if (player->slots[i].state == SLOT_READY && player->slots[i].pts < bestPts) { retireSlot(player, i); late++; }   // drop skipped
       }
       player->slots[best].state = SLOT_DISPLAYING;
       player->displayIndex = best;
@@ -930,7 +1162,7 @@ const uint8_t *getVideoFrame(VideoPlayer *player, int *width, int *height)
 
    int idx = player->displayIndex;
    const uint8_t *buffer = 0;
-   if (idx >= 0) { buffer = player->slots[idx].yuv; *width = player->slots[idx].width; *height = player->slots[idx].height; }
+   if (idx >= 0) { buffer = slotPicture(&player->slots[idx]); *width = player->slots[idx].width; *height = player->slots[idx].height; }
    unlock(&player->lock);
    if (statsLine[0]) logInfo("%s", statsLine);   // outside the lock: a file write must not hold up the decode thread
    if (syncLine[0]) logInfo("%s", syncLine);
@@ -1006,12 +1238,48 @@ long getVideoLiveFirstSq(const VideoPlayer *player)
 
 const char *getVideoDecoderName(const VideoPlayer *player)
 {
+   if (player && player->vp9) return "TEE VP9";
    return player ? getH264DecoderName(player->decoder) : "none";
 }
 
 int isVideoOnTeeDecoder(const VideoPlayer *player)
 {
-   return player && isTeeH264Decoder(player->decoder);
+   return player && (player->vp9 || isTeeH264Decoder(player->decoder));
+}
+
+int getVideoFrameLayout(VideoPlayer *player, VideoFrameLayout *out)
+{
+   if (!player || !out) return 0;
+   lock(&player->lock);
+   int idx = player->displayIndex;
+   if (idx < 0) { unlock(&player->lock); return 0; }
+   const FrameSlot *slot = &player->slots[idx];
+   if (slot->hasVp9) {
+      // the decoder's frame buffer: planes as wide as the stream rounded up to 64, a border on every side (the
+      // module's 80 luma / 48 chroma samples, read back from the stride), each plane starting 128-byte aligned
+      const tvp9_picture *pic = &slot->vp9;
+      int aw = (pic->width + 63) & ~63, ah = (pic->height + 63) & ~63;
+      int borderY = (pic->stride_y - aw) / 2, borderC = (pic->stride_c - aw / 2) / 2;
+      out->y = pic->y - (size_t)borderY * pic->stride_y - borderY;
+      out->u = pic->u - (size_t)borderC * pic->stride_c - borderC;
+      out->v = pic->v - (size_t)borderC * pic->stride_c - borderC;
+      out->pitchY = pic->stride_y;          out->pitchC = pic->stride_c;
+      out->planeW = pic->stride_y;          out->planeH = ah + 2 * borderY;
+      out->planeWC = pic->stride_c;         out->planeHC = ah / 2 + 2 * borderC;
+      out->left = borderY;                  out->top = borderY;
+      out->width = pic->width;              out->height = pic->height;
+      out->leftC = borderC;                 out->topC = borderC;
+   } else {
+      int w = slot->width, h = slot->height;
+      out->y = slot->yuv;                   out->u = slot->yuv + w * h;      out->v = out->u + w * h / 4;
+      out->pitchY = w;                      out->pitchC = w / 2;
+      out->planeW = w;                      out->planeH = h;
+      out->planeWC = w / 2;                 out->planeHC = h / 2;
+      out->left = out->top = 0;             out->width = w;                  out->height = h;
+      out->leftC = out->topC = 0;
+   }
+   unlock(&player->lock);
+   return out->y != 0;
 }
 
 // audio track format for a stats overlay; rate/channels read 0 when there's no audio track.

@@ -21,9 +21,25 @@ static int teeDecodableVideo(const StreamFormat *format)
    return codedWidth % 128 == 0 && format->width <= 1920 && format->height <= 1080 && format->fps <= 60;
 }
 
-static int playableVideo(const StreamFormat *format, int teeUsable)
+// (V3.0.0) VP9 1440p on the TEE VP9 building block: WebM, above 1080p, up to 2560 x 1440, not live (live plays its
+// DASH segments as mp4). It is played only when asked for - picked in the quality list, or a quality cap of 1440
+// saved by such a pick - never by Auto or for a download: with all 6 SPEs on the picture it has no sound.
+static int vp9Video(const StreamFormat *format)
+{
+   return format->isVp9 && !format->isLiveSegmented && strcmp(format->container, "webm") == 0 &&
+          format->height > 1080 && format->height <= 1440 && format->width <= 2560;
+}
+
+static int isLiveInfo(const StreamInfo *info)
+{
+   for (int i = 0; i < info->formatCount; i++) if (info->formats[i].isLiveSegmented) return 1;
+   return 0;
+}
+
+static int playableVideo(const StreamFormat *format, int teeUsable, int allowVp9)
 {
    if (!format->hasVideo || format->needsCipher || !format->url[0]) return 0;
+   if (format->isVp9) return allowVp9 && vp9Video(format);
    if (strcmp(format->container, "mp4") != 0) return 0;   // mp4 == avc1 for these itags
    return decodableVideo(format) || (teeUsable && teeDecodableVideo(format));
 }
@@ -33,9 +49,10 @@ static int playableVideo(const StreamFormat *format, int teeUsable)
 static const StreamFormat *pickVideoCapped(const StreamInfo *info, int teeUsable, int maxHeight)
 {
    const StreamFormat *best = NULL, *lowest = NULL;
+   int allowVp9 = maxHeight >= 1440 && !isLiveInfo(info);   // a cap the viewer set by picking 1440p
    for (int i = 0; i < info->formatCount; i++) {
       const StreamFormat *format = &info->formats[i];
-      if (!playableVideo(format, teeUsable)) continue;
+      if (!playableVideo(format, teeUsable, allowVp9)) continue;
       if (!lowest || format->height < lowest->height) lowest = format;
       if (maxHeight && format->height > maxHeight) continue;
       if (!best || format->height > best->height || (format->height == best->height && format->fps > best->fps))
@@ -47,9 +64,10 @@ static const StreamFormat *pickVideoCapped(const StreamInfo *info, int teeUsable
 int listPlayableVideos(const StreamInfo *info, int teeUsable, const StreamFormat **out, int max)
 {
    int count = 0;
+   int allowVp9 = !isLiveInfo(info);
    for (int i = 0; i < info->formatCount; i++) {
       const StreamFormat *format = &info->formats[i];
-      if (!playableVideo(format, teeUsable) || format->hasAudio) continue;   // the video-only streams
+      if (!playableVideo(format, teeUsable, allowVp9) || format->hasAudio) continue;   // the video-only streams
       int duplicate = 0;
       for (int j = 0; j < count; j++)
          if (out[j]->height == format->height && out[j]->fps == format->fps) { duplicate = 1; break; }
@@ -74,7 +92,7 @@ static const StreamFormat *pickVideo(const StreamInfo *info, int teeUsable)
    const StreamFormat *best = NULL;
    for (int i = 0; i < info->formatCount; i++) {
       const StreamFormat *format = &info->formats[i];
-      if (!playableVideo(format, teeUsable)) continue;
+      if (!playableVideo(format, teeUsable, 0)) continue;
       if (!best || format->height > best->height || (format->height == best->height && format->fps > best->fps))
          best = format;
    }

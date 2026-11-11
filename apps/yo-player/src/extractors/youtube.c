@@ -369,9 +369,15 @@ static void parseFormatArray(const char *arrayStart, const char *regionEnd, int 
       strCopy(format->container, sizeof format->container, strstr(mimeType, "webm") ? "webm" : "mp4");
       int isAvc = strstr(mimeType, "avc1") != NULL || strstr(mimeType, "avc3") != NULL;
       int isAac = strstr(mimeType, "mp4a") != NULL;
+      // (V3.0.0) VP9 in WebM above 1080p, up to 2560 x 1440: YouTube's 1440p (itag 308 at 60 fps, 271 at 30), which
+      // the TEE VP9 building block decodes on the SPEs. Profile 0 only - codecs="vp9" or "vp09.00..." - the HDR
+      // ones (vp09.02, 10 bit) it refuses. Lower VP9 stays out: H.264 covers it, and every format kept takes an
+      // array slot the AAC audio (listed after all the video) needs.
+      int isVp9 = strstr(mimeType, "webm") && (strstr(mimeType, "\"vp9\"") || strstr(mimeType, "vp09.00.")) &&
+                  format->height > 1080 && format->height <= 1440 && format->width <= 2560;
       if (progressive)                              format->hasVideo = format->hasAudio = 1;
       else if (strncmp(mimeType, "audio/", 6) == 0) format->hasAudio = isAac;
-      else                                          format->hasVideo = isAvc;
+      else                                          { format->hasVideo = isAvc || isVp9; format->isVp9 = isVp9 && !isAvc; }
 
       // an audio stream of a video with several audio tracks (other languages, AI dubs) is filed by track
       // instead - see collectAudioTrack; the chosen track's stream joins formats[] once the array is read
@@ -383,7 +389,7 @@ static void parseFormatArray(const char *arrayStart, const char *regionEnd, int 
          tracked = collectAudioTrack(object, objectEnd, format, out);
       }
 
-      // keep only formats we can decode (H.264 video / AAC audio). dropping VP9/AV1/Opus frees array slots
+      // keep only formats we can decode (H.264 video, VP9 1440p / AAC audio). dropping AV1/Opus frees array slots
       // so the AAC audio - which youtube lists AFTER all the video formats - isn't pushed past the cap.
       if ((format->hasVideo || format->hasAudio) && !tracked) out->formatCount++;
       scan = objectEnd;

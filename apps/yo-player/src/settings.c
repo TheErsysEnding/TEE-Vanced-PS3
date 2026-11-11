@@ -32,6 +32,10 @@ static const char *DEFAULT_SETTINGS =
    "tee-decoder-spes=4\n"
    "# 4 = 1 CABAC + 3 pixel SPEs, 5 = 1 CABAC + 4 pixel (more headroom; with the sound all 6 SPEs are busy)\n"
    "\n"
+   "vp9-spes=6\n"
+   "# 1440p (VP9, picked in START > Quality): 6 = 2 entropy + 4 pixel SPEs, 60 fps but no sound (Sony's sound\n"
+   "# decoder needs an SPE of its own); 5 = 1 entropy + 4 pixel with sound, slower (50 - 63 fps measured)\n"
+   "\n"
    "quality=auto\n"
    "# the highest video quality to play: auto = the best the console plays smoothly, or a height such as 1080,\n"
    "# 720, 480, 360 or 144 - lower saves bandwidth on a slow connection. The player sets it too: START > Quality.\n";
@@ -39,6 +43,7 @@ static const char *DEFAULT_SETTINGS =
 static SponsorblockMode sponsorblockMode = SPONSORBLOCK_ADS;
 static VideoDecoderSetting videoDecoder = VIDEO_DECODER_AUTO;
 static int teeDecoderSpes = 4;
+static int vp9Spes = 6;
 static int qualityCap = 0;   // quality=: the highest video height to play, 0 = auto
 
 // ---- content region ----
@@ -186,8 +191,14 @@ void loadSettings(void)
       else if (settingValueEquals(spes, "5")) teeDecoderSpes = 5;
       else logWarn("[settings] tee-decoder-spes takes 4 or 5, using 4\n");
    }
-   logInfo("[settings] video-decoder %s, tee-decoder-spes %d\n", videoDecoder == VIDEO_DECODER_SONY ? "sony" : "auto",
-           teeDecoderSpes);
+   const char *vp9 = findSettingValue(text, "vp9-spes");
+   if (vp9) {
+      if      (settingValueEquals(vp9, "6")) vp9Spes = 6;
+      else if (settingValueEquals(vp9, "5")) vp9Spes = 5;
+      else logWarn("[settings] vp9-spes takes 5 or 6, using 6\n");
+   }
+   logInfo("[settings] video-decoder %s, tee-decoder-spes %d, vp9-spes %d\n", videoDecoder == VIDEO_DECODER_SONY ? "sony" : "auto",
+           teeDecoderSpes, vp9Spes);
    const char *quality = findSettingValue(text, "quality");
    if (quality && !settingValueEquals(quality, "auto")) {
       int height = 0;
@@ -299,3 +310,4 @@ int setContentRegionIndex(int index)
 SponsorblockMode getSponsorblockMode(void) { return sponsorblockMode; }
 VideoDecoderSetting getVideoDecoderSetting(void) { return videoDecoder; }
 int getTeeDecoderSpes(void) { return teeDecoderSpes; }
+int getVp9Spes(void) { return vp9Spes; }

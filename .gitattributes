@@ -1,3 +1,5 @@
 # The vendored TEE Decoder module and its manifest are compared byte for byte: never convert their line endings.
 libs/simple-lib-av/src/tee_decoder/** -text
 libs/simple-lib-av/tee_decoder.sha256 -text
+# ...and the TEE VP9 building block (its manifest sits in its folder).
+libs/simple-lib-av/src/tee_vp9/** -text

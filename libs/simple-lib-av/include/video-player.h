@@ -53,5 +53,25 @@ void  getAudioTrackInfo(const VideoPlayer *player, int *rate, int *channels);   
 // the decoder behind the picture, for a stats overlay: "TEE Decoder" or "cellVdec" (see decode-h264.h)
 const char *getVideoDecoderName(const VideoPlayer *player);
 
-// 1 when the picture comes from the TEE Decoder (0: cellVdec)
+// 1 when the picture comes from the TEE Decoder or the TEE VP9 building block (0: cellVdec)
 int isVideoOnTeeDecoder(const VideoPlayer *player);
+
+// (TEE Vanced V3.0.0) VP9 - YouTube's 1440p, in WebM - plays on the TEE VP9 building block (src/tee_vp9/, vendored
+// unchanged). 1440p60 needs all 6 SPEs (2 entropy + 4 pixel), so Sony's sound decoder (cellAdec, 1 SPE) has no
+// room: spes 6 (the default) plays the picture without sound; 5 gives the decoder 1 + 4 SPEs and keeps the sound
+// (slower: 50 - 63 pictures a second measured, so 1440p60 cannot hold 60). Process-wide; settings.txt vp9-spes=.
+void setVideoVp9Spes(int spes);
+int  isVideoVp9(const VideoPlayer *player);      // the picture comes from the TEE VP9 building block
+
+// where the planes of the picture getVideoFrame last handed out lie, for drawing it in place. A packed frame (H.264:
+// Y, U, V back to back) fills it as one block without a border; a VP9 picture is the decoder's own buffer: three
+// planes with rows `pitch` apart and a border around the picture. 0 when nothing is on screen yet.
+typedef struct {
+   const uint8_t *y, *u, *v;         // each plane's first byte (border included), 128-byte aligned
+   int pitchY, pitchC;               // bytes from one row to the next
+   int planeW, planeH;               // the luma plane in samples (border included)
+   int planeWC, planeHC;             // the chroma planes
+   int left, top, width, height;     // the picture inside the luma plane
+   int leftC, topC;                  // its top left inside the chroma planes
+} VideoFrameLayout;
+int getVideoFrameLayout(VideoPlayer *player, VideoFrameLayout *layout);

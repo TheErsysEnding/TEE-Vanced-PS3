@@ -1,0 +1,9 @@
+TEE VP9 building block
+
+The two SPU programs in tv9_spu_images.c contain code from libvpx (the WebM project's VP9 library): its C
+reference functions for the inverse transforms, intra prediction, convolution and loop filter, and tables; the
+bitstream parser follows libvpx's decoder. libvpx is Copyright (c) 2010, The WebM Project authors, under the
+licence in libvpx.LICENSE with the patent grant in libvpx.PATENTS. A program that ships this building block has
+to reproduce that licence in its documentation or other materials.
+
+Everything else here is the TEE VP9 project's own. It has no licence file of its own yet.
