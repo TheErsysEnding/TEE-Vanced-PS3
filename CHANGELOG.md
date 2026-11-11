@@ -13,6 +13,10 @@ SPEs alone (no RSX prediction yet - that will be the RSX test builds). Played in
   and so do downloads. If the decoder does not open, the best H.264 plays instead.
 - **No sound at 1440p** in this test: the decoder needs all 6 SPEs and Sony's sound decoder a 7th.
   settings.txt vp9-spes=5 gives the decoder 1 + 4 SPEs and keeps the sound, at 50 - 63 pictures a second.
+- **Test 2 SPE** (73-855683e): in Test 1 a busy scene (27 - 37 Mbit/s for half a minute, 10 on average) fell to
+  40 pictures a second - the download ran only 2 MB ahead, and the thread that read the network also handed the
+  pictures to the screen. Now the VP9 input has a thread of its own, and the decoder holds up to 20 MB of it
+  (about 4 s at that rate).
 - **One package for every console.** The EBOOT is signed as an NPDRM SELF (as the HEN package of v2.0.0 was), so
   the same package installs on PS3HEN and on CFW/DEX. On CFW/DEX the data folder then becomes /dev_hdd0/tee-vanced;
   the files of the old one are copied over once.
