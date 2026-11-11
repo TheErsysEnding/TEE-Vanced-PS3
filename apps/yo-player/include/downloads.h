@@ -45,6 +45,14 @@ int  listDownloads(SearchResults *out);                          // newest first
 int  deleteDownload(const char *videoId);                        // 0 when its folder is gone
 unsigned getDownloadsRevision(void);                             // moves when a download lands or is deleted
 
+// (V3.0.0) downloads that never finished. Every download asked for leaves a job.txt in its folder from the moment
+// it is queued until it is done, so one that a power cut, a crash or leaving the app cut short - or that was still
+// waiting in the queue - is still there at the next start. Call these at start-up, before anything is queued.
+// The count of such jobs (0 = none), and the first one's title for the question.
+int  findInterruptedDownloads(char *firstTitle, int titleCap);
+void restartInterruptedDownloads(void);   // queue each one again (from the start, in the form it was asked for)
+void deleteInterruptedDownloads(void);    // throw them away, half-written files and all
+
 void updateDownloadOverlay(void);         // refresh the "Downloading ..." label; call each frame in a screen update
 // draws it bottom-right, above the hint row (UI_HINTS_BOTTOM_Y), if a download is active; call in a screen draw
 void drawDownloadOverlay(int screenWidth);

@@ -142,6 +142,8 @@ static struct {
    int       screenW, screenH;
    int       noticeVisible;                    // a modal box is up and owns the pad
    int       noticeIsConfirm;                  // X carries out the pending unsubscribe (else it just closes)
+   int       noticeInterrupted;                // (V3.0.0) the box asks about downloads that did not finish
+   int       interruptedChecked;               // ... asked (or found none) once this run
    int       noticePanelW;
    int       pendingReload;                    // a stale feed to reload on the next update, not on resume
    int       forYouAfterSignIn;                // For you was picked signed out: go there once the sign-in is done
@@ -159,6 +161,7 @@ static Label    chipLabels[TREND_COUNT];        // Trending's categories, render
 static Label    liveChipLabels[LIVE_COUNT];     // Live's, likewise
 static Label    noticeLabel;
 static UiHints  closeHints, confirmHints;       // the notice's answers: X Close, or X Unsubscribe / O Cancel
+static UiHints  interruptedHints;               // (V3.0.0) X Restart, Triangle Delete, O Later
 // Two hint rows, as on the Cinema start (Bild 1): X / Square / Triangle - what acts on the selected tile - at
 // the top right, everything else at the bottom right. At the Ember sizes the twelve no longer fit one line
 // inside the safe area.
@@ -741,6 +744,10 @@ static void initHome(void)
    uiInitHints(&confirmHints);
    uiAddHint(&confirmHints, GLYPH_CROSS,  "Unsubscribe");
    uiAddHint(&confirmHints, GLYPH_CIRCLE, "Cancel");
+   uiInitHints(&interruptedHints);
+   uiAddHint(&interruptedHints, GLYPH_CROSS,    "Restart");
+   uiAddHint(&interruptedHints, GLYPH_TRIANGLE, "Delete");
+   uiAddHint(&interruptedHints, GLYPH_CIRCLE,   "Later");
 
    home.pendingReload = 0;
 
@@ -878,6 +885,29 @@ static void updateHome(void)
 
    updateDownloadOverlay();
    if (oskInputActive()) return;
+
+   // (V3.0.0) once a run, at the first chance: downloads the last run did not finish - restart, delete, or ask later
+   if (!home.interruptedChecked && !home.noticeVisible) {
+      home.interruptedChecked = 1;
+      char title[160];
+      int count = findInterruptedDownloads(title, sizeof title);
+      if (count > 0) {
+         char message[320];
+         if (count == 1) snprintf(message, sizeof message, "The download of \"%s\" did not finish. Start it again "
+                                  "from the beginning, or delete it?", title);
+         else snprintf(message, sizeof message, "%d downloads did not finish (\"%s\" and %d more). Start them again from "
+                       "the beginning, or delete them?", count, title, count - 1);
+         showNotice(message);
+         home.noticeInterrupted = 1;
+      }
+   }
+
+   if (home.noticeVisible && home.noticeInterrupted) {   // its own answers (interruptedHints)
+      if (isPadButtonPressed(PAD_BTN_CROSS))         { home.noticeVisible = home.noticeInterrupted = 0; restartInterruptedDownloads(); }
+      else if (isPadButtonPressed(PAD_BTN_TRIANGLE)) { home.noticeVisible = home.noticeInterrupted = 0; deleteInterruptedDownloads(); }
+      else if (isPadButtonPressed(PAD_BTN_CIRCLE))   { home.noticeVisible = home.noticeInterrupted = 0; }   // asked again next start
+      return;
+   }
 
    if (home.noticeVisible) {   // modal: nothing underneath sees the pad until it is dismissed
       if (isPadButtonPressed(PAD_BTN_CROSS)) {
@@ -1029,7 +1059,7 @@ static void updateHome(void)
 static void drawNotice(void)
 {
    UiTextMetrics text = uiGetTextMetrics(noticeLabel.font, noticeLabel.size);
-   const UiHints *answers = home.noticeIsConfirm ? &confirmHints : &closeHints;
+   const UiHints *answers = home.noticeInterrupted ? &interruptedHints : home.noticeIsConfirm ? &confirmHints : &closeHints;
    int textTop      = NOTICE_PAD_TOP - text.capTop;                                     // panel-relative
    int lastBaseline = textTop + noticeLabel.tt.tex.h - text.texH + text.baseline;      // one pitch a line
    int answersTop   = lastBaseline + NOTICE_ANSWERS_DY;
@@ -1270,6 +1300,7 @@ static void termHome(void)
    freeLabel(&noticeLabel);
    uiTermHints(&closeHints);
    uiTermHints(&confirmHints);
+   uiTermHints(&interruptedHints);
    // no closeFont: the fonts are shared (ui-fonts.h), and closing one would blank every label that uses it
 }
 

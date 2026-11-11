@@ -140,6 +140,7 @@ cleanup:
 }
 
 static void runAppDownload(const QueueItem *item, const StreamInfo *info);   // below
+static void finishJob(const char *videoId);                                  // below
 
 static void runOneDownload(const QueueItem *item)
 {
@@ -169,7 +170,7 @@ static void runOneDownload(const QueueItem *item)
 
    if (rc != 0) { deleteFile(partPath); logInfo("[dl] %s %s\n", item->videoId, dl.cancelAll ? "cancelled" : "failed"); }
    else if (renamePath(partPath, finalPath) != 0) { deleteFile(partPath); logError("[dl] %s rename failed\n", item->videoId); }
-   else { logInfo("[dl] %s done\n", item->videoId); queueVideoExport(finalPath, item->title); }
+   else { logInfo("[dl] %s done\n", item->videoId); queueVideoExport(finalPath, item->title); finishJob(item->videoId); }
 }
 
 // ---- the app's own downloads (V3.0.0) ----
@@ -185,6 +186,32 @@ const char *getDownloadsDir(void)
 unsigned getDownloadsRevision(void) { return dl.revision; }
 
 static void folderOf(char *out, int cap, const char *videoId) { snprintf(out, cap, "%s/%s", getDownloadsDir(), videoId); }
+
+// ---- jobs: what was asked for and has not finished (V3.0.0) ----
+
+static void jobPath(char *out, int cap, const char *videoId) { snprintf(out, cap, "%s/%s/job.txt", getDownloadsDir(), videoId); }
+
+static void writeJob(const QueueItem *item)
+{
+   char folder[160], path[200], text[512];
+   folderOf(folder, sizeof folder, item->videoId);
+   makeDirPath(getDownloadsDir());
+   makeDirPath(folder);
+   jobPath(path, sizeof path, item->videoId);
+   int length = snprintf(text, sizeof text, "title=%s\nchannel=%s\nid=%s\nduration=%s\nquality=%d\n",
+                         item->title, item->author, item->videoId, item->duration, item->quality);
+   if (length > 0 && length < (int)sizeof text) writeFile(path, text, (uint64_t)length);
+}
+
+// done with: the job goes, and its folder too when nothing else is in it (an XMB download keeps no files here)
+static void finishJob(const char *videoId)
+{
+   char folder[160], path[200];
+   jobPath(path, sizeof path, videoId);
+   deleteFile(path);
+   folderOf(folder, sizeof folder, videoId);
+   removeDirPath(folder);   // fails, harmlessly, while a finished download's files are in it
+}
 
 // the best stream of the kind asked for: VP9 above 1080p (up to the 1440p TEE VP9 takes), or H.264 at 1080p and
 // below - the most lines first, then the most frames. NULL when the video has none.
@@ -305,6 +332,7 @@ static void runAppDownload(const QueueItem *item, const StreamInfo *info)
    }
    dl.percent = 100;
    dl.revision++;
+   finishJob(item->videoId);
    logInfo("[dl] %s done: %lld bytes\n", item->videoId, videoBytes + audioBytes);
 }
 
@@ -396,7 +424,7 @@ int deleteDownload(const char *videoId)
    if (!videoId || !videoId[0] || strchr(videoId, '/') || strstr(videoId, "..")) return -1;
    char folder[160], path[200];
    folderOf(folder, sizeof folder, videoId);
-   static const char *files[] = { "info.txt", "video.webm", "video.mp4", "audio.m4a", "video.webm.part",
+   static const char *files[] = { "info.txt", "job.txt", "video.webm", "video.mp4", "audio.m4a", "video.webm.part",
                                   "video.mp4.part", "audio.m4a.part" };
    for (unsigned i = 0; i < sizeof files / sizeof files[0]; i++) {
       snprintf(path, sizeof path, "%s/%s", folder, files[i]);
@@ -406,6 +434,107 @@ int deleteDownload(const char *videoId)
    dl.revision++;
    logInfo("[dl] %s deleted%s\n", videoId, rc == 0 ? "" : " (its folder stayed)");
    return rc;
+}
+
+// a folder's job, read back into a queue item: 0 when there is one
+static int readJob(const char *videoId, QueueItem *item)
+{
+   char path[200], text[768], value[16];
+   jobPath(path, sizeof path, videoId);
+   int length = readFile(path, text, sizeof text - 1);
+   if (length <= 0) return -1;
+   text[length] = 0;
+   memset(item, 0, sizeof *item);
+   strCopy(item->videoId, sizeof item->videoId, videoId);
+   infoValue(text, "title", item->title, sizeof item->title);
+   infoValue(text, "channel", item->author, sizeof item->author);
+   infoValue(text, "duration", item->duration, sizeof item->duration);
+   infoValue(text, "quality", value, sizeof value);
+   item->quality = atoi(value);
+   if (item->quality < 0 || item->quality >= DOWNLOAD_QUALITY_COUNT) item->quality = DOWNLOAD_XMB;
+   if (!item->title[0]) strCopy(item->title, sizeof item->title, videoId);
+   return 0;
+}
+
+// the folders that hold a job, as their video ids (at most `cap`); a job beside a complete info.txt only outlived
+// its download by a moment and is dropped on the spot
+static int collectJobs(char ids[][16], int cap)
+{
+   VfsDir dir;
+   if (openDir(getDownloadsDir(), &dir) != 0) return 0;
+   char name[64];
+   VfsEntryType type;
+   int count = 0;
+   while (count < cap && readDir(&dir, name, sizeof name, &type) == 1) {
+      if (type != VFS_ENTRY_DIR || name[0] == '.' || strlen(name) >= 16) continue;
+      char path[200];
+      jobPath(path, sizeof path, name);
+      if (!fileExists(path)) continue;
+      DownloadInfo info;
+      if (readDownloadInfo(name, &info) == 0) { deleteFile(path); continue; }
+      strCopy(ids[count], 16, name);
+      count++;
+   }
+   closeDir(&dir);
+   return count;
+}
+
+int findInterruptedDownloads(char *firstTitle, int titleCap)
+{
+   char ids[MAX_QUEUE][16];
+   int count = collectJobs(ids, MAX_QUEUE);
+   if (firstTitle && titleCap > 0) {
+      firstTitle[0] = 0;
+      QueueItem item;
+      if (count > 0 && readJob(ids[0], &item) == 0) strCopy(firstTitle, titleCap, item.title);
+   }
+   if (count) logInfo("[dl] %d download(s) did not finish\n", count);
+   return count;
+}
+
+// what a cut-short download left: its half-written files here, and an XMB one's .part in the export's staging folder
+static void dropPartials(const char *videoId)
+{
+   char folder[160], path[220];
+   folderOf(folder, sizeof folder, videoId);
+   static const char *files[] = { "video.webm.part", "video.mp4.part", "audio.m4a.part", "video.webm", "video.mp4",
+                                  "audio.m4a" };
+   for (unsigned i = 0; i < sizeof files / sizeof files[0]; i++) {
+      snprintf(path, sizeof path, "%s/%s", folder, files[i]);
+      deleteFile(path);
+   }
+   snprintf(path, sizeof path, "%s/%s.mp4.part", getVideoStagingDir(), videoId);
+   deleteFile(path);
+}
+
+void restartInterruptedDownloads(void)
+{
+   char ids[MAX_QUEUE][16];
+   int count = collectJobs(ids, MAX_QUEUE);
+   for (int i = 0; i < count; i++) {
+      QueueItem job;
+      if (readJob(ids[i], &job) != 0) continue;
+      dropPartials(ids[i]);
+      SearchResult item;
+      memset(&item, 0, sizeof item);
+      strCopy(item.videoId, sizeof item.videoId, job.videoId);
+      strCopy(item.title, sizeof item.title, job.title);
+      strCopy(item.author, sizeof item.author, job.author);
+      strCopy(item.duration, sizeof item.duration, job.duration);
+      enqueueDownloadAs(&item, (DownloadQuality)job.quality);   // writes the job again
+      logInfo("[dl] %s queued again\n", ids[i]);
+   }
+}
+
+void deleteInterruptedDownloads(void)
+{
+   char ids[MAX_QUEUE][16];
+   int count = collectJobs(ids, MAX_QUEUE);
+   for (int i = 0; i < count; i++) {
+      dropPartials(ids[i]);
+      finishJob(ids[i]);
+      logInfo("[dl] %s: the unfinished download was deleted\n", ids[i]);
+   }
 }
 
 // ---- worker + queue ----
@@ -459,6 +588,7 @@ void enqueueDownloadAs(const SearchResult *item, DownloadQuality quality)
          strCopy(dl.queue[dl.count].author,  sizeof dl.queue[dl.count].author,  item->author);
          strCopy(dl.queue[dl.count].duration, sizeof dl.queue[dl.count].duration, item->duration);
          dl.queue[dl.count].quality = (int)quality;
+         writeJob(&dl.queue[dl.count]);   // from now until it is done (findInterruptedDownloads)
          dl.count++;
          if (!dl.workerSpawned) { dl.workerSpawned = 1; spawn = 1; }
       }

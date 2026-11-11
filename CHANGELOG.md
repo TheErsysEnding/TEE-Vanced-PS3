@@ -34,6 +34,10 @@ SPEs alone (no RSX prediction yet - that will be the RSX test builds). Played in
   lists them newest first with resolution, fps, codec, size and date, X plays them from disk (TEE VP9 / TEE
   Decoder), Triangle deletes them. The running download shows on the rail's Downloads entry. A 1440p download
   plays without sound until VP9 has sound.
+- **Test 7 Blue**: a download that did not finish - a power cut, a crash, leaving the app, or still waiting in
+  the queue - is found at the next start: one question, X starts it (or them) again from the beginning in the
+  form asked for, Triangle deletes what it left, O asks again next time. Each download keeps a job.txt from the
+  moment it is queued until it is done.
 - **One package for every console.** The EBOOT is signed as an NPDRM SELF (as the HEN package of v2.0.0 was), so
   the same package installs on PS3HEN and on CFW/DEX. On CFW/DEX the data folder then becomes /dev_hdd0/tee-vanced;
   the files of the old one are copied over once.
