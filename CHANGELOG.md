@@ -3,6 +3,20 @@
 Every release listed here was installed and used on a real PS3 (EVILNAT 4.92 DEX)
 before it was tagged. Anything that had not been is said so plainly.
 
+## v3.0.0 — not released yet
+
+**V3.0.0 Test 1 SPE** (71-0fe8150, 2026-11-11): 1440p on the TEE VP9 building block 0.1.0, the picture on the
+SPEs alone (no RSX prediction yet - that will be the RSX test builds). Played in RPCS3, not yet on a console.
+
+- **1440p VP9.** YouTube's 1440p (VP9 in WebM, itag 308 at 60 fps, 271 at 30) plays on TEE's own VP9 decoder on
+  all 6 SPEs, scaled to 1080p by the RSX. It is picked in START > Quality ("1440p60 VP9"); Auto stays on H.264,
+  and so do downloads. If the decoder does not open, the best H.264 plays instead.
+- **No sound at 1440p** in this test: the decoder needs all 6 SPEs and Sony's sound decoder a 7th.
+  settings.txt vp9-spes=5 gives the decoder 1 + 4 SPEs and keeps the sound, at 50 - 63 pictures a second.
+- **One package for every console.** The EBOOT is signed as an NPDRM SELF (as the HEN package of v2.0.0 was), so
+  the same package installs on PS3HEN and on CFW/DEX. On CFW/DEX the data folder then becomes /dev_hdd0/tee-vanced;
+  the files of the old one are copied over once.
+
 ## v2.0.0 — 2026-11-07
 
 Installed and used on TEE's console (EVILNAT 4.92 DEX) through twelve test
