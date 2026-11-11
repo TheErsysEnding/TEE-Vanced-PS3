@@ -17,6 +17,10 @@ SPEs alone (no RSX prediction yet - that will be the RSX test builds). Played in
   40 pictures a second - the download ran only 2 MB ahead, and the thread that read the network also handed the
   pictures to the screen. Now the VP9 input has a thread of its own, and the decoder holds up to 20 MB of it
   (about 4 s at that rate).
+- **Test 3 Blue** (76-105db65): the black-and-orange look is gone - ice blue (#38BDF8) on a deep blue-black,
+  dark as before. An older themes.txt is kept as themes.txt.bak and replaced once. The XMB tile and background
+  are blue too and say 1440p 60 FPS SUPPORT and TEE DECODER. SponsorBlock's intro is coral now (cyan was too
+  close to the new accent).
 - **One package for every console.** The EBOOT is signed as an NPDRM SELF (as the HEN package of v2.0.0 was), so
   the same package installs on PS3HEN and on CFW/DEX. On CFW/DEX the data folder then becomes /dev_hdd0/tee-vanced;
   the files of the old one are copied over once.
