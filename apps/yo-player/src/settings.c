@@ -44,6 +44,7 @@ static SponsorblockMode sponsorblockMode = SPONSORBLOCK_ADS;
 static VideoDecoderSetting videoDecoder = VIDEO_DECODER_AUTO;
 static int teeDecoderSpes = 4;
 static int vp9Spes = 6;
+static int downloadQuality = 0;   // download-quality=: the R3 page's last choice (downloads.h DownloadQuality)
 static int qualityCap = 0;   // quality=: the highest video height to play, 0 = auto
 
 // ---- content region ----
@@ -191,6 +192,12 @@ void loadSettings(void)
       else if (settingValueEquals(spes, "5")) teeDecoderSpes = 5;
       else logWarn("[settings] tee-decoder-spes takes 4 or 5, using 4\n");
    }
+   const char *dlq = findSettingValue(text, "download-quality");
+   if (dlq) {
+      if      (settingValueEquals(dlq, "1440")) downloadQuality = 0;
+      else if (settingValueEquals(dlq, "1080")) downloadQuality = 1;
+      else if (settingValueEquals(dlq, "xmb"))  downloadQuality = 2;
+   }
    const char *vp9 = findSettingValue(text, "vp9-spes");
    if (vp9) {
       if      (settingValueEquals(vp9, "6")) vp9Spes = 6;
@@ -311,3 +318,14 @@ SponsorblockMode getSponsorblockMode(void) { return sponsorblockMode; }
 VideoDecoderSetting getVideoDecoderSetting(void) { return videoDecoder; }
 int getTeeDecoderSpes(void) { return teeDecoderSpes; }
 int getVp9Spes(void) { return vp9Spes; }
+
+int getDownloadQuality(void) { return downloadQuality; }
+
+int setDownloadQuality(int quality)
+{
+   static const char *values[3] = { "1440", "1080", "xmb" };
+   if (quality < 0 || quality > 2) return -1;
+   if (quality == downloadQuality) return 0;
+   downloadQuality = quality;
+   return saveSetting("download-quality", values[quality]);
+}

@@ -14,6 +14,7 @@
 #include "screens/account-screen.h"   // Login in the rail while signed out: the sign-in
 #include "screens/account-page.h"     // Account in the rail while signed in: the account's page
 #include "downloads.h"
+#include "screens/download-choice.h"   // R3: in which form to download
 #include "ps-button.h"
 #include "ui/console-glyphs.h"
 #include "ui-fonts.h"           // the shared fonts, label helpers, text metrics
@@ -114,6 +115,12 @@ static int isLiveCategory(int category)
 {
    return category >= HOME_LIVE_FIRST && category < HOME_LIVE_FIRST + LIVE_COUNT;
 }
+
+// (V3.0.0) the app's own downloads (downloads.h): read from disk every time, so never cached, and outside the
+// L1/R1 ring - the rail leads there
+#define HOME_DOWNLOADS   (HOME_LIVE_FIRST + LIVE_COUNT)
+static unsigned downloadsRevisionSeen;
+static char     pendingDeleteId[16];   // the download the notice asks about
 
 // each category's fully-loaded results, so returning to a tab skips the feed fetch (thumbnails still refetch).
 static SearchResults categoryCache[HOME_CAT_COUNT];
@@ -281,6 +288,7 @@ static int homeFetch(const char *token, SearchResults *out, void *user)
    if (category == HOME_SUBS)
       return signedIn ? fetchAccountSubscriptionChannels(token, out) : fetchSubscriptionChannels(out);
    if (category == HOME_CONTINUE)   return getContinueWatching(out) > 0 ? 0 : -1;
+   if (category == HOME_DOWNLOADS)  return listDownloads(out) > 0 ? 0 : -1;
    if (category == HOME_WATCHLATER)
       return signedIn ? getAccountFeed(ACCOUNT_FEED_WATCH_LATER, token, out) : getWatchLater(out) > 0 ? 0 : -1;
    if (category == HOME_HISTORY)
@@ -417,17 +425,19 @@ static void setHeading(void)
    else if (home.category == HOME_CONTINUE)   snprintf(heading, sizeof heading, "Continue watching");
    else if (home.category == HOME_WATCHLATER) snprintf(heading, sizeof heading, "Watch Later");
    else if (home.category == HOME_HISTORY)    snprintf(heading, sizeof heading, "History");
+   else if (home.category == HOME_DOWNLOADS)  snprintf(heading, sizeof heading, "Downloads");
    else if (home.category == HOME_PLAYLIST)
       snprintf(heading, sizeof heading, "%s", playlistIsAccount ? accountPlaylistTitle : getPlaylistName(openPlaylist));
    else if (isLiveCategory(home.category))    snprintf(heading, sizeof heading, "Live");       // the category: a chip
    else                                       snprintf(heading, sizeof heading, "Trending");   // the category: a chip
    uiSetHintCaption(&hintsTop, CROSS_HINT,    subsAreChannels() ? "Open channel" : "Play");
-   uiSetHintCaption(&hintsTop, TRIANGLE_HINT, subsAreChannels() ? "Unsubscribe"  : "Channel");
+   uiSetHintCaption(&hintsTop, TRIANGLE_HINT, subsAreChannels() ? "Unsubscribe"  :
+                                              home.category == HOME_DOWNLOADS ? "Delete" : "Channel");
    // YouTube's For you tiles name no channel (no id anywhere in them), so Triangle has nothing to open there
    uiSetHintShown(&hintsTop, TRIANGLE_HINT, home.category != HOME_FORYOU);
    // A live stream cannot be downloaded, and a Live page holds nothing else: R3 does nothing there (updateHome),
    // so it has no hint either. The bottom row only gets narrower for it.
-   uiSetHintShown(&hintsBottom, R3_HINT, !isLiveCategory(home.category));
+   uiSetHintShown(&hintsBottom, R3_HINT, !isLiveCategory(home.category) && home.category != HOME_DOWNLOADS);
    fitTitleWidth();   // after the captions: the row's new width decides how far the title may run
    // on the playlist tab the heading is the playlist's name - the user's text, so raw and checked for Manrope
    uiSetTextLabel(&titleLabel, UI_PAGE_TITLE_WEIGHT, heading);
@@ -439,6 +449,11 @@ static void loadCategory(void)
    setHeading();
    if (isLiveCategory(home.category)) {   // never cached: what is on air changes by the minute
       home.liveLoadedUs = sys_time_get_system_time();
+      setGridSource(&home.grid, homeFetch, NULL);
+      return;
+   }
+   if (home.category == HOME_DOWNLOADS) {   // never cached: it is on disk, and changes as downloads land
+      downloadsRevisionSeen = getDownloadsRevision();
       setGridSource(&home.grid, homeFetch, NULL);
       return;
    }
@@ -458,6 +473,7 @@ static SidebarItem itemForCategory(int category)
    if (category == HOME_WATCHLATER) return SIDE_LATER;
    if (category == HOME_HISTORY)    return SIDE_HISTORY;
    if (category == HOME_PLAYLIST)   return SIDE_PLAYLISTS;
+   if (category == HOME_DOWNLOADS)  return SIDE_DOWNLOADS;
    return SIDE_TRENDING;
 }
 
@@ -472,6 +488,7 @@ static int categoryForItem(SidebarItem item)
    case SIDE_CONTINUE: return HOME_CONTINUE;
    case SIDE_LATER:    return HOME_WATCHLATER;
    case SIDE_HISTORY:  return HOME_HISTORY;
+   case SIDE_DOWNLOADS: return HOME_DOWNLOADS;
    default:            return -1;
    }
 }
@@ -483,7 +500,7 @@ static int categoryForItem(SidebarItem item)
 // Trending list came back on the next visit.
 static void cacheCurrent(void)
 {
-   if (isLiveCategory(home.category) || home.pendingReload) return;
+   if (isLiveCategory(home.category) || home.category == HOME_DOWNLOADS || home.pendingReload) return;
    if (gridStage(&home.grid) != GRID_READY || gridBusy(&home.grid)) return;   // don't copy mid-append
    categoryCache[home.category] = *gridResults(&home.grid);
    categoryCached[home.category] = 1;
@@ -525,6 +542,7 @@ static void askUnsubscribe(const SearchResult *item)
    char name[CHANNEL_NAME_LEN], message[256];
    snprintf(message, sizeof message, "Unsubscribe from %s?", pendingChannelName(name, (int)sizeof name));
    uiSetTextLabel(&noticeLabel, UI_BODY_WEIGHT, message);
+   uiSetHintCaption(&confirmHints, 0, "Unsubscribe");   // (the same box asks about a download: "Delete")
    home.noticeIsConfirm = 1;   // answered by confirmHints
    home.noticeVisible   = 1;
 }
@@ -626,9 +644,11 @@ static void switchCategory(int delta)
    cacheCurrent();
    if (isLiveCategory(home.category))
       home.category = HOME_LIVE_FIRST + (home.category - HOME_LIVE_FIRST + delta + LIVE_COUNT) % LIVE_COUNT;
-   else
+   else {
+      if (home.category >= HOME_CAT_COUNT) home.category = delta > 0 ? HOME_CAT_COUNT - 1 : 0;   // Downloads
       do home.category = (home.category + delta + HOME_CAT_COUNT) % HOME_CAT_COUNT;
       while (home.category == HOME_FORYOU && !isAccountSignedIn());   // nothing to show there signed out
+   }
    loadCategory();
 }
 
@@ -863,10 +883,20 @@ static void updateHome(void)
       if (isPadButtonPressed(PAD_BTN_CROSS)) {
          home.noticeVisible = 0;
          // clear the flag BEFORE acting - the unsubscribe may put an error box up in its place
-         if (home.noticeIsConfirm) { home.noticeIsConfirm = 0; unsubscribeConfirmed(); }
+         if (home.noticeIsConfirm) {
+            home.noticeIsConfirm = 0;
+            if (pendingDeleteId[0]) {   // (V3.0.0) a download, not a channel
+               deleteDownload(pendingDeleteId);
+               pendingDeleteId[0] = 0;
+               downloadsRevisionSeen = getDownloadsRevision();
+               if (home.category == HOME_DOWNLOADS) loadCategory();
+            } else {
+               unsubscribeConfirmed();
+            }
+         }
          return;
       }
-      if (isPadButtonPressed(PAD_BTN_CIRCLE)) { home.noticeVisible = 0; home.noticeIsConfirm = 0; }
+      if (isPadButtonPressed(PAD_BTN_CIRCLE)) { home.noticeVisible = 0; home.noticeIsConfirm = 0; pendingDeleteId[0] = 0; }
       return;
    }
 
@@ -924,8 +954,32 @@ static void updateHome(void)
       if (home.category == HOME_PLAYLIST)   playlistRevisionSeen = getPlaylistsRevision();
    }
 
+   if (home.category == HOME_DOWNLOADS && getDownloadsRevision() != downloadsRevisionSeen && !gridBusy(&home.grid)) {
+      loadCategory();   // a download landed (or went) while the page was up
+      return;
+   }
+
    const SearchResult *selected = gridSelected(&home.grid);
    if (!selected) return;
+   if (home.category == HOME_DOWNLOADS) {   // (V3.0.0) X plays it from disk, Triangle deletes it
+      if (isPadButtonPressed(PAD_BTN_TRIANGLE)) {
+         char message[256];
+         snprintf(message, sizeof message, "Delete the download \"%s\" from the console?", selected->title);
+         strCopy(pendingDeleteId, sizeof pendingDeleteId, selected->videoId);
+         showNotice(message);
+         uiSetHintCaption(&confirmHints, 0, "Delete");
+         home.noticeIsConfirm = 1;
+         return;
+      }
+      if (isPadButtonPressed(PAD_BTN_CROSS)) {
+         char input[48];
+         snprintf(input, sizeof input, "%s%s", LOCAL_INPUT_PREFIX, selected->videoId);
+         stopVideoGrid(&home.grid);
+         playVideo(input);
+         return;
+      }
+      if (isPadButtonPressed(PAD_BTN_R3)) return;   // already downloaded
+   }
    if (isPadButtonPressed(PAD_BTN_SQUARE)) {
       if (isAccountSignedIn()) {   // the account's Watch Later: the tag flips at once, YouTube is told on a worker
          int inList = isInAccountWatchLater(selected->videoId);
@@ -945,7 +999,7 @@ static void updateHome(void)
    }
    // live can't be downloaded: on a Live page R3 does nothing at all (its hint is hidden there, setHeading)
    if (isPadButtonPressed(PAD_BTN_R3)) {
-      if (!isLiveCategory(home.category) && !selected->isLive) enqueueDownload(selected);
+      if (!isLiveCategory(home.category) && !selected->isLive) openDownloadChoice(selected);
       return;
    }
    // L3 came free when the grid layout did. Filing a video is the thing you want a direct button for -
@@ -1079,7 +1133,8 @@ static void drawHome(void)
       drawVideoGrid(&home.grid);
    } else {
       // where the cards will be, clear of the collapsed rail; under the panel while the menu is open
-      setLabelText(&statusLabel, gridStage(&home.grid) == GRID_EMPTY ? "No results" : "Loading...");
+      setLabelText(&statusLabel, gridStage(&home.grid) != GRID_EMPTY ? "Loading..." : home.category == HOME_DOWNLOADS
+                                 ? "No downloads yet - R3 on any video downloads it." : "No results");
       uiDrawLabelAt(&statusLabel, CONTENT_X, uiLabelYForBaseline(&statusLabel, STATUS_BASELINE));
    }
    drawHeader();

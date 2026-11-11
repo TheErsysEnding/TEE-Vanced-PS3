@@ -22,6 +22,9 @@ VideoDecoderSetting getVideoDecoderSetting(void);
 int getTeeDecoderSpes(void);
 // settings.txt vp9-spes=6|5: the TEE VP9 building block's SPEs for 1440p - 6 (2 + 4, no sound) or 5 (1 + 4, sound)
 int getVp9Spes(void);
+// settings.txt download-quality=1440|1080|xmb: the R3 page's last choice (0, 1, 2 - downloads.h DownloadQuality)
+int getDownloadQuality(void);
+int setDownloadQuality(int quality);
 
 // settings.txt quality=auto|<height>: the highest video height to play (0 = auto, the best that plays smoothly).
 // setQualityCap changes it and saves it (0 saved, -1 not saved - the cap still applies for this run).

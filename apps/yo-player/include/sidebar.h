@@ -36,6 +36,7 @@ typedef enum {
    SIDE_PLAYLISTS,
    SIDE_LATER,
    SIDE_HISTORY,
+   SIDE_DOWNLOADS,   // (V3.0.0) the app's own downloads; the running download shows on this entry
    SIDE_ACCOUNT,
    SIDE_SETTINGS,
    SIDE_COUNT

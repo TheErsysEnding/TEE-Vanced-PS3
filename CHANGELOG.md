@@ -28,6 +28,12 @@ SPEs alone (no RSX prediction yet - that will be the RSX test builds). Played in
 - **Test 5 Blue**: a download shows in the rail - the arrow, its place in the batch ("1/10") and a white bar
   that fills green; the open rail says "Downloading 45%" beside it. (Home's old chip bottom right is gone: it
   lay over the cards.) A finished download is handed to the XMB's Video column as before (checked in RPCS3).
+- **Test 6 Blue**: R3 asks in which form to download - 1440p60 VP9 or 1080p60 H.264 for the app's own new
+  Downloads page (rail entry "Downloads"), or the MP4 for the XMB as before; the last choice is kept. Those two
+  are stored as YouTube serves them (video + AAC, no remux) in tee-vanced/downloads with an info.txt; the page
+  lists them newest first with resolution, fps, codec, size and date, X plays them from disk (TEE VP9 / TEE
+  Decoder), Triangle deletes them. The running download shows on the rail's Downloads entry. A 1440p download
+  plays without sound until VP9 has sound.
 - **One package for every console.** The EBOOT is signed as an NPDRM SELF (as the HEN package of v2.0.0 was), so
   the same package installs on PS3HEN and on CFW/DEX. On CFW/DEX the data folder then becomes /dev_hdd0/tee-vanced;
   the files of the old one are copied over once.

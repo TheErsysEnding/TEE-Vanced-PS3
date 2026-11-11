@@ -10,6 +10,7 @@
 
 #include "screens/search.h"
 #include "screens/search-input.h"
+#include "screens/download-choice.h"   // R3: in which form to download
 #include "screens/playlist-screen.h"
 #include "screens/play.h"
 #include "screens/home.h"       // the rail over this screen (updateRailOverScreen)
@@ -568,7 +569,7 @@ static void updateSearch(void)
       else toggleWatchLater(selected);
       return;
    }
-   if (isPadButtonPressed(PAD_BTN_R3)) { if (!selected->isLive) enqueueDownload(selected); return; }
+   if (isPadButtonPressed(PAD_BTN_R3)) { if (!selected->isLive) openDownloadChoice(selected); return; }
    if (isPadButtonPressed(PAD_BTN_L3)) { openPlaylistChooser(selected); return; }   // L3 came free with the grid layout   // live can't be downloaded
    if (isPadButtonPressed(PAD_BTN_TRIANGLE)) { enterChannel(selected); return; }   // channel mode handled above
    if (isPadButtonPressed(PAD_BTN_CROSS)) {

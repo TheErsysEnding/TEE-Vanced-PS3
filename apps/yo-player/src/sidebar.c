@@ -50,17 +50,17 @@
 // used to do in the draw path on every move of the highlight.
 #define TEXT_TINTABLE 0xFFFFFFFFu
 
-// (V3.0.0) the download indicator, in the gap between History and the account entry: the arrow, "1/10" (the
-// running download's place in the batch) and its progress - a white bar that fills green
-#define DL_ICON_TOP    808
-#define DL_ICON_SIZE   26
-#define DL_COUNT_MID   848        // the count's capitals centred here
-#define DL_COUNT_SIZE  18         // 18/800
-#define DL_BAR_Y       866
+// (V3.0.0) while a download runs, the Downloads entry shows it in its own slot: the arrow moved up, "1/10" (the
+// running download's place in the batch) under it and its progress - a white bar that fills green - at the foot
+#define DL_ICON_DY     2          // the arrow's top, from the slot's
+#define DL_ICON_SIZE   24
+#define DL_COUNT_DY    40         // the count's capitals centred this far down the slot
+#define DL_COUNT_SIZE  17         // 17/800
+#define DL_BAR_DY      56
 #define DL_BAR_H       6
 #define DL_BAR_TRACK   0xFFF0F7FBu
 #define DL_BAR_FILL    0xFF22C55Eu
-#define DL_TEXT_SIZE   22         // expanded: "Downloading 45 %" beside it
+#define DL_TEXT_SIZE   20         // expanded: "1/10 · 45%" after the name
 
 // Four of the eleven have an exact glyph in the embedded set (search, clock, history, cog). The other seven
 // have none - there is no home, play, trending, broadcast, subscription, playlist or person symbol in it - so they
@@ -78,13 +78,14 @@ static const IconId ITEM_ICONS[SIDE_COUNT] = {
    ICON_DOCS,        // Playlists
    ICON_CLOCK,       // Watch Later
    ICON_HISTORY,     // History
+   ICON_DOWNLOAD,    // Downloads
    ICON_LOCK,        // Login (signed in: accountIcon, the open lock)
    ICON_COG,         // Settings
 };
 
 static const char *ITEM_NAMES[SIDE_COUNT] = {
    "Search", "For you", "Trending", "Live", "Subscriptions", "Continue watching",
-   "Playlists", "Watch Later", "History", "Login", "Settings",
+   "Playlists", "Watch Later", "History", "Downloads", "Login", "Settings",
 };
 
 static Icon  icons[SIDE_COUNT];
@@ -94,6 +95,7 @@ static Label accountLabel;     // ... and "Account"
 static Label logoLabel, wordmarkLabel;
 static Icon  dlIcon;
 static Label dlCountLabel, dlTextLabel;
+static char  dlCountText[32];   // what dlCountLabel shows
 static int   current = SIDE_SUBS;   // what the content is showing
 static int   picked  = SIDE_SUBS;   // where the highlight sits while focused
 static int   focused;
@@ -218,35 +220,32 @@ static void drawLogo(int expanded)
 
 // The collapsed rail: no surface of its own, just the logo and the icons on the page background, with
 // `active` on its accent-soft square in the accent colour and the others at 62 % of text-1.
-// the download indicator (both states): nothing while no download runs or waits
-static void drawDownloadStatus(int expanded)
+// The Downloads entry's icon while a download runs or waits (both states): the arrow, the count and the bar in
+// its slot. 0 when nothing downloads (the entry then draws its icon as any other).
+static int drawDownloadStatus(int slotTop, uint32_t color, int *percentOut)
 {
    int index, total, percent;
-   if (!getDownloadStatus(&index, &total, &percent)) return;
-   char text[32];
-   snprintf(text, sizeof text, "%d/%d", index, total);
-   setLabelText(&dlCountLabel, text);   // rasterises only when the text changes
-   if (dlIcon.tex && dlIcon.tex->h > 0) drawIconCentered(&dlIcon, ICON_CENTER_X, DL_ICON_TOP - dlIcon.offsetY, activeTheme->accent);
+   if (!getDownloadStatus(&index, &total, &percent)) return 0;
+   snprintf(dlCountText, sizeof dlCountText, "%d/%d", index, total);
+   setLabelText(&dlCountLabel, dlCountText);   // rasterises only when the text changes
+   if (dlIcon.tex && dlIcon.tex->h > 0) drawIconCentered(&dlIcon, ICON_CENTER_X, slotTop + DL_ICON_DY - dlIcon.offsetY, color);
    drawTinted(&dlCountLabel, ICON_CENTER_X - dlCountLabel.tt.tex.w / 2,
-              uiLabelYForCenter(&dlCountLabel, DL_COUNT_MID - 11, 22), activeTheme->textPrimary);
-   uiDrawProgressBar(SLOT_X + 6, DL_BAR_Y, SLOT_SIZE - 12, DL_BAR_H, (float)percent / 100.0f, DL_BAR_TRACK, DL_BAR_FILL,
-                     DL_BAR_H / 2);
-   if (expanded) {
-      snprintf(text, sizeof text, "Downloading %d%%", percent);
-      setLabelText(&dlTextLabel, text);
-      drawTinted(&dlTextLabel, LABEL_X, uiLabelYForCenter(&dlTextLabel, DL_ICON_TOP, DL_BAR_Y + DL_BAR_H - DL_ICON_TOP),
-                 activeTheme->textPrimary);
-   }
+              uiLabelYForCenter(&dlCountLabel, slotTop + DL_COUNT_DY - 10, 20), activeTheme->textPrimary);
+   uiDrawProgressBar(SLOT_X + 8, slotTop + DL_BAR_DY, SLOT_SIZE - 16, DL_BAR_H, (float)percent / 100.0f, DL_BAR_TRACK,
+                     DL_BAR_FILL, DL_BAR_H / 2);
+   if (percentOut) *percentOut = percent;
+   return 1;
 }
 
 static void drawCollapsed(int screenH, int active)
 {
    drawLogo(0);
-   drawDownloadStatus(0);
    for (int i = 0; i < SIDE_COUNT; i++) {
       int y = slotY(i, screenH);
       if (i == active) uiFillRounded(SLOT_X, y, SLOT_SIZE, SLOT_SIZE, SLOT_RADIUS, activeTheme->accentSoft);
-      drawEntryIcon(i, y, i == active ? activeTheme->accent : uiWithAlpha(activeTheme->textPrimary, ICON_REST_ALPHA));
+      uint32_t color = i == active ? activeTheme->accent : uiWithAlpha(activeTheme->textPrimary, ICON_REST_ALPHA);
+      if (i == SIDE_DOWNLOADS && drawDownloadStatus(y, activeTheme->accent, NULL)) continue;
+      drawEntryIcon(i, y, color);
    }
 }
 
@@ -259,7 +258,6 @@ static void drawExpanded(int screenH)
    uiFillRect(0, 0, panelWidth, screenH, activeTheme->surface1);
    uiFillRect(panelWidth - EDGE_W, 0, EDGE_W, screenH, activeTheme->hairline);
    drawLogo(1);
-   drawDownloadStatus(1);
 
    for (int i = 0; i < SIDE_COUNT; i++) {
       int y = slotY(i, screenH);
@@ -269,9 +267,18 @@ static void drawExpanded(int screenH)
       uint32_t iconColor = (isPicked || isCurrent) ? activeTheme->accent : activeTheme->textSecondary;
       uint32_t nameColor = isPicked ? activeTheme->accentText : isCurrent ? activeTheme->textPrimary : activeTheme->textSecondary;
       if (!isSidebarItemEnabled((SidebarItem)i)) nameColor = uiWithAlpha(nameColor, DISABLED_ALPHA);
-      drawEntryIcon(i, y, iconColor);
+      int percent = 0;
+      int downloading = i == SIDE_DOWNLOADS && drawDownloadStatus(y, activeTheme->accent, &percent);
+      if (!downloading) drawEntryIcon(i, y, iconColor);
       const Label *name = entryLabel(i);
       drawTinted(name, LABEL_X, uiLabelYForCenter(name, y, SLOT_SIZE), nameColor);
+      if (downloading) {   // "Downloads  1/10 · 45%"
+         char text[40];
+         snprintf(text, sizeof text, "%s \xC2\xB7 %d%%", dlCountText, percent);
+         setLabelText(&dlTextLabel, text);
+         drawTinted(&dlTextLabel, LABEL_X + name->tt.tex.w + 14, uiLabelYForCenter(&dlTextLabel, y, SLOT_SIZE),
+                    activeTheme->textSecondary);
+      }
    }
 }
 

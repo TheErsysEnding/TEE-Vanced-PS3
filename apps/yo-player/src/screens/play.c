@@ -12,6 +12,7 @@
 #include "screens/play.h"
 #include "extractor.h"
 #include "stream-select.h"   // pickBestVideo / pickBestAudio (shared with download)
+#include "downloads.h"       // LOCAL_INPUT_PREFIX: a download plays from disk
 
 #include "gfx.h"
 #include "theme.h"              // every colour, the letterbox's included
@@ -540,7 +541,14 @@ static void worker(uint64_t arg)
    setVideoVp9Spes(getVp9Spes());
    int teeUsable = isH264TeeUsable();
    // the best playable format, up to the viewer's quality cap (settings quality=, START > Quality)
-   const StreamFormat *video = pickVideoForPlayback(info, teeUsable, getQualityCap());
+   // (V3.0.0) a download (extractors/local.c) holds exactly the stream it was downloaded as - VP9 too, whatever
+   // the quality cap says
+   const StreamFormat *video = NULL;
+   if (strncmp(requestedInput, LOCAL_INPUT_PREFIX, strlen(LOCAL_INPUT_PREFIX)) == 0) {
+      for (int i = 0; i < info->formatCount && !video; i++) if (info->formats[i].hasVideo) video = &info->formats[i];
+   } else {
+      video = pickVideoForPlayback(info, teeUsable, getQualityCap());
+   }
    if (!video) { fail("no playable mp4 video"); goto done; }
 
    // a live stream's segment line: the edge the resolve just saw (every format has the same numbers), the
