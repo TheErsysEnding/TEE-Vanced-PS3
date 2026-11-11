@@ -38,6 +38,11 @@ SPEs alone (no RSX prediction yet - that will be the RSX test builds). Played in
   the queue - is found at the next start: one question, X starts it (or them) again from the beginning in the
   form asked for, Triangle deletes what it left, O asks again next time. Each download keeps a job.txt from the
   moment it is queued until it is done.
+- **Test 8 Blue**: downloads go to the app's gallery unless the XMB is picked for one - the R3 page never keeps
+  the XMB as its choice, and picking it shows a warning first (the system takes the file: TEE Vanced does not list
+  or play it afterwards). On the Downloads page, Square moves a video into the XMB after the same warning: a
+  30 fps or 720p H.264 copy is remuxed as it is, a 1440p or 1080p60 one is fetched again as the XMB's MP4; the
+  app's copy goes once the XMB has it.
 - **One package for every console.** The EBOOT is signed as an NPDRM SELF (as the HEN package of v2.0.0 was), so
   the same package installs on PS3HEN and on CFW/DEX. On CFW/DEX the data folder then becomes /dev_hdd0/tee-vanced;
   the files of the old one are copied over once.

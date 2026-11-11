@@ -53,6 +53,12 @@ int  findInterruptedDownloads(char *firstTitle, int titleCap);
 void restartInterruptedDownloads(void);   // queue each one again (from the start, in the form it was asked for)
 void deleteInterruptedDownloads(void);    // throw them away, half-written files and all
 
+// (V3.0.0) a download of the app's own moved into the XMB's Video column: its H.264 streams remuxed into one MP4
+// where the XMB's player keeps up with them (30 fps, or 720p and below), else the XMB's MP4 downloaded afresh
+// (VP9 and 1080p60 do not play there). Once the XMB has it, the app's copy is deleted - the app does not see what the
+// system took. 0 when it was queued.
+int  moveDownloadToXmb(const char *videoId);
+
 void updateDownloadOverlay(void);         // refresh the "Downloading ..." label; call each frame in a screen update
 // draws it bottom-right, above the hint row (UI_HINTS_BOTTOM_Y), if a download is active; call in a screen draw
 void drawDownloadOverlay(int screenWidth);

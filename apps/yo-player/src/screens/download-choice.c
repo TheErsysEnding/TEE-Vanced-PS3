@@ -48,15 +48,20 @@ static ButtonRepeat navigateRepeat;
 static struct {
    int screenW, screenH;
    int selected;
+   int warning;            // the XMB row was picked: its warning is up (X downloads for the XMB, O goes back)
    uint32_t plateFill;
 } state;
+static Label   warningLabel;
+static UiHints warningHints;
 
 static void initDownloadChoice(void)
 {
    state.screenW = getGfxScreenWidth();
    state.screenH = getGfxScreenHeight();
+   // TEE: into the app's own gallery unless asked otherwise - the XMB is a choice for one download, never kept
    state.selected = getDownloadQuality();
-   if (state.selected < 0 || state.selected >= DOWNLOAD_QUALITY_COUNT) state.selected = DOWNLOAD_1440P;
+   if (state.selected < 0 || state.selected >= DOWNLOAD_XMB) state.selected = DOWNLOAD_1440P;
+   state.warning = 0;
    state.plateFill = interpolateColor(activeTheme->appBg, uiWithAlpha(activeTheme->hintFill, 0xFF),
                                       (float)(activeTheme->hintFill >> 24) / 255.0f);
 
@@ -77,6 +82,12 @@ static void initDownloadChoice(void)
                   activeTheme->textSecondary, TEXT_NOWRAP_ELLIPSIS, notes[i]);
    }
    initIcon(&rowIcon, ICON_DOWNLOAD, ICON_SIZE);
+   uiInitLabel(&warningLabel, UI_BODY_WEIGHT, 0, 0, state.screenW * 2 / 3 - 88, 24, activeTheme->textPrimary, TEXT_WRAP,
+               "For the XMB, the video goes to its Video column, and the system takes the file: TEE Vanced will not "
+               "list or play it afterwards. The XMB plays it at 720p60 or 1080p30.");
+   uiInitHints(&warningHints);
+   uiAddHint(&warningHints, GLYPH_CROSS,  "Download for the XMB");
+   uiAddHint(&warningHints, GLYPH_CIRCLE, "Back");
    uiInitHints(&hints);
    uiAddHint(&hints, GLYPH_CROSS,  "Download");
    uiAddHint(&hints, GLYPH_CIRCLE, "Cancel");
@@ -85,13 +96,22 @@ static void initDownloadChoice(void)
 
 static void updateDownloadChoice(void)
 {
+   if (state.warning) {   // modal: the XMB's warning owns the pad until it is answered
+      if (isPadButtonPressed(PAD_BTN_CIRCLE)) { state.warning = 0; return; }
+      if (isPadButtonPressed(PAD_BTN_CROSS)) {
+         enqueueDownloadAs(&pendingItem, DOWNLOAD_XMB);   // not kept as the choice: the next R3 is the gallery again
+         popScreen();
+      }
+      return;
+   }
    if (isPadButtonPressed(PAD_BTN_CIRCLE)) { popScreen(); return; }
    if      (isRepeatDue(&navigateRepeat, getPadButtonState(PAD_BTN_DOWN))) state.selected++;
    else if (isRepeatDue(&navigateRepeat, getPadButtonState(PAD_BTN_UP)))   state.selected--;
    if (state.selected < 0) state.selected = DOWNLOAD_QUALITY_COUNT - 1;
    if (state.selected >= DOWNLOAD_QUALITY_COUNT) state.selected = 0;
    if (isPadButtonPressed(PAD_BTN_CROSS)) {
-      setDownloadQuality(state.selected);   // the next R3 starts on it
+      if (state.selected == DOWNLOAD_XMB) { state.warning = 1; return; }
+      setDownloadQuality(state.selected);   // the next R3 starts on it (the gallery's two forms only)
       enqueueDownloadAs(&pendingItem, (DownloadQuality)state.selected);
       popScreen();   // the rail's download entry shows it from here on
    }
@@ -119,11 +139,25 @@ static void drawDownloadChoice(void)
    drawLabel(&titleLabel);
    uiDrawLabelAt(&videoLabel, CONTENT_X, uiLabelYForBaseline(&videoLabel, SUBTITLE_BASE));
    uiDrawHints(&hints, UI_SAFE_RIGHT, UI_HINTS_BOTTOM_Y, UI_ALIGN_RIGHT);
+
+   if (state.warning) {   // the box as the other screens draw theirs: scrim, panel, the ring of what has the pad
+      int panelW = state.screenW * 2 / 3, padX = 44;
+      int textTop = 40, hintsTop = textTop + warningLabel.tt.tex.h + 26;
+      int panelH = hintsTop + UI_HINT_GLYPH_H + 30;
+      int x = (state.screenW - panelW) / 2, y = (state.screenH - panelH) / 2;
+      fillGfxRectangle(0, 0, state.screenW, state.screenH, activeTheme->scrim);
+      uiFillRounded(x, y, panelW, panelH, 26, activeTheme->surface);
+      uiDrawFocusRing(x, y, panelW, panelH, UI_RING_ROW, activeTheme->focusBorder);
+      uiDrawLabelAt(&warningLabel, x + padX, y + textTop);
+      uiDrawHints(&warningHints, x + padX, y + hintsTop, UI_ALIGN_LEFT);
+   }
 }
 
 static void termDownloadChoice(void)
 {
    uiTermHints(&hints);
+   uiTermHints(&warningHints);
+   freeLabel(&warningLabel);
    freeIcon(&rowIcon);
    freeLabel(&titleLabel);
    freeLabel(&videoLabel);

@@ -120,7 +120,9 @@ static int isLiveCategory(int category)
 // L1/R1 ring - the rail leads there
 #define HOME_DOWNLOADS   (HOME_LIVE_FIRST + LIVE_COUNT)
 static unsigned downloadsRevisionSeen;
-static char     pendingDeleteId[16];   // the download the notice asks about
+static char     pendingDeleteId[16];   // the download the notice asks about ...
+static char     pendingMoveId[16];     // ... or the one it asks to move into the XMB
+#define SQUARE_HINT 1                  // Square's slot in the top hint row: "To XMB" on the Downloads page
 
 // each category's fully-loaded results, so returning to a tab skips the feed fetch (thumbnails still refetch).
 static SearchResults categoryCache[HOME_CAT_COUNT];
@@ -441,6 +443,7 @@ static void setHeading(void)
    // A live stream cannot be downloaded, and a Live page holds nothing else: R3 does nothing there (updateHome),
    // so it has no hint either. The bottom row only gets narrower for it.
    uiSetHintShown(&hintsBottom, R3_HINT, !isLiveCategory(home.category) && home.category != HOME_DOWNLOADS);
+   uiSetHintCaption(&hintsTop, SQUARE_HINT, home.category == HOME_DOWNLOADS ? "To XMB" : "Watch Later");
    fitTitleWidth();   // after the captions: the row's new width decides how far the title may run
    // on the playlist tab the heading is the playlist's name - the user's text, so raw and checked for Manrope
    uiSetTextLabel(&titleLabel, UI_PAGE_TITLE_WEIGHT, heading);
@@ -920,13 +923,16 @@ static void updateHome(void)
                pendingDeleteId[0] = 0;
                downloadsRevisionSeen = getDownloadsRevision();
                if (home.category == HOME_DOWNLOADS) loadCategory();
+            } else if (pendingMoveId[0]) {   // into the XMB: the page loses it once the XMB has it (revision)
+               moveDownloadToXmb(pendingMoveId);
+               pendingMoveId[0] = 0;
             } else {
                unsubscribeConfirmed();
             }
          }
          return;
       }
-      if (isPadButtonPressed(PAD_BTN_CIRCLE)) { home.noticeVisible = 0; home.noticeIsConfirm = 0; pendingDeleteId[0] = 0; }
+      if (isPadButtonPressed(PAD_BTN_CIRCLE)) { home.noticeVisible = 0; home.noticeIsConfirm = 0; pendingDeleteId[0] = 0; pendingMoveId[0] = 0; }
       return;
    }
 
@@ -1009,6 +1015,17 @@ static void updateHome(void)
          return;
       }
       if (isPadButtonPressed(PAD_BTN_R3)) return;   // already downloaded
+      if (isPadButtonPressed(PAD_BTN_SQUARE)) {     // into the XMB's Video column, after the warning
+         char message[320];
+         snprintf(message, sizeof message, "Move \"%s\" into the XMB's Video column? The system takes the file: TEE "
+                  "Vanced will not list or play it afterwards. The XMB plays it at 720p60 or 1080p30 (a 1440p or "
+                  "1080p60 download is fetched again in that form).", selected->title);
+         strCopy(pendingMoveId, sizeof pendingMoveId, selected->videoId);
+         showNotice(message);
+         uiSetHintCaption(&confirmHints, 0, "Move to the XMB");
+         home.noticeIsConfirm = 1;
+         return;
+      }
    }
    if (isPadButtonPressed(PAD_BTN_SQUARE)) {
       if (isAccountSignedIn()) {   // the account's Watch Later: the tag flips at once, YouTube is told on a worker

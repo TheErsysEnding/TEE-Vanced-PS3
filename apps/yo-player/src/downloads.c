@@ -47,7 +47,11 @@
 #define OVERLAY_GAP        20       // between the overlay and the hint row under it
 #define OVERLAY_TEXT_MAX_W 560      // a guard: 32 bytes of title come to about 500 px with the words round it
 
-typedef struct { char videoId[16]; char title[160]; char author[48]; char duration[12]; int quality; } QueueItem;
+typedef struct {
+   char videoId[16]; char title[160]; char author[48]; char duration[12]; int quality;
+   int  fromGallery;     // (V3.0.0) an XMB download that replaces the app's own copy: deleted once the XMB has this
+   int  remuxLocal;      // ... and is made from that copy's files, without YouTube
+} QueueItem;
 
 static struct {
    sys_lwmutex_t    mutex;         // guards queue[], count, workerSpawned
@@ -140,10 +144,12 @@ cleanup:
 }
 
 static void runAppDownload(const QueueItem *item, const StreamInfo *info);   // below
+static void runXmbDownload(const QueueItem *item, StreamInfo *info);         // below
 static void finishJob(const char *videoId);                                  // below
 
 static void runOneDownload(const QueueItem *item)
 {
+   if (item->remuxLocal) { runXmbDownload(item, NULL); return; }   // the app's own copy, no YouTube needed
    StreamInfo *info = (StreamInfo *)malloc(sizeof *info);
    const Extractor *extractor = findExtractor(item->videoId);
    if (!info || !extractor || extractor->extract(item->videoId, info) != 0 || info->formatCount == 0) {
@@ -152,25 +158,51 @@ static void runOneDownload(const QueueItem *item)
       return;
    }
    if (item->quality != DOWNLOAD_XMB) { runAppDownload(item, info); free(info); return; }
+   runXmbDownload(item, info);
+   free(info);
+}
 
-   const StreamFormat *video = pickBestVideo(info);
-   const StreamFormat *audio = (video && !video->hasAudio) ? pickBestAudio(info) : NULL;
-   if (!video) { logError("[dl] no downloadable video for %s\n", item->videoId); free(info); return; }
-   if (video->isLiveSegmented) { logInfo("[dl] %s is a live stream, not downloadable\n", item->videoId); free(info); return; }
+// the XMB's MP4: remuxed from YouTube's streams (info) or - moving a gallery copy - from that copy's files
+static void runXmbDownload(const QueueItem *item, StreamInfo *info)
+{
+   char localVideo[160], localAudio[160];
+   const char *videoUrl, *audioUrl;
+   if (item->remuxLocal) {
+      DownloadInfo copy;
+      if (readDownloadInfo(item->videoId, &copy) != 0) { logError("[dl] %s: the app's copy is gone\n", item->videoId); return; }
+      strCopy(localVideo, sizeof localVideo, copy.videoPath);
+      strCopy(localAudio, sizeof localAudio, copy.audioPath);
+      videoUrl = localVideo;
+      audioUrl = localAudio[0] ? localAudio : NULL;
+   } else {
+      const StreamFormat *video = pickBestVideo(info);
+      const StreamFormat *audio = (video && !video->hasAudio) ? pickBestAudio(info) : NULL;
+      if (!video) { logError("[dl] no downloadable video for %s\n", item->videoId); return; }
+      if (video->isLiveSegmented) { logInfo("[dl] %s is a live stream, not downloadable\n", item->videoId); return; }
+      logInfo("[dl] %s for the XMB: video itag %d, audio itag %d\n", item->videoId, video->itag,
+              audio ? audio->itag : (video->hasAudio ? video->itag : 0));
+      strCopy(localVideo, sizeof localVideo, "");
+      videoUrl = video->url;
+      audioUrl = audio ? audio->url : NULL;
+   }
 
    char finalPath[MAX_PATH_LEN], partPath[MAX_PATH_LEN];
    buildDownloadPath(finalPath, sizeof finalPath, item->videoId);
    snprintf(partPath, sizeof partPath, "%s.part", finalPath);
-   logInfo("[dl] %s -> %s (video itag %d, audio itag %d)\n", item->videoId, finalPath, video->itag, audio ? audio->itag : (video->hasAudio ? video->itag : 0));
+   logInfo("[dl] %s -> %s%s\n", item->videoId, finalPath, item->remuxLocal ? " (from the app's copy)" : "");
 
    // download to a .part file and only publish it on success, so an interrupted or duplicate download can
    // never truncate or delete an already-finished file.
-   int rc = remux(video->url, audio ? audio->url : NULL, partPath);
-   free(info);
+   int rc = remux(videoUrl, audioUrl, partPath);
 
    if (rc != 0) { deleteFile(partPath); logInfo("[dl] %s %s\n", item->videoId, dl.cancelAll ? "cancelled" : "failed"); }
    else if (renamePath(partPath, finalPath) != 0) { deleteFile(partPath); logError("[dl] %s rename failed\n", item->videoId); }
-   else { logInfo("[dl] %s done\n", item->videoId); queueVideoExport(finalPath, item->title); finishJob(item->videoId); }
+   else {
+      logInfo("[dl] %s done\n", item->videoId);
+      queueVideoExport(finalPath, item->title);
+      if (item->fromGallery) deleteDownload(item->videoId);   // the XMB has it now (its job goes with it)
+      else finishJob(item->videoId);
+   }
 }
 
 // ---- the app's own downloads (V3.0.0) ----
@@ -198,8 +230,8 @@ static void writeJob(const QueueItem *item)
    makeDirPath(getDownloadsDir());
    makeDirPath(folder);
    jobPath(path, sizeof path, item->videoId);
-   int length = snprintf(text, sizeof text, "title=%s\nchannel=%s\nid=%s\nduration=%s\nquality=%d\n",
-                         item->title, item->author, item->videoId, item->duration, item->quality);
+   int length = snprintf(text, sizeof text, "title=%s\nchannel=%s\nid=%s\nduration=%s\nquality=%d\nmove=%d\n",
+                         item->title, item->author, item->videoId, item->duration, item->quality, item->fromGallery);
    if (length > 0 && length < (int)sizeof text) writeFile(path, text, (uint64_t)length);
 }
 
@@ -568,9 +600,29 @@ static void downloadWorker(uint64_t arg)
 
 void enqueueDownload(const SearchResult *item) { enqueueDownloadAs(item, DOWNLOAD_XMB); }
 
-void enqueueDownloadAs(const SearchResult *item, DownloadQuality quality)
+static int enqueueItem(const SearchResult *item, DownloadQuality quality, int fromGallery, int remuxLocal);
+
+void enqueueDownloadAs(const SearchResult *item, DownloadQuality quality) { enqueueItem(item, quality, 0, 0); }
+
+int moveDownloadToXmb(const char *videoId)
 {
-   if (!dl.initialized || !item->videoId[0]) return;
+   DownloadInfo info;
+   if (readDownloadInfo(videoId, &info) != 0) return -1;
+   SearchResult item;
+   memset(&item, 0, sizeof item);
+   strCopy(item.videoId, sizeof item.videoId, info.videoId);
+   strCopy(item.title, sizeof item.title, info.title);
+   strCopy(item.author, sizeof item.author, info.channel);
+   strCopy(item.duration, sizeof item.duration, info.duration);
+   // the XMB's player keeps up with H.264 at 30 fps, or at 720p and below: such a copy is remuxed as it is
+   int remuxLocal = !info.isVp9 && (info.fps <= 30 || info.height <= 720);
+   logInfo("[dl] %s to the XMB: %s\n", videoId, remuxLocal ? "remuxing the app's copy" : "downloading the XMB's MP4");
+   return enqueueItem(&item, DOWNLOAD_XMB, 1, remuxLocal);
+}
+
+static int enqueueItem(const SearchResult *item, DownloadQuality quality, int fromGallery, int remuxLocal)
+{
+   if (!dl.initialized || !item->videoId[0]) return -1;
 
    int spawn = 0, duplicate = 0, full = 0;
    lock(&dl.mutex);
@@ -588,6 +640,8 @@ void enqueueDownloadAs(const SearchResult *item, DownloadQuality quality)
          strCopy(dl.queue[dl.count].author,  sizeof dl.queue[dl.count].author,  item->author);
          strCopy(dl.queue[dl.count].duration, sizeof dl.queue[dl.count].duration, item->duration);
          dl.queue[dl.count].quality = (int)quality;
+         dl.queue[dl.count].fromGallery = fromGallery;
+         dl.queue[dl.count].remuxLocal = remuxLocal;
          writeJob(&dl.queue[dl.count]);   // from now until it is done (findInterruptedDownloads)
          dl.count++;
          if (!dl.workerSpawned) { dl.workerSpawned = 1; spawn = 1; }
@@ -601,7 +655,9 @@ void enqueueDownloadAs(const SearchResult *item, DownloadQuality quality)
    if (spawn && spawnJoinableThread(&dl.worker, downloadWorker, 0, THREAD_PRIORITY_LOW, THREAD_STACK_SIZE_64KB, "yt-dl") != 0) {
       lock(&dl.mutex); dl.workerSpawned = 0; unlock(&dl.mutex);
       logError("[dl] worker spawn failed\n");
+      return -1;
    }
+   return duplicate || full ? -1 : 0;
 }
 
 // ---- overlay ----
