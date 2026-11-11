@@ -17,6 +17,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/sys_time.h>
+#include <sys/memory.h>   // sys_memory_get_user_memory_size: the VP9 decoder's memory, in the log
 #include <sysutil/sysutil_sysparam.h>   // cellVideoOutGetState: the screen's refresh rate (display sync)
 
 // the decode thread runs ahead into this ring; the extra slots past PREROLL_FRAMES are cushion the
@@ -48,9 +49,15 @@ typedef struct {
 // PPU (330 MB/s) is what the module's guide warns against.
 #define VP9_SLOTS          4
 #define VP9_PREROLL_FRAMES 2
-#define VP9_PICTURES       12     // the decoder's picture buffers (its default 10 + 2 for the ring above): 78 MB
-#define VP9_PICTURES_MIN   10     // ... if 12 do not fit
 #define VP9_RATE_PICTURES  30     // a WebM without a frame duration: the rate is measured over this many pictures
+#define VP9_STALL_MS       5000   // no picture and nothing fed for this long = the stream is dead
+
+// (Test 2) what the decoder is opened with, the first that fits: picture buffers (its default 10 + 2 for the ring
+// above, 6.5 MB each at 1440p) and how much input it may hold before it says "full". YouTube's 1440p60 averages
+// about 10 Mbit/s but runs at 27 - 37 Mbit/s for half a minute in a busy scene (Elden Ring DLC at 17:11, Test 1):
+// more than the PS3 downloads. The input is the cushion that rides such a stretch out: 20 MB is its queue of
+// 256 frames (about 4 s) at the peak rate, the module's default 6 MB a little over 1 s of it.
+static const struct { int pictures; uint32_t inputMb; } VP9_SETUPS[] = { { 12, 20 }, { 10, 20 }, { 10, 6 } };
 
 static int vp9Spes = 6;           // see setVideoVp9Spes
 
@@ -67,6 +74,16 @@ struct VideoPlayer {
    // VP9 (the demuxer found a V_VP9 track): the TEE VP9 building block instead of the H.264 decoder
    tvp9        *vp9;
    void        *vp9Memory;        // its picture buffers, from the UI's allocator (mapped for the RSX, 1 MB aligned)
+   // (Test 2) the VP9 input has a thread of its own: a read that waits on the network (40 - 330 ms at a time in
+   // Test 1) then holds up the feeding only, while the decode thread keeps handing finished pictures to the screen
+   sys_ppu_thread_t vp9FeedTid;
+   int              vp9FeedActive;
+   volatile int     vp9FeedExited;
+   volatile int     vp9FeedPause;     // decode thread -> feeder: park (a seek)
+   volatile int     vp9FeedParked;    // feeder -> decode thread: parked, the demuxer and the decoder's input are free
+   volatile int     vp9FeedError;     // the stream could not be read
+   volatile uint32_t vp9Fed;          // blocks fed so far (the decode thread's stall check)
+   int              vp9StartedAtKeyframe;   // feeder-owned: the first key frame since the open / the last seek
    uint64_t     vp9StatsUs;       // when the decoder's numbers last went to the log
    uint64_t     vp9FirstPts;      // the rate measurement for a WebM without a frame duration
    int          vp9RatePictures;
@@ -271,16 +288,43 @@ static int feedVp9(VideoPlayer *player, int *startedAtKeyframe)
       if (result == 0) break;            // the decoder has enough: retry this block later
       if (result < 0) logWarn("[video-player] the VP9 decoder refused a block of %d bytes\n", player->pendingAu.size);
       player->hasPendingAu = 0;
+      player->vp9Fed++;
       fed++;
    }
    return fed;
 }
 
-// VP9: the next picture into *pic. 1 with a picture, 0 at the end of the stream, -1 on an error.
-static int decodeNextVp9(VideoPlayer *player, tvp9_picture *pic, int *startedAtKeyframe)
+// VP9 feeder thread (Test 2): reads the demuxer and feeds the decoder, nothing else. Parks while the decode thread
+// seeks (vp9FeedPause: the demuxer moves and the decoder flushes - tvp9_flush wants nothing fed meanwhile).
+static void vp9FeedThread(uint64_t arg)
+{
+   VideoPlayer *player = (VideoPlayer *)(uintptr_t)arg;
+   while (player->running) {
+      if (player->vp9FeedPause) { player->vp9FeedParked = 1; __sync_synchronize(); sleepMs(1); continue; }
+      player->vp9FeedParked = 0;
+      if (player->inputEnded || player->vp9FeedError || player->seekRequestNs >= 0) { sleepMs(2); continue; }
+      int fed = feedVp9(player, &player->vp9StartedAtKeyframe);
+      if (fed < 0) {
+         if (player->running && player->seekRequestNs < 0) {
+            logError("[video-player] reading the VP9 stream failed\n");
+            player->vp9FeedError = 1;
+         }
+         continue;
+      }
+      if (fed == 0) sleepMs(2);          // the decoder is full: it is ahead
+   }
+   __sync_synchronize();
+   player->vp9FeedExited = 1;
+   exitThread();
+}
+
+// VP9: the next picture into *pic (decode thread; the feeder fills the decoder meanwhile). 1 with a picture, 0 at the
+// end of the stream, -1 on an error. Waiting on a slow network is no error as long as blocks keep coming in.
+static int decodeNextVp9(VideoPlayer *player, tvp9_picture *pic)
 {
    int stalledMs = 0;
-   while (stalledMs < DECODE_STALL_MS && player->running && player->seekRequestNs < 0) {
+   uint32_t fedSeen = player->vp9Fed;
+   while (stalledMs < VP9_STALL_MS && player->running && player->seekRequestNs < 0) {
       int got = tvp9_get_picture(player->vp9, pic);
       if (got == 1) return 1;
       if (got < 0) {
@@ -289,16 +333,13 @@ static int decodeNextVp9(VideoPlayer *player, tvp9_picture *pic, int *startedAtK
          logError("[video-player] TEE VP9 stopped: %s\n", why);
          return -1;
       }
-      if (player->inputEnded) { sleepMs(1); stalledMs++; continue; }   // the decoder drains, then says -1
-      int fed = feedVp9(player, startedAtKeyframe);
-      if (fed < 0) return -1;
-      if (fed > 0) { stalledMs = 0; continue; }
-      if (player->inputEnded) continue;
+      if (player->vp9FeedError) return -1;
+      if (player->vp9Fed != fedSeen) { fedSeen = player->vp9Fed; stalledMs = 0; }
       sleepMs(1); stalledMs++;
    }
-   if (player->running && player->seekRequestNs < 0 && stalledMs >= DECODE_STALL_MS) {
+   if (player->running && player->seekRequestNs < 0 && stalledMs >= VP9_STALL_MS) {
       if (player->inputEnded) return 0;
-      logError("[video-player] TEE VP9 gave no picture for %d ms\n", DECODE_STALL_MS);
+      logError("[video-player] TEE VP9: no picture and no input for %d ms\n", VP9_STALL_MS);
       return -1;
    }
    return 0;
@@ -441,6 +482,13 @@ static void performSeek(VideoPlayer *player)
    // (DISPLAYING, RETIRING) stay up until the new position's pictures arrive; their buffers belong to the
    // decoder again after the flush (a release of one from before it is ignored).
    if (player->vp9) {
+      // the feeder parks first: it reads the demuxer this seek moves, and the decoder must not be fed while it flushes
+      player->vp9FeedParked = 0;
+      __sync_synchronize();
+      player->vp9FeedPause = 1;
+      __sync_synchronize();
+      while (player->vp9FeedActive && !player->vp9FeedParked && !player->vp9FeedExited && player->running) sleepMs(1);
+      if (!player->running) return;
       lock(&player->lock);
       for (int i = 0; i < FRAME_SLOTS; i++) {
          FrameSlot *slot = &player->slots[i];
@@ -452,6 +500,7 @@ static void performSeek(VideoPlayer *player)
       unlock(&player->lock);
       if (tvp9_flush(player->vp9) != 0) logError("[video-player] TEE VP9 flush failed: %s\n", tvp9_error(player->vp9));
       player->vp9RatePictures = 0;
+      player->vp9StartedAtKeyframe = 0;
    }
    // flush the decoder; if the reset wedged it (EndSeq fatal) or it already died, rebuild it rather
    // than going dark (a NULL decoder makes decode report end-of-stream until a later seek revives it)
@@ -509,6 +558,7 @@ static void performSeek(VideoPlayer *player)
 
    if (player->seekRequestNs == (int64_t)targetNs) player->seekRequestNs = -1;   // keep a newer request live
    __sync_synchronize();
+   player->vp9FeedPause = 0;             // the VP9 feeder reads on from the new position
    player->audioFlushRequest = 0;        // release the audio thread
 }
 
@@ -525,9 +575,9 @@ static void decodeThread(uint64_t arg)
          // ...but keep the TEE Decoder's input topped up meanwhile: fed only when a slot is free, its CABAC lead
          // would shrink to the few pictures the ring holds, and that lead is what carries it over a hard picture
          // (VP9 the same: its entropy stage runs ahead of its pixel stage on what it was fed)
-         int feedFailed = player->vp9 ? (!player->inputEnded && feedVp9(player, &startedAtKeyframe) < 0)
-                        : (player->decoder && isTeeH264Decoder(player->decoder) && !player->inputEnded &&
-                           feedDecoder(player, &startedAtKeyframe) < 0 && !recoverDecoder(player, &startedAtKeyframe));
+         // (VP9: its feeder thread does that)
+         int feedFailed = !player->vp9 && player->decoder && isTeeH264Decoder(player->decoder) && !player->inputEnded &&
+                          feedDecoder(player, &startedAtKeyframe) < 0 && !recoverDecoder(player, &startedAtKeyframe);
          if (feedFailed) {
             lock(&player->lock);
             if (player->seekRequestNs < 0) player->ended = 1;
@@ -542,7 +592,7 @@ static void decodeThread(uint64_t arg)
       int got;
       if (player->vp9) {
          tvp9_picture *pic = &player->slots[slot].vp9;
-         got = decodeNextVp9(player, pic, &startedAtKeyframe);
+         got = decodeNextVp9(player, pic);
          if (got == 1) {
             width = pic->width; height = pic->height; pts = (uint64_t)pic->pts;
             player->slots[slot].hasVp9 = 1;   // published with SLOT_READY under the lock below
@@ -805,8 +855,11 @@ static int openVp9(VideoPlayer *player, VideoFrameAllocFn allocFrame)
    }
    char err[160];
    err[0] = 0;
-   for (int pictures = VP9_PICTURES; pictures >= VP9_PICTURES_MIN && !player->vp9; pictures -= 2) {
+   int pictures = 0;
+   for (unsigned setup = 0; setup < sizeof VP9_SETUPS / sizeof VP9_SETUPS[0] && !player->vp9; setup++) {
+      pictures = VP9_SETUPS[setup].pictures;
       config.pictures = pictures;
+      config.input_bytes = VP9_SETUPS[setup].inputMb << 20;
       size_t bytes = tvp9_picture_memory_size(&config);
       player->vp9Memory = allocFrame(bytes);
       if (!player->vp9Memory || ((uintptr_t)player->vp9Memory & 0xFFFFF)) {
@@ -819,10 +872,15 @@ static int openVp9(VideoPlayer *player, VideoFrameAllocFn allocFrame)
       config.picture_memory_bytes = bytes;
       player->vp9 = tvp9_open(&config, err, sizeof err);
       if (!player->vp9) { player->freeFrame(player->vp9Memory); player->vp9Memory = 0; }
-      else logInfo("[video-player] TEE VP9 %s: %dx%d stream, %d + %d SPEs, %d pictures (%d MB + %d MB)%s\n", TEE_VP9_VERSION,
-                   player->demuxer.width, player->demuxer.height, config.entropy_spes, config.pixel_spes, pictures,
-                   (int)(bytes >> 20), (int)(tvp9_memory_size(&config) >> 20), vp9Spes == 6 ? ", no sound" : "");
+      else logInfo("[video-player] TEE VP9 %s: %dx%d stream, %d + %d SPEs, %d pictures, %d MB input (%d MB + %d MB)%s\n",
+                   TEE_VP9_VERSION, player->demuxer.width, player->demuxer.height, config.entropy_spes, config.pixel_spes,
+                   pictures, (int)(config.input_bytes >> 20), (int)(bytes >> 20), (int)(tvp9_memory_size(&config) >> 20),
+                   vp9Spes == 6 ? ", no sound" : "");
    }
+   sys_memory_info_t memory;
+   if (player->vp9 && sys_memory_get_user_memory_size(&memory) == CELL_OK)
+      logInfo("[video-player] user memory with TEE VP9 open: %u MB free of %u MB (heap not counted)\n",
+              (unsigned)(memory.available_user_memory >> 20), (unsigned)(memory.total_user_memory >> 20));
    if (!player->vp9) { logError("[video-player] TEE VP9 did not open: %s\n", err); return -1; }
    if (vp9Spes == 6 && player->hasAudioDemuxer) {   // no SPE left for the sound
       closeVideoDemuxer(&player->audioDemuxer);
@@ -928,6 +986,11 @@ decoderReady:
    player->threadActive = (spawnJoinableThread(&player->thread, decodeThread, (uint64_t)(uintptr_t)player,
                            THREAD_PRIORITY_DEFAULT, THREAD_STACK_SIZE_64KB, "video-player") == 0);
    if (!player->threadActive) goto fail;
+   if (player->vp9) {
+      player->vp9FeedActive = (spawnJoinableThread(&player->vp9FeedTid, vp9FeedThread, (uint64_t)(uintptr_t)player,
+                               THREAD_PRIORITY_DEFAULT, THREAD_STACK_SIZE_64KB, "vp9-feed") == 0);
+      if (!player->vp9FeedActive) goto fail;
+   }
 
    startAudioPipeline(player);
    // hold audio silent until the video pre-roll releases: otherwise audio drains during the ~0.7s wait
@@ -956,8 +1019,9 @@ void destroyVideoPlayer(VideoPlayer *player)
       // known hang). Waiting on it froze the whole app. After DESTROY_WAIT_MS the player is left to that thread:
       // only the sound goes (the next player needs the mixer feed), everything else stays allocated, as the
       // thread may still use it, and the TEE Decoder stays off for the rest of the run.
-      for (int waited = 0; !player->decodeExited && waited < DESTROY_WAIT_MS; waited += 10) sleepMs(10);
-      if (!player->decodeExited) {
+      for (int waited = 0; (!player->decodeExited || (player->vp9FeedActive && !player->vp9FeedExited)) &&
+                           waited < DESTROY_WAIT_MS; waited += 10) sleepMs(10);
+      if (!player->decodeExited || (player->vp9FeedActive && !player->vp9FeedExited)) {
          logError("[video-player] the decode thread did not stop in %d ms (the TEE Decoder hangs?): player left behind\n",
                   DESTROY_WAIT_MS);
          disableH264TeeForSession("it hung");
@@ -965,6 +1029,7 @@ void destroyVideoPlayer(VideoPlayer *player)
          return;
       }
       joinThread(player->thread);
+      if (player->vp9FeedActive) joinThread(player->vp9FeedTid);
    }
    releaseAudioPipeline(player);
    destroyH264Decoder(player->decoder);

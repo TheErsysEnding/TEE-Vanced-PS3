@@ -57,8 +57,10 @@ static inline void closeVideoDemuxer(VideoDemuxer *demuxer)
    else closeMkvDemuxer(&demuxer->container.mkv);
 }
 
-// unblock a live segment source waiting on the edge, so teardown's thread join can't hang (live is mp4).
+// unblock a read waiting on the network (a live segment source at the edge, a streamed url), so teardown's thread
+// join can't hang. (V3.0.0: an MKV/WebM too - the VP9 feeder thread reads it.)
 static inline void cancelVideoDemuxer(VideoDemuxer *demuxer)
 {
    if (demuxer->isMp4) cancelVideoSource(&demuxer->container.mp4.source);
+   else                cancelVideoSource(&demuxer->container.mkv.source);
 }
