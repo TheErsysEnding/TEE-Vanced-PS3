@@ -104,6 +104,21 @@ typedef struct {
    int              (*isWatched)(const char *videoId);     // fade predicate (NULL = no fade)
    int              (*isWatchLater)(const char *videoId);  // watch-later badge predicate (NULL = no badge)
    int              (*watchedPosition)(const char *videoId);   // seconds watched, for the progress line (NULL = none)
+   // (V3.0.0) the Home preview above the cards (setGridHero): the selection big, its 1280 x 720 thumbnail
+   // behind its title, channel, duration and progress. The picture is fetched on a thread of its own once the
+   // selection has rested a moment; until it lands the card's own thumbnail stands in.
+   int              hero;
+   int              heroIndex;                                 // the result the hero labels hold (-1 = none)
+   uint64_t         heroSinceUs;                               // when the selection last changed
+   char             heroWantId[16], heroTexId[16], heroFailedId[16], heroFetchId[16];
+   GfxTexture       heroTex;
+   int              heroCrop;                                  // heroTex is a 4:3 sddefault with bars: its 16:9 middle
+   sys_ppu_thread_t heroTid;
+   int              heroThreadActive;
+   volatile int     heroDone, heroOk, heroFetchCrop;
+   uint8_t         *heroJpeg;
+   int              heroJpegLen;
+   Label            heroTitle, heroTitle2, heroMeta, heroDuration, heroBadge, heroLeft;
    int              inputSuppressed;                           // pad ignored, but the grid keeps working
    int              focusHidden;                               // the selection drawn like any other item
 } VideoGrid;
@@ -128,6 +143,11 @@ void setGridProgressSource(VideoGrid *grid, int (*watchedPosition)(const char *v
 // loading - so an overlay suppresses input and keeps calling it. Re-enabling also clears the auto-repeat
 // timers, or a direction still held from the overlay would fire the moment focus came back.
 void setGridInputSuppressed(VideoGrid *grid, int suppressed);
+
+// (V3.0.0) the Home preview: on, the grid keeps the selection's labels and big picture ready, and drawGridHero
+// draws them above the cards (draw it before drawVideoGrid). The grid's own rectangle is where the cards go.
+void setGridHero(VideoGrid *grid, int on);
+void drawGridHero(VideoGrid *grid);
 
 // While something else on the screen has the focus (Search's field), the selection is drawn like any other item -
 // no plate, ring or glow - so only one thing on screen looks focused. The selection itself is kept for when the

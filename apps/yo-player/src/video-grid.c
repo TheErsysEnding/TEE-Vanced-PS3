@@ -23,6 +23,7 @@
 #include "ui-draw.h"            // corners, focus glow + ring, badges, progress bar
 #include "dbg.h"                // paging diagnostics
 #include "string-utilities.h"   // strCopy
+#include <sys/sys_time.h>       // sys_time_get_system_time: the hero waits until the selection rests
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -695,9 +696,226 @@ void initVideoGrid(VideoGrid *grid, Font *font, int x, int y, int width, int hei
    uiInitLabel(&grid->watchedBadge, UI_BADGE_WEIGHT, 0, 0, AUTO, UI_BADGE_SIZE, activeTheme->textSecondary, TEXT_NOWRAP, "WATCHED");
 }
 
+// ---- the Home preview (V3.0.0) ----
+// Laid out on the 1920 x 1080 canvas as TEE's mockup has it: the picture right of the text, 1400 x 788, fading
+// into the page towards the text and towards the cards; the text from the grid's left edge under the header.
+
+#define HERO_IMAGE_X    520
+#define HERO_IMAGE_W    1400
+#define HERO_IMAGE_H    788
+#define HERO_FADE_TOP   400       // the picture fades into the page from here to its bottom edge
+#define HERO_HEADER_H   170       // and is darkened behind the header row
+#define HERO_TEXT_W     1000
+#define HERO_TITLE_SIZE 54        // 54/800, two lines at most
+#define HERO_TITLE_BASE 204       // the first line's baseline
+#define HERO_TITLE_LINE 64
+#define HERO_META_SIZE  24        // channel . views . age, 24/600 in textSecondary
+#define HERO_META_GAP   50        // the title's last baseline -> the meta line's
+#define HERO_CHIP_H     40
+#define HERO_CHIP_PAD   15
+#define HERO_CHIP_SIZE  21
+#define HERO_CHIP_GAP   12
+#define HERO_PROGRESS_W 420
+#define HERO_SETTLE_US  350000    // the selection rests this long before its picture is fetched
+#define HERO_CAP        (512 * 1024)
+
+// the picture: hq720 (1280 x 720) where the video has one, sddefault (640 x 480, the 16:9 picture between bars)
+// where not - fetched into a buffer the UI thread turns into a texture
+static void heroFetchThread(uint64_t arg)
+{
+   VideoGrid *grid = (VideoGrid *)(uintptr_t)arg;
+   uint8_t *buffer = (uint8_t *)malloc(HERO_CAP);
+   int ok = 0;
+   if (buffer) {
+      HttpHeader headers[] = { { "User-Agent", THUMB_UA }, { "Accept-Encoding", "identity" } };
+      static const char *names[2] = { "hq720", "sddefault" };
+      for (int n = 0; n < 2 && !ok; n++) {
+         char url[128];
+         snprintf(url, sizeof url, "https://i.ytimg.com/vi/%s/%s.jpg", grid->heroFetchId, names[n]);
+         int length = 0, status = 0;
+         int rc = fetchHttp("GET", url, headers, 2, NULL, 0, (char *)buffer, HERO_CAP, &length, &status);
+         if (rc == 0 && status == 200 && length > 1024) {
+            uint8_t *copy = (uint8_t *)malloc((size_t)length);
+            if (copy) {
+               memcpy(copy, buffer, (size_t)length);
+               grid->heroJpeg = copy;
+               grid->heroJpegLen = length;
+               grid->heroFetchCrop = n == 1;
+               ok = 1;
+            }
+         }
+      }
+      free(buffer);
+   }
+   grid->heroOk = ok;
+   __sync_synchronize();
+   grid->heroDone = 1;
+   exitThread();
+}
+
+static void heroJoin(VideoGrid *grid)
+{
+   if (grid->heroThreadActive) { joinThread(grid->heroTid); grid->heroThreadActive = 0; }
+   if (grid->heroJpeg) { free(grid->heroJpeg); grid->heroJpeg = NULL; }
+}
+
+static void freeHero(VideoGrid *grid)
+{
+   heroJoin(grid);
+   if (grid->heroTex.offset) { freeGfxTexture(&grid->heroTex); memset(&grid->heroTex, 0, sizeof grid->heroTex); }
+   freeLabel(&grid->heroTitle);
+   freeLabel(&grid->heroTitle2);
+   freeLabel(&grid->heroMeta);
+   freeLabel(&grid->heroDuration);
+   freeLabel(&grid->heroBadge);
+   freeLabel(&grid->heroLeft);
+   grid->heroIndex = -1;
+   grid->heroTexId[0] = grid->heroWantId[0] = grid->heroFailedId[0] = 0;
+}
+
+void setGridHero(VideoGrid *grid, int on)
+{
+   if (on == grid->hero) return;
+   if (!on) { freeHero(grid); grid->hero = 0; return; }
+   grid->hero = 1;
+   grid->heroIndex = -1;
+   uiInitTextLabel(&grid->heroTitle,  UI_WEIGHT_EXTRABOLD, 0, 0, HERO_TEXT_W, HERO_TITLE_SIZE, activeTheme->textPrimary, TEXT_NOWRAP_ELLIPSIS, "");
+   uiInitTextLabel(&grid->heroTitle2, UI_WEIGHT_EXTRABOLD, 0, 0, HERO_TEXT_W, HERO_TITLE_SIZE, activeTheme->textPrimary, TEXT_NOWRAP_ELLIPSIS, "");
+   uiInitTextLabel(&grid->heroMeta,   UI_WEIGHT_SEMIBOLD,  0, 0, HERO_TEXT_W, HERO_META_SIZE,  activeTheme->textSecondary, TEXT_NOWRAP_ELLIPSIS, "");
+   uiInitTextLabel(&grid->heroDuration, UI_WEIGHT_BOLD, 0, 0, AUTO, HERO_CHIP_SIZE, activeTheme->textPrimary, TEXT_NOWRAP, "");
+   uiInitLabel(&grid->heroBadge, UI_WEIGHT_BOLD, 0, 0, AUTO, HERO_CHIP_SIZE, activeTheme->textPrimary, TEXT_NOWRAP, "");
+   uiInitLabel(&grid->heroLeft, UI_WEIGHT_SEMIBOLD, 0, 0, AUTO, 20, activeTheme->textSecondary, TEXT_NOWRAP, "");
+}
+
+// the selection's texts on the hero labels (UI thread, when the selection changes)
+static void labelHero(VideoGrid *grid, int i)
+{
+   const SearchResult *item = &grid->results.items[i];
+   char title[sizeof item->title], author[sizeof item->author];
+   tileTexts(item, title, (int)sizeof title, author, (int)sizeof author);
+   Font *font = uiPickFont(UI_WEIGHT_EXTRABOLD, title);
+   char line[sizeof item->title];
+   int next = 0;
+   int length = fitFirstLine(font, HERO_TITLE_SIZE, title, HERO_TEXT_W - FIT_SLACK, &next);
+   if (length >= (int)sizeof line) length = (int)sizeof line - 1;
+   memcpy(line, title, (size_t)length);
+   line[length] = '\0';
+   setFittedText(&grid->heroTitle,  font, HERO_TEXT_W, line);
+   setFittedText(&grid->heroTitle2, font, HERO_TEXT_W, title + next);
+
+   const char *parts[3] = { author, item->views, item->published };
+   char meta[160];
+   joinMeta(meta, sizeof meta, parts, 3, 0);
+   uiCleanText(meta, (int)sizeof meta, meta);
+   setFittedText(&grid->heroMeta, uiPickFont(UI_WEIGHT_SEMIBOLD, meta), HERO_TEXT_W, meta);
+   uiSetTextLabel(&grid->heroDuration, UI_WEIGHT_BOLD, item->isLive ? "" : item->duration);
+
+   int total = durationToSeconds(item->duration);
+   int position = (grid->watchedPosition && !item->isLive) ? grid->watchedPosition(item->videoId) : 0;
+   int watched = !(total > 0 && position > 0) && !item->isLive && grid->isWatched && grid->isWatched(item->videoId);
+   const char *badge = item->isLive ? "LIVE" : watched ? "Watched"
+                     : (grid->isWatchLater && grid->isWatchLater(item->videoId)) ? "Watch Later" : "";
+   setLabelText(&grid->heroBadge, badge);
+   char left[32];
+   left[0] = 0;
+   if (total > 0 && position > 0 && position < total) {
+      int minutes = (total - position + 59) / 60;
+      snprintf(left, sizeof left, "%d min left", minutes);
+   }
+   setLabelText(&grid->heroLeft, left);
+}
+
+// UI thread, every frame: follows the selection, fetches its picture once it rests, adopts a fetched one
+static void updateHero(VideoGrid *grid)
+{
+   if (!grid->hero) return;
+   if (grid->heroThreadActive && grid->heroDone) {
+      joinThread(grid->heroTid);
+      grid->heroThreadActive = 0;
+      if (grid->heroOk && grid->heroJpeg && strcmp(grid->heroFetchId, grid->heroWantId) == 0) {
+         GfxTexture tex = loadGfxTextureMem(grid->heroJpeg, (uint32_t)grid->heroJpegLen);
+         if (tex.offset) {
+            if (grid->heroTex.offset) retireGfxTexture(&grid->heroTex);
+            grid->heroTex = tex;
+            grid->heroCrop = grid->heroFetchCrop;
+            strCopy(grid->heroTexId, sizeof grid->heroTexId, grid->heroFetchId);
+         }
+      } else if (!grid->heroOk) {
+         strCopy(grid->heroFailedId, sizeof grid->heroFailedId, grid->heroFetchId);   // the card's picture it is
+      }
+      if (grid->heroJpeg) { free(grid->heroJpeg); grid->heroJpeg = NULL; }
+   }
+   if (grid->stage != GRID_READY || grid->selected < 0 || grid->selected >= grid->results.count) return;
+   const SearchResult *item = &grid->results.items[grid->selected];
+   uint64_t now = sys_time_get_system_time();
+   if (grid->selected != grid->heroIndex || strcmp(grid->heroWantId, item->videoId) != 0) {
+      labelHero(grid, grid->selected);
+      grid->heroIndex = grid->selected;
+      strCopy(grid->heroWantId, sizeof grid->heroWantId, item->videoId);
+      grid->heroSinceUs = now;
+   }
+   if (!grid->heroThreadActive && item->videoId[0] && strcmp(grid->heroTexId, grid->heroWantId) != 0 &&
+       strcmp(grid->heroFailedId, grid->heroWantId) != 0 && now - grid->heroSinceUs >= HERO_SETTLE_US) {
+      strCopy(grid->heroFetchId, sizeof grid->heroFetchId, grid->heroWantId);
+      grid->heroDone = grid->heroOk = 0;
+      grid->heroThreadActive = (spawnJoinableThread(&grid->heroTid, heroFetchThread, (uint64_t)(uintptr_t)grid,
+                                THREAD_PRIORITY_DEFAULT, THREAD_STACK_SIZE_64KB, "yt-hero") == 0);
+   }
+}
+
+void drawGridHero(VideoGrid *grid)
+{
+   if (!grid->hero || grid->stage != GRID_READY || grid->heroIndex < 0 || grid->heroIndex >= grid->results.count) return;
+   int i = grid->heroIndex;
+   const SearchResult *item = &grid->results.items[i];
+   uint32_t bg = activeTheme->appBg;
+
+   // the picture: the big one once it is here, the card's own until then
+   if (grid->heroTex.offset && strcmp(grid->heroTexId, item->videoId) == 0) {
+      float v0 = grid->heroCrop ? 0.125f : 0.0f, v1 = grid->heroCrop ? 0.875f : 1.0f;
+      drawGfxTexture(HERO_IMAGE_X, 0, HERO_IMAGE_W, HERO_IMAGE_H, grid->heroTex, 0.0f, v0, 1.0f, v1, 0xFFFFFFFF, GFX_FILTER_LINEAR);
+   } else if (grid->thumbs[i].tex.offset) {
+      drawGfxTexture(HERO_IMAGE_X, 0, HERO_IMAGE_W, HERO_IMAGE_H, grid->thumbs[i].tex, 0.0f, 0.0f, 1.0f, 1.0f, 0xFFFFFFFF, GFX_FILTER_LINEAR);
+   }
+   // dark towards the text, towards the cards and behind the header row
+   UiGradientStop across[3] = { { 0.0f, uiWithAlpha(bg, 255) }, { 0.55f, uiWithAlpha(bg, 150) }, { 1.0f, uiWithAlpha(bg, 80) } };
+   uiFillGradientH(HERO_IMAGE_X, 0, HERO_IMAGE_W, HERO_IMAGE_H, across, 3);
+   UiGradientStop down[2] = { { 0.0f, uiWithAlpha(bg, 0) }, { 1.0f, uiWithAlpha(bg, 255) } };
+   uiFillGradientV(0, HERO_FADE_TOP, UI_SCREEN_W, HERO_IMAGE_H - HERO_FADE_TOP + 1, down, 2);
+   UiGradientStop header[2] = { { 0.0f, uiWithAlpha(bg, 190) }, { 1.0f, uiWithAlpha(bg, 0) } };
+   uiFillGradientV(HERO_IMAGE_X, 0, HERO_IMAGE_W, HERO_HEADER_H, header, 2);
+
+   // the text
+   int x = grid->x;
+   int base = HERO_TITLE_BASE;
+   uiDrawLabelAt(&grid->heroTitle, x, uiLabelYForBaseline(&grid->heroTitle, base));
+   if (grid->heroTitle2.tt.tex.w > 0) {
+      base += HERO_TITLE_LINE;
+      uiDrawLabelAt(&grid->heroTitle2, x, uiLabelYForBaseline(&grid->heroTitle2, base));
+   }
+   base += HERO_META_GAP;
+   uiDrawLabelAt(&grid->heroMeta, x, uiLabelYForBaseline(&grid->heroMeta, base));
+
+   int chipY = base + 26, chipX = x;
+   if (grid->heroDuration.tt.tex.w > 0)
+      chipX += uiDrawChip(chipX, chipY, HERO_CHIP_H, HERO_CHIP_PAD, &grid->heroDuration, activeTheme->surface) + HERO_CHIP_GAP;
+   if (grid->heroBadge.tt.tex.w > 0)
+      chipX += uiDrawChip(chipX, chipY, HERO_CHIP_H, HERO_CHIP_PAD, &grid->heroBadge,
+                          item->isLive ? activeTheme->live : activeTheme->accentSoft) + HERO_CHIP_GAP;
+   if (grid->heroLeft.tt.tex.w > 0) {
+      int barY = chipY + HERO_CHIP_H + 30;
+      int total = durationToSeconds(item->duration);
+      int position = grid->watchedPosition ? grid->watchedPosition(item->videoId) : 0;
+      float progress = total > 0 ? (float)position / (float)total : 0.0f;
+      uiDrawProgressBar(x, barY, HERO_PROGRESS_W, 6, progress, activeTheme->progressTrack, activeTheme->accent, 3);
+      uiDrawLabelAt(&grid->heroLeft, x + HERO_PROGRESS_W + 20, uiLabelYForCenter(&grid->heroLeft, barY - 12, 30));
+   }
+}
+
 void termVideoGrid(VideoGrid *grid)
 {
    stopVideoGrid(grid);
+   freeHero(grid);
    freeThumbnails(grid);
    for (int i = 0; i < MAX_SEARCH_RESULTS; i++) freeTileLabels(grid, i);
    freeFocusTitle(grid);
@@ -774,6 +992,8 @@ void setGridCached(VideoGrid *grid, const SearchResults *cached, GridFetchFn fet
 void stopVideoGrid(VideoGrid *grid)
 {
    if (grid->threadActive) { grid->stopWorker = 1; joinThread(grid->workerTid); grid->threadActive = 0; }
+   if (grid->heroThreadActive) { joinThread(grid->heroTid); grid->heroThreadActive = 0; grid->heroDone = 0; }   // (its
+   if (grid->heroJpeg) { free(grid->heroJpeg); grid->heroJpeg = NULL; }   // picture is fetched again on return)
    grid->reloadPending = 0;
 }
 
@@ -801,6 +1021,7 @@ void updateVideoGrid(VideoGrid *grid)
    labelWindow(grid);
    labelFocusTitle(grid);
    decodeWindowThumbnails(grid);
+   updateHero(grid);
 
    // idle background work: thumbnails for what is on screen, then the next page of results. The fetch runs a
    // page early, so turning to the last page usually finds the one after it already waiting.

@@ -21,6 +21,10 @@ SPEs alone (no RSX prediction yet - that will be the RSX test builds). Played in
   dark as before. An older themes.txt is kept as themes.txt.bak and replaced once. The XMB tile and background
   are blue too and say 1440p 60 FPS SUPPORT and TEE DECODER. SponsorBlock's intro is coral now (cyan was too
   close to the new accent).
+- **Test 4 Blue**: the buttons are the app's own now, as in TEE's mockups - X, O, square, triangle and the d-pad
+  a round chip with a white symbol, L1 ... START / SELECT a key cap with its name (the console's full-colour art
+  is gone). Home shows the selected video big above one row of cards: its 1280 x 720 picture (fetched once the
+  selection rests) behind its title, channel, duration, a Watched / Watch Later / LIVE chip and how much is left.
 - **One package for every console.** The EBOOT is signed as an NPDRM SELF (as the HEN package of v2.0.0 was), so
   the same package installs on PS3HEN and on CFW/DEX. On CFW/DEX the data folder then becomes /dev_hdd0/tee-vanced;
   the files of the old one are copied over once.

@@ -61,6 +61,8 @@
 #define STATUS_SIZE   24        // "Loading..." / "No results": 24/700 in textSecondary, where the cards start
 #define STATUS_WEIGHT UI_WEIGHT_BOLD
 #define GRID_TOP      160
+// (V3.0.0) the Home preview (setGridHero): the selected video big above one row of cards, as TEE's mockup has it
+#define CARDS_TOP     630
 #define STATUS_BASELINE (GRID_TOP + 30)
 // The grid's rectangle ends above the bottom hint row. The grid lays out as many whole rows of cards as fit
 // it - two, the second ending at y 864 at the most - so the rectangle, not luck, keeps the cards off the hints.
@@ -723,8 +725,9 @@ static void initHome(void)
    home.pendingReload = 0;
 
    // Bild 4's cards (GRID_VIEW_GRID, the grid's own default): four columns between the rail and the safe edge
-   initVideoGrid(&home.grid, uiGetFont(UI_CARD_TITLE_WEIGHT), CONTENT_X, GRID_TOP,
-                 UI_SAFE_RIGHT - CONTENT_X, GRID_BOTTOM - GRID_TOP);
+   initVideoGrid(&home.grid, uiGetFont(UI_CARD_TITLE_WEIGHT), CONTENT_X, CARDS_TOP,
+                 UI_SAFE_RIGHT - CONTENT_X, GRID_BOTTOM - CARDS_TOP);
+   setGridHero(&home.grid, 1);
    pageMaxW = measurePageMaxW();   // needs the grid's page size
    initSidebar();
    setGridWatchedPredicate(&home.grid, tileWatched);
@@ -1072,6 +1075,7 @@ static void drawHome(void)
    // page's too: while the rail has the pad none of those buttons does what its hint says, and drawn over the
    // scrim they looked as live as the menu. Only a notice goes on top of everything.
    if (gridStage(&home.grid) == GRID_READY) {
+      drawGridHero(&home.grid);
       drawVideoGrid(&home.grid);
    } else {
       // where the cards will be, clear of the collapsed rail; under the panel while the menu is open

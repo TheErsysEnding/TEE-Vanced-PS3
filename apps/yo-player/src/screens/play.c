@@ -757,6 +757,7 @@ static int maxInt(int a, int b) { return a > b ? a : b; }
 static void initHints(void)
 {
    uiInitHints(&hudHints);
+   uiSetHintsFill(&hudHints, activeTheme->hintFillOnVideo);   // its chips lie on the video
    uiAddHint(&hudHints, GLYPH_CROSS,    "Pause");         // HINT_CROSS: Play while paused, Replay once ended
    uiAddHint(&hudHints, GLYPH_L1,       "");              // HINT_L1, paired with
    uiAddHint(&hudHints, GLYPH_R1,       "Chapter");       // HINT_R1
@@ -2489,15 +2490,9 @@ static void drawSkipPrompt(void)
    uiFillRounded(x, y, panelW, SKIP_H, SKIP_RADIUS, activeTheme->panelOnVideo);
    uiDrawNineSlice(UI_TEX_RING_R20_W3, x, y, panelW, SKIP_H, SKIP_RING_SCALE, activeTheme->hintFillOnVideo);
 
-   // the glyph is the console's own art, untinted
+   // (V3.0.0) the triangle as the hint rows draw it: a round chip with a white symbol
    int discX = x + SKIP_PAD_L, discY = y + (SKIP_H - SKIP_DISC_D) / 2;
-   uiFillCircle(discX, discY, SKIP_DISC_D, activeTheme->hintFillOnVideo);
-   GfxTexture glyph = getConsoleGlyph(GLYPH_TRIANGLE);
-   if (glyph.offset) {
-      int glyphW = glyph.h > 0 ? (glyph.w * SKIP_GLYPH_H + glyph.h / 2) / glyph.h : SKIP_GLYPH_H;
-      drawGfxTexture(discX + (SKIP_DISC_D - glyphW) / 2, discY + (SKIP_DISC_D - SKIP_GLYPH_H) / 2, glyphW, SKIP_GLYPH_H,
-                     glyph, 0, 0, 1, 1, 0xFFFFFFFF, GFX_FILTER_LINEAR);
-   }
+   uiDrawButtonGlyph(GLYPH_TRIANGLE, discX, discY, SKIP_DISC_D, activeTheme->hintFillOnVideo);
 
    int textX = x + SKIP_TEXT_DX;
    uiDrawLabelAt(&skipPromptLabel, textX, uiLabelYForBaseline(&skipPromptLabel, y + SKIP_TITLE_BASELINE));
