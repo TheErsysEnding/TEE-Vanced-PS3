@@ -1126,13 +1126,19 @@ const uint8_t *getVideoFrame(VideoPlayer *player, int *width, int *height)
       if (correction >  SYNC_MAX_CORRECTION) correction =  SYNC_MAX_CORRECTION;
       if (correction < -SYNC_MAX_CORRECTION) correction = -SYNC_MAX_CORRECTION;
       double speed = player->syncBaseSpeed * (1.0 + correction);
-      setAudioPcmFeedSpeed(speed);
-      player->syncSpeedSet = 1;
+      if (player->audioFeedOpen) {   // (VP9 without sound: nothing to steer, the clock is the screen's - see presentationClockNs)
+         setAudioPcmFeedSpeed(speed);
+         player->syncSpeedSet = 1;
+      }
       if (nowUs - player->syncLogUs >= 10000000ull) {
          player->syncLogUs = nowUs;
-         snprintf(syncLine, sizeof syncLine, "[video-player] display sync: picture %d ms %s the sound, sound tempo %d ppm\n",
-                  (int)((errorNs < 0 ? -errorNs : errorNs) / 1000000), errorNs < 0 ? "behind" : "ahead of",
-                  (int)(speed * 1.0e6 + 0.5));
+         if (player->audioFeedOpen)
+            snprintf(syncLine, sizeof syncLine, "[video-player] display sync: picture %d ms %s the sound, sound tempo %d ppm\n",
+                     (int)((errorNs < 0 ? -errorNs : errorNs) / 1000000), errorNs < 0 ? "behind" : "ahead of",
+                     (int)(speed * 1.0e6 + 0.5));
+         else
+            snprintf(syncLine, sizeof syncLine, "[video-player] display sync without sound: picture %d ms %s the clock\n",
+                     (int)((errorNs < 0 ? -errorNs : errorNs) / 1000000), errorNs < 0 ? "behind" : "ahead of");
       }
    } else if (player->syncSpeedSet) {
       setAudioPcmFeedSpeed(1.0);
