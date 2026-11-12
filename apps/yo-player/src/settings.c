@@ -40,6 +40,10 @@ static const char *DEFAULT_SETTINGS =
    "# the highest video quality to play: auto = the best the console plays smoothly, or a height such as 1080,\n"
    "# 720, 480, 360 or 144 - lower saves bandwidth on a slow connection. The player sets it too: START > Quality.\n"
    "\n"
+   "update-check=on\n"
+   "# on = at every start, read the newest release's version from the app's GitHub page and say when a newer\n"
+   "# one is out (nothing is downloaded); off = never ask GitHub.\n"
+   "\n"
    "subtitle-language=off\n"
    "# the language YouTube translates subtitles into when a video has none in it (Triangle offers it first):\n"
    "# off, auto = the region's (Czechia: Czech), or a code such as cs, pl, sk, hu, de, en. YouTube refuses\n"
@@ -52,6 +56,7 @@ static int vp9Spes = 6;
 static int downloadQuality = 0;   // download-quality=: the R3 page's last choice (downloads.h DownloadQuality)
 static int qualityCap = 0;   // quality=: the highest video height to play, 0 = auto
 static char subtitleLanguage[12] = "off";    // (V3.0.0) subtitle-language=: off, auto or a code
+static int updateCheck = 1;                  // (V3.0.0 Test 12) update-check=: on / off
 
 // ---- content region ----
 
@@ -218,6 +223,12 @@ void loadSettings(void)
       if (length >= 2) strCopy(subtitleLanguage, sizeof subtitleLanguage, value);
       else logWarn("[settings] subtitle-language takes off, auto or a code such as cs, using off\n");
    }
+   const char *update = findSettingValue(text, "update-check");
+   if (update) {
+      if      (settingValueEquals(update, "on"))  updateCheck = 1;
+      else if (settingValueEquals(update, "off")) updateCheck = 0;
+      else logWarn("[settings] update-check takes on or off, using on\n");
+   }
    const char *vp9 = findSettingValue(text, "vp9-spes");
    if (vp9) {
       if      (settingValueEquals(vp9, "6")) vp9Spes = 6;
@@ -302,6 +313,7 @@ static int saveSetting(const char *key, const char *value)
 static int saveRegion(const char *code) { return saveSetting("region", code); }
 
 int getQualityCap(void) { return qualityCap; }
+int getUpdateCheck(void) { return updateCheck; }
 
 int setQualityCap(int height)
 {

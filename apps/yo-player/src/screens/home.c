@@ -14,6 +14,8 @@
 #include "screens/account-screen.h"   // Login in the rail while signed out: the sign-in
 #include "screens/account-page.h"     // Account in the rail while signed in: the account's page
 #include "downloads.h"
+#include "update-check.h"   // (V3.0.0 Test 12) a newer release is out: said once a start
+#include "app-paths.h"      // APP_VERSION, in that notice
 #include "screens/download-choice.h"   // R3: in which form to download
 #include "ps-button.h"
 #include "ui/console-glyphs.h"
@@ -907,6 +909,16 @@ static void updateHome(void)
    if (!home.noticeVisible) {
       char failure[160];
       if (takeAccountFailure(failure, sizeof failure)) showNotice(failure);
+   }
+   // (V3.0.0 Test 12) a newer release on GitHub: said once a start, when no other notice is up
+   static int updateTold;
+   char newer[16];
+   if (!updateTold && !home.noticeVisible && getNewerRelease(newer, sizeof newer)) {
+      updateTold = 1;
+      char message[256];
+      snprintf(message, sizeof message, "TEE Vanced v%s is out - this is %s. It is on GitHub: TheErsysEnding/TEE-Vanced-PS3, "
+               "Releases.", newer, APP_VERSION);
+      showNotice(message);
    }
 
    updateDownloadOverlay();

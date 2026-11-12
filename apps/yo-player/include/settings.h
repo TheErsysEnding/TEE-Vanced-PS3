@@ -29,6 +29,7 @@ int setDownloadQuality(int quality);
 // settings.txt quality=auto|<height>: the highest video height to play (0 = auto, the best that plays smoothly).
 // setQualityCap changes it and saves it (0 saved, -1 not saved - the cap still applies for this run).
 int getQualityCap(void);
+int getUpdateCheck(void);   // (V3.0.0 Test 12) settings.txt update-check=: 1 on (the default), 0 off (update-check.h)
 int setQualityCap(int height);
 
 // ---- content region ----
