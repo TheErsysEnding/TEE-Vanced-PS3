@@ -48,6 +48,7 @@ static void parseTrackEntry(MkvDemuxer *demuxer, uint64_t start, uint64_t end)
    uint64_t frameDurationNs = 0;
    uint8_t  codecPrivate[256];
    int      codecPrivateSize = 0;
+   uint64_t codecDelay = 0;
 
    uint64_t pos = start;
    int guard = 0;
@@ -64,6 +65,8 @@ static void parseTrackEntry(MkvDemuxer *demuxer, uint64_t start, uint64_t end)
       } else if (id == EBML_ID_CODECID) {
          uint64_t n = size < sizeof codecId - 1 ? size : sizeof codecId - 1;
          readVideoSource(&demuxer->source, codecId, n); codecId[n] = 0;
+      } else if (id == 0x56AAu) {   // CodecDelay (Opus: the pre-skip, in ns)
+         codecDelay = readUintBE(&demuxer->source, size);
       } else if (id == EBML_ID_CODECPRIVATE) {
          codecPrivateSize = size < sizeof codecPrivate ? (int)size : (int)sizeof codecPrivate;
          readVideoSource(&demuxer->source, codecPrivate, codecPrivateSize);
@@ -89,6 +92,19 @@ static void parseTrackEntry(MkvDemuxer *demuxer, uint64_t start, uint64_t end)
          }
       }
       pos = dataStart + size;
+   }
+
+   // (V3.0.0) an Opus track - YouTube's beside VP9 - for the TEE Opus building block on the PPU
+   if (trackType == 2 && demuxer->audioTrack == 0 && strcmp(codecId, "A_OPUS") == 0 && codecPrivateSize >= 19) {
+      demuxer->audioTrack    = trackNumber;
+      demuxer->isOpus        = 1;
+      demuxer->audioRate     = 48000;   // Opus decodes at 48 kHz whatever the header says it was made from
+      demuxer->audioChannels = audioChannels > 0 ? audioChannels : 2;
+      demuxer->opusHeadSize  = codecPrivateSize < (int)sizeof demuxer->opusHead ? codecPrivateSize : (int)sizeof demuxer->opusHead;
+      memcpy(demuxer->opusHead, codecPrivate, (size_t)demuxer->opusHeadSize);
+      demuxer->codecDelayNs  = codecDelay;
+      logInfo("[demux-mkv] opus track %d, %d ch, codec delay %d us\n", trackNumber, demuxer->audioChannels,
+              (int)(codecDelay / 1000));
    }
 
    // adopt the first AAC audio track we see (other audio codecs: video plays silent)
@@ -240,9 +256,16 @@ static void parseMetadata(MkvDemuxer *demuxer, uint64_t segStart, uint64_t segEn
    }
 }
 
-int openMkvDemuxer(MkvDemuxer *demuxer, VideoSource *source)
+static int openMkv(MkvDemuxer *demuxer, VideoSource *source, int audioOnly);
+
+int openMkvDemuxer(MkvDemuxer *demuxer, VideoSource *source) { return openMkv(demuxer, source, 0); }
+
+int openMkvAudioDemuxer(MkvDemuxer *demuxer, VideoSource *source) { return openMkv(demuxer, source, 1); }
+
+static int openMkv(MkvDemuxer *demuxer, VideoSource *source, int audioOnly)
 {
    memset(demuxer, 0, sizeof *demuxer);
+   demuxer->audioOnly = audioOnly;
    demuxer->timecodeScale = 1000000;   // Matroska default: 1 ms per tick
 
    demuxer->source = *source;            // adopt the already-open source (caller opened + sniffed it)
@@ -259,7 +282,8 @@ int openMkvDemuxer(MkvDemuxer *demuxer, VideoSource *source)
    demuxer->segmentEnd   = unknown ? getVideoSourceSize(&demuxer->source) : segStart + size;
 
    parseMetadata(demuxer, segStart, demuxer->segmentEnd);
-   if (demuxer->videoTrack == 0 || (!demuxer->h264.valid && !demuxer->isVp9)) goto fail;   // no decodable track
+   if (audioOnly ? demuxer->audioTrack == 0
+                 : (demuxer->videoTrack == 0 || (!demuxer->h264.valid && !demuxer->isVp9))) goto fail;   // nothing to decode
 
    // some muxers write only a tiny SeekHead up front whose sole entry points at a second SeekHead
    // near the end of the file, and that one holds the Cues entry; follow the chain one hop
@@ -277,18 +301,20 @@ int openMkvDemuxer(MkvDemuxer *demuxer, VideoSource *source)
 
    // VP9: the decoder copies a block the moment it takes it, so one buffer does, and the frame is read
    // straight into it (no Annex-B conversion, no block scratch) - 16 MB less beside a decoder that needs 126
-   for (int i = 0; i < (demuxer->isVp9 ? 1 : AU_BUFFER_COUNT); i++) {
+   for (int i = 0; i < (audioOnly ? 0 : demuxer->isVp9 ? 1 : AU_BUFFER_COUNT); i++) {
       demuxer->auBuffers[i] = (uint8_t *)malloc(AU_BUFFER_SIZE);
       if (!demuxer->auBuffers[i]) goto fail;
    }
-   if (!demuxer->isVp9 || demuxer->audioTrack) {   // audio blocks are unlaced through it
-      demuxer->blockBuffer = (uint8_t *)malloc(BLOCK_BUFFER_SIZE);
+   // audio blocks are unlaced through it; an audio-only stream's blocks are a few hundred bytes
+   int blockBytes = audioOnly ? 64 * 1024 : BLOCK_BUFFER_SIZE;
+   if (!demuxer->isVp9 || demuxer->audioTrack) {
+      demuxer->blockBuffer = (uint8_t *)malloc((size_t)blockBytes);
       if (!demuxer->blockBuffer) goto fail;
    }
    if (demuxer->audioTrack && createAudioAuQueue(&demuxer->audioQueue) != 0)
       demuxer->audioTrack = 0;   // no queue: play silent rather than fail
    demuxer->auCapacity    = AU_BUFFER_SIZE;
-   demuxer->blockCapacity = BLOCK_BUFFER_SIZE;
+   demuxer->blockCapacity = blockBytes;
 
    demuxer->pos = segStart;   // block reads walk the segment from the top, skipping non-clusters
    return 0;
@@ -431,7 +457,22 @@ static int parseBlock(MkvDemuxer *demuxer, uint64_t start, uint64_t end, VideoAu
    return 1;
 }
 
-int readMkvVideoAu(MkvDemuxer *demuxer, VideoAu *au)
+// the cluster walk: blocks of the video track come out as AUs (1); with audioOnly it stops as soon as an audio
+// block has gone into the queue instead
+static int walkClusters(MkvDemuxer *demuxer, VideoAu *au, int audioOnly);
+
+int readMkvVideoAu(MkvDemuxer *demuxer, VideoAu *au) { return walkClusters(demuxer, au, 0); }
+
+int readMkvAudioAu(MkvDemuxer *demuxer, AudioAu *au)
+{
+   if (takeQueuedAudioAu(&demuxer->audioQueue, au)) return 1;
+   VideoAu unused;
+   int rc = walkClusters(demuxer, &unused, 1);
+   if (rc <= 0) return rc;
+   return takeQueuedAudioAu(&demuxer->audioQueue, au) ? 1 : 0;
+}
+
+static int walkClusters(MkvDemuxer *demuxer, VideoAu *au, int audioOnly)
 {
    int guard = 0;
    while (demuxer->pos < demuxer->segmentEnd && guard++ < 100000) {
@@ -455,6 +496,7 @@ int readMkvVideoAu(MkvDemuxer *demuxer, VideoAu *au)
          demuxer->pos = dataStart + size;
          if (got == 1) return 1;
          if (got < 0) return -1;
+         if (audioOnly && demuxer->audioQueue.head != demuxer->audioQueue.tail) return 1;
          continue;
       }
       if (id == EBML_ID_BLOCKGROUP) {        // enter to find the Block child
@@ -469,6 +511,7 @@ int readMkvVideoAu(MkvDemuxer *demuxer, VideoAu *au)
          demuxer->pos = dataStart + size;
          if (result == 1) return 1;
          if (result < 0) return -1;
+         if (audioOnly && demuxer->audioQueue.head != demuxer->audioQueue.tail) return 1;
          continue;
       }
       if (unknown) return 0;

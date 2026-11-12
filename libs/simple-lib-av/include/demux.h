@@ -14,6 +14,10 @@ typedef struct {
 
    // track metadata mirrored from the container at open
    int        isVp9;            // the video is VP9 (WebM): its AUs are raw blocks for the TEE VP9 building block
+   int        isOpus;           // (V3.0.0) the audio is Opus (an audio-only WebM): for the TEE Opus building block
+   uint8_t    opusHead[64];     // ... its OpusHead
+   int        opusHeadSize;
+   uint64_t   codecDelayNs;     // ... a block's first sample plays at its time stamp minus this
    H264Config h264;             // SPS/PPS header + NAL length size + ref-frame count
    int        level;            // AVC level, passed to cellVdec as profileLevel
    int        width, height;
@@ -35,7 +39,7 @@ static inline int readVideoAu(VideoDemuxer *demuxer, VideoAu *au)   // 1 = got A
 
 static inline int readAudioAu(VideoDemuxer *demuxer, AudioAu *au)   // audio-only demuxer: 1 = got AU, 0 = end of stream
 {
-   return demuxer->isMp4 ? readMp4AudioAu(&demuxer->container.mp4, au) : 0;
+   return demuxer->isMp4 ? readMp4AudioAu(&demuxer->container.mp4, au) : readMkvAudioAu(&demuxer->container.mkv, au);
 }
 
 static inline int takeAudioAu(VideoDemuxer *demuxer, AudioAu *au)   // pops a queued audio AU: 1 = got one, 0 = queue empty

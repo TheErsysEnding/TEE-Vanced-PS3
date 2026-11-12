@@ -28,6 +28,11 @@ typedef struct {
    int        width, height;
 
    int      audioTrack;         // Matroska track number of the AAC audio track (0 = none / unsupported codec)
+   int      isOpus;             // (V3.0.0) the audio track is A_OPUS (YouTube's itag 251 beside VP9)
+   uint8_t  opusHead[64];       // ... its CodecPrivate ("OpusHead") for the TEE Opus building block
+   int      opusHeadSize;
+   uint64_t codecDelayNs;       // ... CodecDelay: a block's first sample plays at its time stamp minus this
+   int      audioOnly;          // opened by openMkvAudioDemuxer: no video track, blocks read with readMkvAudioAu
    int      audioRate;          // sampling frequency in Hz
    int      audioChannels;
    AudioAuQueue audioQueue;     // demuxed audio AUs en route to the audio decode thread
@@ -58,6 +63,10 @@ typedef struct {
 
 int  openMkvDemuxer(MkvDemuxer *demuxer, VideoSource *source);   // adopts an already-open source; 0 on success (video track found), -1 otherwise
 int  readMkvVideoAu(MkvDemuxer *demuxer, VideoAu *au);        // 1 = got AU, 0 = end of stream, -1 = error
+// (V3.0.0) an audio-only WebM (YouTube's Opus stream, itag 251): adopts the source; 0 when an Opus or AAC track is
+// there. Its blocks come one at a time through readMkvAudioAu (1 = one, 0 = end of stream, -1 = error).
+int  openMkvAudioDemuxer(MkvDemuxer *demuxer, VideoSource *source);
+int  readMkvAudioAu(MkvDemuxer *demuxer, AudioAu *au);
 void closeMkvDemuxer(MkvDemuxer *demuxer);
 
 // jumps the cluster walk to the last cued keyframe at or before targetNs (files without Cues fall

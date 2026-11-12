@@ -110,6 +110,16 @@ const StreamFormat *pickVideoForPlayback(const StreamInfo *info, int teeUsable, 
    return pickVideoCapped(info, teeUsable, maxHeight);
 }
 
+// (V3.0.0) the Opus stream (itag 251) for a VP9 video, NULL when the video has none
+const StreamFormat *pickOpusAudio(const StreamInfo *info)
+{
+   for (int i = 0; i < info->formatCount; i++) {
+      const StreamFormat *f = &info->formats[i];
+      if (f->isOpus && f->hasAudio && !f->hasVideo && !f->needsCipher && f->url[0]) return f;
+   }
+   return NULL;
+}
+
 const StreamFormat *pickBestAudio(const StreamInfo *info)
 {
    const StreamFormat *best = NULL;

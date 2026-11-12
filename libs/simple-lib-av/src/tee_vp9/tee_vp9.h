@@ -8,8 +8,8 @@
    a stream stops with an error (tvp9_error says which), it never shows garbage.
 
    How fast (measured on the console with the test application, whole clips, every picture equal to ffmpeg's): real
-   YouTube 1440p60 at 62 - 66 pictures a second on 2 entropy + 4 pixel SPEs, all 6. The RSX prediction that brings
-   73 - 78 is not part of this version.
+   YouTube 1440p60 at 62 - 66 pictures a second on 2 entropy + 4 pixel SPEs, all 6; 74 - 77 with the RSX prediction
+   (tvp9_config.rsx - an option that asks the app's display code to share the RSX: tv9_rsx_host.h).
 
    Use - one decoder at a time:
 
@@ -64,7 +64,7 @@
 extern "C" {
 #endif
 
-#define TEE_VP9_VERSION "0.1.0"
+#define TEE_VP9_VERSION "0.2.1"
 
 typedef struct tvp9 tvp9;
 
@@ -87,6 +87,17 @@ typedef struct {
 	int timeout_ms;                 /* an SPE that does not answer this long stops the decoder (10000) */
 	int max_pictures;               /* decode at most this many */
 	int no_store;                   /* the pixel SPEs write reconstructed superblocks into the frame, not a store */
+
+	/* 0.2: 1 = the RSX predicts the inter blocks that have one reference, and the pixel SPEs fetch its predictions
+	   (real YouTube 1440p60: 74 - 77 pictures a second instead of 62 - 66). Needs a build with the block's RSX part
+	   (-DTV9_RSX: rsx_mc.c, vp9_rsxmc.c, vp9_tables.c, tv9_rsx_programs.c, and the app's display code as
+	   tv9_rsx_host.h asks) - without it tvp9_open fails.
+	   If the RSX stops taking the block's commands while a stream plays (2 s without a row), the block gives the RSX
+	   up until tvp9_close and goes on on the SPEs alone. The frames that were under way have no proper predictions
+	   then, and the frames after them build on those: their pictures are not handed out, up to the next key frame
+	   (tvp9_picture.index skips their numbers; YouTube has a key frame about every 5 s).
+	   The picture block is mapped for the RSX by the decoder, and 17 MB of prediction surfaces come on top */
+	int rsx;
 } tvp9_config;
 
 typedef struct {
@@ -94,7 +105,8 @@ typedef struct {
 	int stride_y, stride_c;         /* bytes from one row to the next */
 	int width, height;              /* the picture's size, e.g. 2560 x 1440; chroma planes: half of each, rounded up */
 	int64_t pts;                    /* the time stamp fed with its block */
-	int index;                      /* 0, 1, 2 ... since tvp9_open / tvp9_flush */
+	int index;                      /* 0, 1, 2 ... since tvp9_open / tvp9_flush (numbers are skipped where pictures
+	                                   were not handed out after the RSX part failed: see tvp9_config.rsx) */
 	int key_frame;                  /* 1: a key frame */
 	uint32_t offset_y, offset_u, offset_v;   /* y, u, v as byte offsets into the picture memory block */
 	int out_, gen_;                 /* internal */
@@ -138,6 +150,7 @@ int    tvp9_probe(const void *block, size_t size, int *width, int *height, int *
 typedef struct {
 	int frames, pictures;           /* frames decoded (hidden ones too); pictures handed out */
 	int dropped;                    /* blocks dropped before the first key frame */
+	int rsx_frames;                 /* frames the RSX predicted blocks of (tvp9_config.rsx) */
 	double entropy_ms, pixel_ms;    /* the mean time a frame took on its entropy SPEs (the slower one) and on its
 	                                   pixel SPEs (their sum) */
 	double fps;                     /* frames decoded a second of wall time while the decoder was not waiting for

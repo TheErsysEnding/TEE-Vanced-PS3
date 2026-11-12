@@ -376,13 +376,18 @@ static void parseFormatArray(const char *arrayStart, const char *regionEnd, int 
       int isVp9 = strstr(mimeType, "webm") && (strstr(mimeType, "\"vp9\"") || strstr(mimeType, "vp09.00.")) &&
                   format->height > 1080 && format->height <= 1440 && format->width <= 2560;
       if (progressive)                              format->hasVideo = format->hasAudio = 1;
-      else if (strncmp(mimeType, "audio/", 6) == 0) format->hasAudio = isAac;
+      // (V3.0.0) Opus in WebM, itag 251 only (the best of YouTube's three): VP9's sound, decoded on the PPU
+      else if (strncmp(mimeType, "audio/", 6) == 0) {
+         int isOpus = strstr(mimeType, "webm") && strstr(mimeType, "opus") && format->itag == 251;
+         format->hasAudio = isAac || isOpus;
+         format->isOpus = isOpus && !isAac;
+      }
       else                                          { format->hasVideo = isAvc || isVp9; format->isVp9 = isVp9 && !isAvc; }
 
       // an audio stream of a video with several audio tracks (other languages, AI dubs) is filed by track
       // instead - see collectAudioTrack; the chosen track's stream joins formats[] once the array is read
       int tracked = 0;
-      if (format->hasAudio && !format->hasVideo) {
+      if (format->hasAudio && !format->hasVideo && !format->isOpus) {
          char drc[4];
          format->isDrc = findIn(object, objectEnd, "\"isDrc\":true") != NULL ||
                          (xtagValue(format->url, "drc", drc, sizeof drc) && drc[0] == '1');

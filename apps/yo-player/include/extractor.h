@@ -24,6 +24,7 @@ typedef struct {
    long liveEdgeSq;        // most recent segment number available (live edge)
    int  isDrc;             // audio: the dynamic-range-compressed copy YouTube serves beside the normal mix
    int  isVp9;             // video: VP9 profile 0 in WebM - 1440p for the TEE VP9 building block (V3.0.0)
+   int  isOpus;            // audio: Opus in WebM (itag 251) - VP9's sound, on the TEE Opus building block (V3.0.0)
 } StreamFormat;
 
 // How much an audio track is worth playing by default, lowest first. YouTube serves some videos with several

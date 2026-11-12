@@ -22,6 +22,10 @@
 #include "tv9_plat.h"
 #include "vp9_job.h"
 #include "vp9_pix_job.h"
+#ifdef TV9_RSX
+#include "rsx_mc.h"
+#include "vp9_rsxmc.h"
+#endif
 
 #define MAX_ENT       2
 #define MAX_PIX       4
@@ -55,6 +59,16 @@ typedef struct {
 	int fb, refs[3], used, left, tiles;
 	uint32_t na, nb, oa;
 	int seam;
+	int order;                       /* decode order */
+	double ticks;                    /* its pixel jobs' time so far */
+	int rsx_want, rsx_slot1;         /* the RSX predicts its inter blocks; its slot there + 1 (0: none yet, its jobs wait) */
+	int rsx_level;                   /* ... the level it was given (-1: none) */
+	uint32_t rsx_sizes;              /* ... the block sizes the RSX takes in this frame */
+	struct {                         /* ... its records for the rectangle builder: one or two parts, walked row by row */
+		const uint8_t *rec[2];
+		uint32_t bytes[2], pos[2];
+		int parts, mi_rows, mi_cols;
+	} rr;
 } ptask;
 
 typedef struct {
@@ -103,6 +117,7 @@ struct tvp9 {
 	/* shown frames, in the order fed */
 	struct {
 		int fb, key;
+		int bad;                     /* not to be handed out (rsx_lost) */
 		int64_t pts;
 	} dq[DQ];
 	uint32_t dq_r, dq_w;
@@ -122,6 +137,22 @@ struct tvp9 {
 	volatile uint32_t in_done;       /* the decoder's: frames whose bytes are free again */
 	uint32_t in_sent;                /* the decoder's: frames sent to the entropy stage */
 	int started;                     /* the feeder's: a key frame has come */
+
+	/* the RSX's part (tvp9_config.rsx) */
+	int rsx_on;                      /* asked for and prepared in tvp9_open */
+	int rsx_started;                 /* its worker runs: set up for rsx_aw x rsx_ah */
+	int rsx_aw, rsx_ah;
+	int order;
+	/* its share, chosen by trying (test.c's rsx_epoch_end): levels 0 nothing, 1 blocks from 32x32 on, 2 from 16x16
+	   on, 3 all; a neighbour level is tried between two epochs of the held one */
+	int rsx_best, rsx_level, rsx_phase, rsx_trial, rsx_ep_n, rsx_epoch, rsx_next_try[2], rsx_backoff[2], rsx_dir_last;
+	double rsx_ep_ms, rsx_ms_a, rsx_ms_b;
+	volatile int st_rsx_frames;
+	/* the RSX part failed in the middle of the stream (rsx_lost): the stream goes on on the SPEs alone; the pictures
+	   of the frames that were under way, and of all frames up to the next key frame, are not handed out */
+	int rsx_lost;                    /* ... until tvp9_close */
+	int mute;                        /* frames taken now are not shown: no key frame has come since */
+	int muted;                       /* pictures not handed out so far */
 
 	/* statistics (the decoder thread writes, anyone reads) */
 	volatile int st_frames, st_pictures, st_dropped;
@@ -405,6 +436,212 @@ static pix_prog *halfp_of(tvp9 *d, int fb)
 	return (pix_prog *)(d->progmem + (size_t)fb * 256 + 144);
 }
 
+#ifdef TV9_RSX
+#define RSX_EPOCH 12                 /* frames a level is measured over */
+static const uint32_t rsx_lv_sizes[4] = { 0, 0x1E00, 0x1FC0, 0x1FFF };
+
+static void rsx_control_reset(tvp9 *d)
+{
+	d->rsx_best = d->rsx_level = 3;
+	d->rsx_phase = d->rsx_ep_n = d->rsx_epoch = 0;
+	d->rsx_ep_ms = 0;
+	d->rsx_next_try[0] = d->rsx_next_try[1] = 1;
+	d->rsx_backoff[0] = d->rsx_backoff[1] = 2;
+	d->rsx_dir_last = 0;
+}
+
+/* RSX_EPOCH frames of the level in use are done: their mean is ms of pixel SPE time a frame. A trial level is taken
+   when its epoch was at least 1.5 % faster than the better of the held level's epochs before and after it; one that
+   was not makes its direction wait twice as long as before (2 .. 32 epochs) */
+static void rsx_epoch_end(tvp9 *d, double ms)
+{
+	d->rsx_epoch++;
+	if (d->rsx_phase == 1) {
+		d->rsx_ms_b = ms;
+		d->rsx_level = d->rsx_best;
+		d->rsx_phase = 2;
+		return;
+	}
+	if (d->rsx_phase == 2) {
+		const int dir = d->rsx_trial > d->rsx_best;
+		const double a = d->rsx_ms_a < ms ? d->rsx_ms_a : ms;
+
+		d->rsx_phase = 0;
+		if (d->rsx_ms_b < a * 0.985) {
+			d->rsx_best = d->rsx_level = d->rsx_trial;
+			d->rsx_backoff[dir] = 2;
+			d->rsx_next_try[dir] = d->rsx_epoch + 1;
+			if (d->rsx_next_try[!dir] < d->rsx_epoch + 4)
+				d->rsx_next_try[!dir] = d->rsx_epoch + 4;
+			d->rsx_dir_last = !dir;         /* (dir is asked first again) */
+			return;                         /* (the next epoch is the new level's) */
+		}
+		d->rsx_backoff[dir] = d->rsx_backoff[dir] >= 16 ? 32 : d->rsx_backoff[dir] * 2;
+		d->rsx_next_try[dir] = d->rsx_epoch + d->rsx_backoff[dir];
+	}
+	d->rsx_ms_a = ms;                       /* (an epoch of the held level) */
+	for (int i = 0; i < 2; i++) {
+		const int dir = d->rsx_dir_last ^ 1 ^ i, l = d->rsx_best + (dir ? 1 : -1);
+
+		if (l >= 0 && l <= 3 && d->rsx_next_try[dir] <= d->rsx_epoch) {
+			d->rsx_trial = d->rsx_level = l;
+			d->rsx_phase = 1;
+			d->rsx_dir_last = dir;
+			return;
+		}
+	}
+}
+
+/* a task's records, superblock row sb_row, as rectangles for the RSX (rsx_mc's worker thread calls it row by row) */
+static void rsx_rowfn(void *user, int sb_row, rsxmc_lists *L)
+{
+	ptask *tk = user;
+	rsxmc_geom g = *rsx_mc_geom();
+
+	g.sizes = tk->rsx_sizes;
+	g.sizes2 = 0;
+	g.compound = 0;
+	for (int i = 0; i < tk->rr.parts; i++)
+		tk->rr.pos[i] = rsxmc_build_row(L, &g, tk->rr.rec[i], tk->rr.bytes[i], tk->rr.pos[i], tk->rr.mi_rows, tk->rr.mi_cols,
+		                                sb_row);
+}
+
+/* the frames waiting for a slot at the RSX, oldest first (test.c's rsx_assign); returns 1 when one got on */
+static int rsx_assign(tvp9 *d)
+{
+	int moved = 0;
+
+	for (;;) {
+		ptask *tk = NULL;
+		rsx_mc_desc desc;
+		pix_frame pred;
+		uint32_t pitch, base;
+		uint64_t lab;
+		int slot;
+
+		for (int t = 0; t < d->ntask; t++)
+			if (d->tasks[t].used && d->tasks[t].rsx_want && !d->tasks[t].rsx_slot1 && (!tk || d->tasks[t].order < tk->order))
+				tk = &d->tasks[t];
+		if (!tk)
+			break;
+		if (rsx_mc_failed() || d->rsx_level == 0) {   /* no rows from the RSX, or its level is "nothing": the SPEs alone */
+			tk->rsx_want = 0;
+			tk->rsx_level = rsx_mc_failed() ? -1 : 0;
+			moved = 1;
+			continue;
+		}
+		memset(&desc, 0, sizeof(desc));
+		for (int k = 0; k < 3; k++) {
+			desc.ref[k] = tk->job.ref[k];
+			desc.prog[k] = (const pix_prog *)(uintptr_t)tk->job.ref_prog_ea[k];
+		}
+		desc.stride_y = tk->job.stride_y;
+		desc.stride_c = tk->job.stride_c;
+		desc.sb_rows = (tk->rr.mi_rows + 7) >> 3;
+		desc.order = tk->order;
+		desc.fn = rsx_rowfn;
+		desc.user = tk;
+		tk->rsx_sizes = rsx_lv_sizes[d->rsx_level];   /* (before the slot is taken: its rows are built from then on) */
+		slot = rsx_mc_begin(&desc, &pred, &pitch, &lab, &base);
+		if (slot < 0)
+			break;                          /* (one comes with another frame's end) */
+		tk->rsx_level = d->rsx_level;
+		tk->rsx_slot1 = slot + 1;
+		for (int part = 0; part < 1 + tk->tiles; part++) {
+			pix_job *j = part ? &tk->job2 : &tk->job;
+
+			j->flags |= PIXJ_RSX_PRED | PIXJ_RSX_MARKER | (rsx_mc_geom()->strips ? PIXJ_RSX_STRIPS : 0);
+			j->pred = pred;
+			j->pred_pitch_y = j->pred_pitch_c = pitch;
+			j->rsx_sizes = tk->rsx_sizes & 0x1FFF;
+			rsx_mc_marker(slot, &j->pred_lab_ea, &j->pred_lab_base);
+		}
+		d->st_rsx_frames++;
+		moved = 1;
+	}
+	return moved;
+}
+
+/* the stream's size is known: the RSX's surfaces for it, its worker started */
+static void rsx_setup(tvp9 *d)
+{
+	void *list[1] = { d->pic_mem };
+
+	if (!d->rsx_on || d->rsx_lost || (d->rsx_started && d->rsx_aw == d->aw && d->rsx_ah == d->ah))
+		return;
+	if (d->rsx_started)
+		rsx_mc_stop();
+	d->rsx_started = 0;
+	if (rsx_mc_init(list, 1, d->pic_bytes, d->aw, d->ah) != 0 || rsx_mc_start() != 0) {
+		tv9p_log("TEE VP9: the RSX's part did not start - this stream on the SPEs alone");
+		return;
+	}
+	d->rsx_aw = d->aw;
+	d->rsx_ah = d->ah;
+	d->rsx_started = 1;
+	rsx_control_reset(d);
+}
+
+/* a task is over (done, or given up at a flush): its slot is free */
+static void rsx_task_end(tvp9 *d, ptask *tk, int count)
+{
+	if (tk->rsx_slot1)
+		rsx_mc_end(tk->rsx_slot1 - 1);
+	tk->rsx_slot1 = 0;
+	if (count && d->rsx_started && tk->rsx_level >= 0 && tk->rsx_level == d->rsx_level) {
+		/* (frames given another level before the last change are not counted) */
+		d->rsx_ep_ms += tk->ticks / tv9p_tick_mhz() / 1000.0;
+		if (++d->rsx_ep_n >= RSX_EPOCH) {
+			const double ms = d->rsx_ep_ms / d->rsx_ep_n;
+
+			d->rsx_ep_ms = 0;
+			d->rsx_ep_n = 0;
+			rsx_epoch_end(d, ms);
+		}
+	}
+}
+
+/* The RSX part failed in the middle of the stream: its RSX did not take commands in time (rsx_mc's own waits), or a
+   pixel SPE waited 4 s for a row. The frames under way have no proper predictions, and every frame after them builds
+   on those. So: no frame goes to the RSX any more; the pictures of the frames under way and of all frames up to the
+   next key frame are not handed out (their numbers are skipped); the pixel SPEs that wait for rows are let go */
+static void rsx_lost(tvp9 *d, const char *why)
+{
+	int n = 0;
+
+	if (d->rsx_lost)
+		return;
+	d->rsx_lost = 1;
+	for (uint32_t k = d->dq_r; k != d->dq_w; k++)
+		if (d->fb[d->dq[k % DQ].fb].writing && !d->dq[k % DQ].key && !d->dq[k % DQ].bad) {
+			d->dq[k % DQ].bad = 1;          /* (a key frame under way is whole: it has no predictions) */
+			n++;
+		}
+	d->muted += n;
+	d->mute = 1;
+	rsx_mc_give_up();
+	tv9p_log("TEE VP9: the RSX part failed (%s) - on the SPEs alone from here on; no pictures until the next key frame "
+	         "(%d of the frames under way are not shown)", why, n);
+}
+
+/* ... while frames that have a slot at the RSX are under way: rows the RSX draws late must not make their SPEs wait */
+static void rsx_lost_tick(tvp9 *d)
+{
+	for (int t = 0; t < d->ntask; t++)
+		if (d->tasks[t].used && d->tasks[t].rsx_slot1) {
+			rsx_mc_give_up();
+			return;
+		}
+}
+#else
+#define rsx_setup(d)             ((void)0)
+#define rsx_assign(d)            0
+#define rsx_task_end(d, tk, n)   ((void)0)
+#define rsx_lost(d, why)         ((void)0)
+#define rsx_lost_tick(d)         ((void)0)
+#define rsx_mc_failed()          0
+#endif
+
 /* the frame buffers for a w x h stream, inside the picture block */
 static int geometry(tvp9 *d, int w, int h)
 {
@@ -436,6 +673,7 @@ static int geometry(tvp9 *d, int w, int h)
 	}
 	d->geo = 1;
 	tv9p_log("TEE VP9: a stream of %d x %d (frame buffers %d x %d, strides %d / %d)", w, h, d->aw, d->ah, d->sy, d->sc);
+	rsx_setup(d);
 	return 0;
 }
 
@@ -536,8 +774,14 @@ static int show_later(tvp9 *d, int fb, int key, int64_t pts)
 		fail(d, "too many shown frames wait for their pixels");
 		return -1;
 	}
+	if (d->mute && key) {               /* (after rsx_lost) a key frame: everything is whole again from here */
+		d->mute = 0;
+		tv9p_log("TEE VP9: pictures again from this key frame on - %d were not handed out", d->muted);
+	}
 	d->dq[d->dq_w % DQ].fb = fb;
 	d->dq[d->dq_w % DQ].key = key;
+	d->dq[d->dq_w % DQ].bad = d->mute;
+	d->muted += d->mute;
 	d->dq[d->dq_w % DQ].pts = pts;
 	d->dq_w++;
 	d->fb[fb].disp++;
@@ -669,6 +913,19 @@ static int take_frame(tvp9 *d, int i)
 	tk->fb = fb;
 	tk->used = 1;
 	tk->left = 1 + tk->tiles;
+	tk->order = d->order++;
+	tk->ticks = 0;
+	tk->rsx_slot1 = 0;
+	tk->rsx_level = -1;
+	tk->rsx_want = d->rsx_started && !d->rsx_lost && !intra;
+	tk->rr.mi_rows = ((int)er->height + 7) >> 3;
+	tk->rr.mi_cols = ((int)er->width + 7) >> 3;
+	tk->rr.parts = 1 + tk->tiles;
+	tk->rr.rec[0] = d->recbuf[t];
+	tk->rr.bytes[0] = tk->tiles ? tk->na : n;
+	tk->rr.rec[1] = d->recbuf[t] + tk->oa;
+	tk->rr.bytes[1] = tk->nb;
+	tk->rr.pos[0] = tk->rr.pos[1] = 0;
 	pp->rows = 0;                       /* nothing of this buffer's new frame is final yet */
 	pp->lim_y = pp->lim_c = PIX_LIM_NONE;
 	d->fb[fb].writing = 1;
@@ -719,7 +976,10 @@ static void pixel_done(tvp9 *d, int p, uint32_t word)
 	tk = &d->tasks[t];
 	d->run[p] = -1;
 	d->st_pixel_ticks += pr->ticks_total;
-	if (pr->status != PIX_OK)
+	tk->ticks += pr->ticks_total;
+	if (pr->status == PIX_RSX_TIMEOUT && d->rsx_started)
+		rsx_lost(d, "a pixel SPE waited for a row of the RSX in vain");   /* (its frame is not shown; the stream goes on) */
+	else if (pr->status != PIX_OK)
 		fail(d, "frame %d: pixel SPE %d reports status %u (part %d of %d)", d->st_frames, p, (unsigned)pr->status, part + 1,
 		     1 + tk->tiles);
 	if (--tk->left > 0)
@@ -728,6 +988,7 @@ static void pixel_done(tvp9 *d, int p, uint32_t word)
 	for (int k = 0; k < 3; k++)
 		if (tk->refs[k] >= 0)
 			d->fb[tk->refs[k]].readers--;
+	rsx_task_end(d, tk, 1);
 	tk->used = 0;
 	d->st_frames++;
 }
@@ -812,12 +1073,21 @@ static int advance(tvp9 *d)
 		d->in_done++;                   /* the frame's bytes are free (the input goes on in order) */
 		moved = 1;
 	}
+	if (d->rsx_started && !d->rsx_lost && rsx_mc_failed())
+		rsx_lost(d, "the RSX did not take its commands");
+	if (d->rsx_lost)
+		rsx_lost_tick(d);
+	if (!stopping && d->rsx_started)
+		moved |= rsx_assign(d);
 	/* pixel jobs to the free pixel SPEs, in decode order */
 	for (int p = 0; p < d->npix && d->qn > 0 && !d->hung; p++)
 		if (d->run[p] < 0) {
 			const int e = d->q[0];
 			ptask *tk = &d->tasks[e >> 1];
 			pix_job *j = (e & 1) ? &tk->job2 : &tk->job;
+
+			if (tk->rsx_want && !tk->rsx_slot1)
+				break;                      /* its slot at the RSX comes with another frame's end */
 
 			memmove(d->q, d->q + 1, sizeof(int) * (size_t)(--d->qn));
 			j->seq = ++d->seq;
@@ -832,9 +1102,21 @@ static int advance(tvp9 *d)
 			moved = 1;
 		}
 	/* the shown frames whose pixels are done, in order, to the app */
-	while (!stopping && d->dq_r != d->dq_w && !d->fb[d->dq[d->dq_r % DQ].fb].writing && d->out_w - d->out_r < OUTQ) {
+	while (!stopping && d->dq_r != d->dq_w && !d->fb[d->dq[d->dq_r % DQ].fb].writing) {
 		out_pic *o = &d->outq[d->out_w % OUTQ];
 
+		if (d->dq[d->dq_r % DQ].bad) {      /* (rsx_lost) not a picture to show: its buffer is free again, its number is used */
+			const int fb = d->dq[d->dq_r % DQ].fb;
+
+			if (d->fb[fb].disp > 0)
+				d->fb[fb].disp--;
+			d->pic_index++;
+			d->dq_r++;
+			moved = 1;
+			continue;
+		}
+		if (d->out_w - d->out_r >= OUTQ)
+			break;
 		o->fb = d->dq[d->dq_r % DQ].fb;
 		o->key = d->dq[d->dq_r % DQ].key;
 		o->pts = d->dq[d->dq_r % DQ].pts;
@@ -871,8 +1153,10 @@ static void restart(tvp9 *d)
 		d->e_ans[k] = 0;
 	for (int k = 0; k < DEPTH; k++)
 		d->e_got[k] = 0;
-	for (int k = 0; k < NTASK_MAX; k++)
+	for (int k = 0; k < NTASK_MAX; k++) {
+		rsx_task_end(d, &d->tasks[k], 0);   /* (a frame given up keeps no slot at the RSX) */
 		d->tasks[k].used = 0;
+	}
 	d->qn = 0;
 	for (int k = 0; k < NFB_MAX; k++)
 		d->fb[k].refs = d->fb[k].writing = d->fb[k].readers = d->fb[k].disp = 0;
@@ -883,7 +1167,9 @@ static void restart(tvp9 *d)
 	d->geo = 0;
 	d->reset_next = 1;
 	d->drained = 0;
-	d->st_frames = d->st_pictures = d->st_dropped = 0;
+	d->mute = 0;                        /* (the next stream starts with a key frame; rsx_lost stays) */
+	d->muted = 0;
+	d->st_frames = d->st_pictures = d->st_dropped = d->st_rsx_frames = 0;
 	d->st_entropy_ticks = d->st_pixel_ticks = d->st_busy_ticks = 0;
 	d->gen++;                           /* pictures of before are not the app's any more */
 	tv9p_sync();
@@ -963,6 +1249,10 @@ static void free_all(tvp9 *d)
 	tv9p_free(d->xchgmem);
 	tv9p_free(d->progmem);
 	tv9p_free(d->inbuf);
+#ifdef TV9_RSX
+	if (d->rsx_on)
+		rsx_mc_release();               /* (its surfaces; the picture block's mapping) */
+#endif
 	if (d->pic_own)
 		tv9p_free(d->pic_mem);
 	tv9p_free(d);
@@ -1018,6 +1308,25 @@ tvp9 *tvp9_open(const tvp9_config *c, char *err, int errlen)
 	if (!ok || !d->pic_mem)
 		OPEN_FAIL("no memory: the decoder needs %u MB for its pictures and %u MB beside them",
 		          (unsigned)(d->pic_bytes >> 20), (unsigned)(tvp9_memory_size(c) >> 20));
+	if (c->rsx) {
+#ifdef TV9_RSX
+		/* as the test application's timing runs: compact vertices, the fragment program W3T, the surface in cells of
+		   192 x 32, no wait of the RSX for its back end, a marker in main memory after every row */
+		rsx_mc_compact(1);
+		rsx_mc_compound(0);
+		rsx_mc_short(2);
+		rsx_mc_strips(1);
+		rsx_mc_sync(0);
+		rsx_mc_row_flush(0);
+		rsx_mc_row_marker(1);
+		rsx_mc_sizes(0);
+		if (rsx_mc_prealloc((c->max_width + 63) & ~63, (c->max_height + 63) & ~63) != 0)
+			OPEN_FAIL("no memory for the RSX's prediction surfaces");
+		d->rsx_on = 1;
+#else
+		OPEN_FAIL("this build of the decoder has no RSX part (tvp9_config.rsx)");
+#endif
+	}
 	memset(d->xchgmem, 0, VP9_XCHG_BYTES);
 	memset(d->progmem, 0, (size_t)NFB_MAX * 256);
 	for (int p = 0; p < MAX_PIX; p++)
@@ -1050,6 +1359,16 @@ void tvp9_close(tvp9 *d)
 	tv9p_sync();
 	tv9p_wake();
 	tv9p_thread_join(d->thread);
+#ifdef TV9_RSX
+	if (d->rsx_on) {
+		for (int k = 0; k < NTASK_MAX; k++)
+			rsx_task_end(d, &d->tasks[k], 0);
+		if (d->rsx_started) {
+			rsx_mc_stop();
+			rsx_mc_report("tee_vp9");
+		}
+	}
+#endif
 	tv9p_spes_stop(d->hung);
 	tv9p_shutdown();
 	free_all(d);
@@ -1190,6 +1509,7 @@ void tvp9_get_stats(const tvp9 *d, tvp9_stats *s)
 	s->frames = d->st_frames;
 	s->pictures = d->st_pictures;
 	s->dropped = d->st_dropped;
+	s->rsx_frames = d->st_rsx_frames;
 	if (s->frames > 0 && mhz > 0) {
 		/* the SPEs count decrementer ticks, the PPU its timebase: the same 79.8 MHz on the PS3 */
 		s->entropy_ms = d->st_entropy_ticks / s->frames / mhz / 1000.0;

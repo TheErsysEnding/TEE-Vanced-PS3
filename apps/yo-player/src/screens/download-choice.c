@@ -70,8 +70,7 @@ static void initDownloadChoice(void)
    uiInitTextLabel(&videoLabel, UI_WEIGHT_SEMIBOLD, 0, 0, UI_SAFE_RIGHT - CONTENT_X, 24, activeTheme->textSecondary,
                    TEXT_NOWRAP_ELLIPSIS, pendingItem.title);
    const char *notes[DOWNLOAD_QUALITY_COUNT] = {
-      getVp9Spes() == 6 ? "Plays in TEE Vanced (Downloads) - without sound for now. A video without 1440p gets 1080p60."
-                        : "Plays in TEE Vanced (Downloads). A video without 1440p gets 1080p60.",
+      "Plays in TEE Vanced (Downloads), with its Opus sound. A video without 1440p gets 1080p60.",
       "Plays in TEE Vanced (Downloads), on the TEE Decoder.",
       "Goes to the XMB's Video column, which plays it with the console's own player.",
    };

@@ -318,7 +318,8 @@ static void runAppDownload(const QueueItem *item, const StreamInfo *info)
       if (item->quality == DOWNLOAD_1440P) logInfo("[dl] %s has no 1440p VP9: 1080p60 H.264 instead\n", item->videoId);
       video = pickAppVideo(info, 0);
    }
-   const StreamFormat *audio = pickBestAudio(info);
+   // VP9's sound is the Opus stream (TEE Opus on the PPU plays it beside all 6 SPEs); H.264's the AAC one
+   const StreamFormat *audio = video && video->isVp9 && pickOpusAudio(info) ? pickOpusAudio(info) : pickBestAudio(info);
    if (!video) { logError("[dl] no stream to download for %s\n", item->videoId); return; }
 
    char folder[160], videoPath[200], audioPath[200], part[208], infoPath[200];
@@ -326,7 +327,7 @@ static void runAppDownload(const QueueItem *item, const StreamInfo *info)
    makeDirPath(getDownloadsDir());
    makeDirPath(folder);
    snprintf(videoPath, sizeof videoPath, "%s/video.%s", folder, video->isVp9 ? "webm" : "mp4");
-   snprintf(audioPath, sizeof audioPath, "%s/audio.m4a", folder);
+   snprintf(audioPath, sizeof audioPath, "%s/audio.%s", folder, audio && audio->isOpus ? "webm" : "m4a");
    snprintf(infoPath, sizeof infoPath, "%s/info.txt", folder);
    deleteFile(infoPath);   // a download made again counts only once it is complete again
    logInfo("[dl] %s -> %s (itag %d %dx%d %d fps %s, audio itag %d)\n", item->videoId, folder, video->itag, video->width,
@@ -356,8 +357,8 @@ static void runAppDownload(const QueueItem *item, const StreamInfo *info)
       "title=%s\nchannel=%s\nid=%s\nduration=%s\nwidth=%d\nheight=%d\nfps=%d\nitag=%d\nvideo=%s\naudio=%s\n"
       "videoFile=%s\naudioFile=%s\nbytes=%lld\ndate=%s\ntime=%lld\n",
       item->title, item->author, item->videoId, item->duration, video->width, video->height, video->fps, video->itag,
-      video->isVp9 ? "VP9" : "H.264", audio ? "AAC" : "", video->isVp9 ? "video.webm" : "video.mp4",
-      audio ? "audio.m4a" : "", videoBytes + audioBytes, date, epoch);
+      video->isVp9 ? "VP9" : "H.264", audio ? (audio->isOpus ? "Opus" : "AAC") : "", video->isVp9 ? "video.webm" : "video.mp4",
+      audio ? (audio->isOpus ? "audio.webm" : "audio.m4a") : "", videoBytes + audioBytes, date, epoch);
    if (length < 0 || length >= (int)sizeof text || writeFile(infoPath, text, (uint64_t)length) != 0) {
       logError("[dl] %s: could not write info.txt\n", item->videoId);
       return;
@@ -456,8 +457,8 @@ int deleteDownload(const char *videoId)
    if (!videoId || !videoId[0] || strchr(videoId, '/') || strstr(videoId, "..")) return -1;
    char folder[160], path[200];
    folderOf(folder, sizeof folder, videoId);
-   static const char *files[] = { "info.txt", "job.txt", "video.webm", "video.mp4", "audio.m4a", "video.webm.part",
-                                  "video.mp4.part", "audio.m4a.part" };
+   static const char *files[] = { "info.txt", "job.txt", "video.webm", "video.mp4", "audio.m4a", "audio.webm",
+                                  "video.webm.part", "video.mp4.part", "audio.m4a.part", "audio.webm.part" };
    for (unsigned i = 0; i < sizeof files / sizeof files[0]; i++) {
       snprintf(path, sizeof path, "%s/%s", folder, files[i]);
       deleteFile(path);
@@ -529,8 +530,8 @@ static void dropPartials(const char *videoId)
 {
    char folder[160], path[220];
    folderOf(folder, sizeof folder, videoId);
-   static const char *files[] = { "video.webm.part", "video.mp4.part", "audio.m4a.part", "video.webm", "video.mp4",
-                                  "audio.m4a" };
+   static const char *files[] = { "video.webm.part", "video.mp4.part", "audio.m4a.part", "audio.webm.part", "video.webm",
+                                  "video.mp4", "audio.m4a", "audio.webm" };
    for (unsigned i = 0; i < sizeof files / sizeof files[0]; i++) {
       snprintf(path, sizeof path, "%s/%s", folder, files[i]);
       deleteFile(path);

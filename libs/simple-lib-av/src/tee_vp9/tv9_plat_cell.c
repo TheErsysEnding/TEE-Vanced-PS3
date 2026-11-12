@@ -293,7 +293,7 @@ void tv9p_sleep_us(int us)
 
 void tv9p_log(const char *fmt, ...)
 {
-	char buf[512];
+	char buf[1536];                     /* (the RSX part's report lines are long) */
 	va_list ap;
 
 	if (!log_fn)

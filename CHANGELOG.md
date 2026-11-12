@@ -43,6 +43,11 @@ SPEs alone (no RSX prediction yet - that will be the RSX test builds). Played in
   or play it afterwards). On the Downloads page, Square moves a video into the XMB after the same warning: a
   30 fps or 720p H.264 copy is remuxed as it is, a 1440p or 1080p60 one is fetched again as the XMB's MP4; the
   app's copy goes once the XMB has it.
+- **Test 9 Sound** (12 Nov): 1440p VP9 has sound - YouTube's Opus stream (itag 251) is read from its WebM and
+  decoded on the PPU by TEE's Opus building block 0.1.0, beside the TEE VP9 building block 0.2.1 on all 6 SPEs
+  (the RSX part of 0.2.1 is not switched on yet). A quality switch takes the sound that goes with the picture
+  (Opus for VP9, AAC for H.264), and 1440p downloads keep their Opus sound. Checked in RPCS3: picture and sound
+  within 10 ms of each other, seeking with sound.
 - **One package for every console.** The EBOOT is signed as an NPDRM SELF (as the HEN package of v2.0.0 was), so
   the same package installs on PS3HEN and on CFW/DEX. On CFW/DEX the data folder then becomes /dev_hdd0/tee-vanced;
   the files of the old one are copied over once.

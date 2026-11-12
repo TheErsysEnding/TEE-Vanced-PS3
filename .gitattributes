@@ -3,3 +3,4 @@ libs/simple-lib-av/src/tee_decoder/** -text
 libs/simple-lib-av/tee_decoder.sha256 -text
 # ...and the TEE VP9 building block (its manifest sits in its folder).
 libs/simple-lib-av/src/tee_vp9/** -text
+libs/simple-lib-av/tee_opus/** -text

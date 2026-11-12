@@ -69,9 +69,26 @@ int openVideoDemuxer(VideoDemuxer *demuxer, const char *path)
 int openAudioDemuxer(VideoDemuxer *demuxer, const char *path)
 {
    memset(demuxer, 0, sizeof *demuxer);
-   demuxer->isMp4 = 1;   // adaptive audio is mp4 (audio-only webm is not supported)
+   demuxer->isMp4 = 1;   // adaptive audio is mp4 - or (V3.0.0) an audio-only WebM: YouTube's Opus beside VP9
    VideoSource source;
    if (openVideoSource(&source, path) != 0) return -1;
+   uint8_t magic[4] = {0};
+   readVideoSourceAt(&source, 0, magic, sizeof magic);
+   if (magic[0] == 0x1A && magic[1] == 0x45 && magic[2] == 0xDF && magic[3] == 0xA3) {   // EBML: WebM
+      demuxer->isMp4 = 0;
+      MkvDemuxer *mkv = &demuxer->container.mkv;
+      if (openMkvAudioDemuxer(mkv, &source) != 0) return -1;   // adopts source (closes it on failure)
+      demuxer->hasAudio      = 1;
+      demuxer->isOpus        = mkv->isOpus;
+      demuxer->audioRate     = mkv->audioRate;
+      demuxer->audioAdtsRate = mkv->audioRate;
+      demuxer->audioChannels = mkv->audioChannels;
+      demuxer->durationNs    = mkv->durationNs;
+      demuxer->opusHeadSize  = mkv->opusHeadSize;
+      memcpy(demuxer->opusHead, mkv->opusHead, sizeof demuxer->opusHead);
+      demuxer->codecDelayNs  = mkv->codecDelayNs;
+      return 0;
+   }
    if (openMp4Demuxer(&demuxer->container.mp4, &source, 1) != 0) return -1;   // adopts source (closes it on failure)
    demuxer->hasAudio      = demuxer->container.mp4.hasAudio;
    demuxer->audioRate     = demuxer->container.mp4.audioRate;

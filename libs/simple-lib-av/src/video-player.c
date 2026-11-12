@@ -11,6 +11,7 @@
 #include "decode-h264.h"
 #include "decode-aac.h"
 #include "tee_vp9/tee_vp9.h"   // TEE's VP9 decoder on the SPEs (vendored unchanged, see tee_vp9.sha256)
+#include "../tee_opus/tee_opus.h"   // TEE's Opus decoder on the PPU: VP9's sound (vendored unchanged)
 #include "audio.h"
 #include "thread.h"
 #include "dbg.h"
@@ -102,6 +103,7 @@ struct VideoPlayer {
 
    // audio pipeline (absent for files without an AAC track: video plays silent)
    AacDecoder      *aacDecoder;
+   topus           *opus;               // (V3.0.0) an Opus audio stream (YouTube's beside VP9): decoded on the PPU
    VideoDemuxer     audioDemuxer;       // separate audio-only source for split (adaptive) streams
    int              hasAudioDemuxer;    // audioDemuxer is open and supplies the audio (else it's in `demuxer`)
    sys_ppu_thread_t audioThread;
@@ -160,6 +162,7 @@ struct VideoPlayer {
 // defined below the decode thread but used by performSeek's audio-revive path
 static VideoDemuxer *getAudioSource(VideoPlayer *player);
 static void audioDecodeThread(uint64_t arg);
+static void opusAudioThread(uint64_t arg);   // (V3.0.0) the Opus one, beside it below
 static void setUpDisplaySync(VideoPlayer *player);   // a VP9 stream whose rate the decode thread measured
 
 // how far the freshly decoded picture may fall behind the clock before the decoder is allowed to
@@ -541,13 +544,13 @@ static void performSeek(VideoPlayer *player)
    // the audio thread self-exits at end-of-stream (audioAlive=0, but its decoder/feed/buffers stay intact). a
    // seek repositions the audio demuxer, so respawn the thread to consume the new position - otherwise once
    // the audio stream has ended once, playback stays silent for the rest of the video no matter how you seek.
-   if (!player->audioAlive && player->audioThreadActive && player->aacDecoder && getAudioSource(player)->hasAudio) {
+   if (!player->audioAlive && player->audioThreadActive && (player->aacDecoder || player->opus) && getAudioSource(player)->hasAudio) {
       joinThread(player->audioThread);        // reap the exited thread before reusing its handle
-      resetAacDecoder(player->aacDecoder);
+      if (player->aacDecoder) resetAacDecoder(player->aacDecoder);   // (Opus resets at the thread's seek)
       flushAudioPcmFeed();                    // clean feed for the new position (stays paused from above)
       player->audioAlive = 1;                 // set before spawn, mirroring startAudioPipeline's ordering
       __sync_synchronize();
-      player->audioThreadActive = (spawnJoinableThread(&player->audioThread, audioDecodeThread,
+      player->audioThreadActive = (spawnJoinableThread(&player->audioThread, player->opus ? opusAudioThread : audioDecodeThread,
                                    (uint64_t)(uintptr_t)player, THREAD_PRIORITY_DEFAULT,
                                    THREAD_STACK_SIZE_64KB, "video-audio") == 0);
       if (!player->audioThreadActive) {
@@ -734,6 +737,66 @@ static void audioDecodeThread(uint64_t arg)
    exitThread();
 }
 
+// (V3.0.0) the audio thread for Opus (an audio-only WebM, YouTube's itag 251 beside VP9): its blocks straight through
+// the TEE Opus building block on this PPU thread - no SPE, no backlog: a 20 ms packet decodes in about half a
+// millisecond - into the mixer feed. A packet's first sample plays at its time stamp minus the track's CodecDelay;
+// after a seek the stream is read from 80 ms before the target (SeekPreRoll) and the decoder drops that run-in.
+static void opusAudioThread(uint64_t arg)
+{
+   VideoPlayer *player = (VideoPlayer *)(uintptr_t)arg;   // audioAlive is set by startAudioPipeline before we spawn
+   VideoDemuxer *source = getAudioSource(player);
+   int64_t delayNs = (int64_t)source->codecDelayNs;
+   int64_t skipUntilNs = -1;   // after a seek: packets that end before this are not decoded at all
+
+   while (player->running) {
+      if (player->audioFlushRequest) {   // a seek: park until the decode thread lets go
+         flushAudioPcmFeed();
+         player->audioFlushDone = 1;
+         while (player->audioFlushRequest && player->running) sleepMs(1);
+         player->audioFlushDone = 0;
+         continue;
+      }
+      if (player->audioSeekPendingNs >= 0) {
+         int64_t from = player->audioSeekPendingNs - 80000000ll;   // SeekPreRoll
+         if (from < 0) from = 0;
+         seekVideoDemuxer(&player->audioDemuxer, (uint64_t)from, 0);
+         skipUntilNs = from;
+         topus_reset(player->opus, from > 0 ? TOPUS_SEEK_PREROLL : topus_preskip(player->opus));
+         player->audioSeekPendingNs = -1;
+         continue;
+      }
+
+      AudioAu au;
+      int got = readAudioAu(source, &au);
+      if (got <= 0) break;   // the end of the audio stream (or a read error)
+      int packetFrames = topus_packet_frames(au.data, (size_t)au.size);
+      if (skipUntilNs >= 0) {   // the demuxer lands on the cue before the target: read on to the run-in's start
+         int64_t endNs = (int64_t)au.pts + (int64_t)(packetFrames > 0 ? packetFrames : 960) * 1000000000ll / 48000;
+         if (endNs < skipUntilNs) continue;
+         skipUntilNs = -1;
+      }
+      int frames = topus_decode(player->opus, au.data, (size_t)au.size, player->pcmScratch);
+      if (frames <= 0) continue;   // pre-skip or run-in being dropped, or a packet that is not Opus
+
+      if (!player->audioClockValid) {   // anchor the A/V clock to the first audible frame
+         int dropped = packetFrames > frames ? packetFrames - frames : 0;
+         int64_t firstNs = (int64_t)au.pts - delayNs + (int64_t)dropped * 1000000000ll / 48000;
+         player->audioClockBasePts = firstNs < 0 ? 0 : (uint64_t)firstNs;
+         __sync_synchronize();
+         player->audioClockValid = 1;
+         logInfo("[video-player] audio up: Opus 48000 Hz, %d samples/packet, first sample at %d ms\n", packetFrames,
+                 (int)(player->audioClockBasePts / 1000000ull));
+      }
+      int offset = 0;
+      while (offset < frames && player->running && !player->audioFlushRequest) {   // as the AAC thread does
+         offset += pushAudioPcm(player->pcmScratch + offset * 2, frames - offset);
+         if (offset < frames) sleepMs(4);
+      }
+   }
+   player->audioAlive = 0;   // video pacing falls back to the wall clock
+   exitThread();
+}
+
 // tears down whatever part of the audio pipeline came up (also the failure path during create)
 static void releaseAudioPipeline(VideoPlayer *player)
 {
@@ -741,6 +804,7 @@ static void releaseAudioPipeline(VideoPlayer *player)
    if (player->audioFeedOpen) { closeAudioPcmFeed(); player->audioFeedOpen = 0; }
    destroyAacDecoder(player->aacDecoder);
    player->aacDecoder = 0;
+   if (player->opus) { topus_close(player->opus); player->opus = 0; }
    for (int i = 0; i < 2; i++) { free(player->adtsBuffers[i]); player->adtsBuffers[i] = 0; }
    free(player->pcmScratch);
    player->pcmScratch = 0;
@@ -751,6 +815,23 @@ static void startAudioPipeline(VideoPlayer *player)
 {
    VideoDemuxer *source = getAudioSource(player);
    if (!source->hasAudio) return;
+
+   if (source->isOpus) {   // (V3.0.0) Opus on the PPU: VP9's sound, with every SPE on the picture
+      char err[160];
+      err[0] = 0;
+      player->opus = topus_open(source->opusHead, (size_t)source->opusHeadSize, err, sizeof err);
+      player->pcmScratch = (float *)malloc(TOPUS_MAX_FRAMES * 2 * sizeof(float));
+      player->audioFeedOpen = openAudioPcmFeed(TOPUS_RATE, 0) == 0;
+      if (!player->opus) logWarn("[video-player] TEE Opus did not open: %s\n", err);
+      if (!player->opus || !player->pcmScratch || !player->audioFeedOpen) goto silent;
+      logInfo("[video-player] audio: Opus on the PPU (TEE Opus %s), %d channel(s), pre-skip %d\n", TEE_OPUS_VERSION,
+              topus_channels(player->opus), topus_preskip(player->opus));
+      player->audioAlive = 1;
+      player->audioThreadActive = (spawnJoinableThread(&player->audioThread, opusAudioThread, (uint64_t)(uintptr_t)player,
+                                   THREAD_PRIORITY_DEFAULT, THREAD_STACK_SIZE_64KB, "video-opus") == 0);
+      if (!player->audioThreadActive) goto silent;
+      return;
+   }
 
    player->aacDecoder = createAacDecoder();
    player->adtsBuffers[0] = (uint8_t *)malloc(ADTS_HEADER_BYTES + AUDIO_AU_MAX_BYTES);
@@ -875,14 +956,15 @@ static int openVp9(VideoPlayer *player, VideoFrameAllocFn allocFrame)
       else logInfo("[video-player] TEE VP9 %s: %dx%d stream, %d + %d SPEs, %d pictures, %d MB input (%d MB + %d MB)%s\n",
                    TEE_VP9_VERSION, player->demuxer.width, player->demuxer.height, config.entropy_spes, config.pixel_spes,
                    pictures, (int)(config.input_bytes >> 20), (int)(bytes >> 20), (int)(tvp9_memory_size(&config) >> 20),
-                   vp9Spes == 6 ? ", no sound" : "");
+                   player->hasAudioDemuxer && player->audioDemuxer.isOpus ? ", Opus sound on the PPU"
+                   : vp9Spes == 6 ? ", no sound (AAC needs an SPE)" : ", AAC sound");
    }
    sys_memory_info_t memory;
    if (player->vp9 && sys_memory_get_user_memory_size(&memory) == CELL_OK)
       logInfo("[video-player] user memory with TEE VP9 open: %u MB free of %u MB (heap not counted)\n",
               (unsigned)(memory.available_user_memory >> 20), (unsigned)(memory.total_user_memory >> 20));
    if (!player->vp9) { logError("[video-player] TEE VP9 did not open: %s\n", err); return -1; }
-   if (vp9Spes == 6 && player->hasAudioDemuxer) {   // no SPE left for the sound
+   if (vp9Spes == 6 && player->hasAudioDemuxer && !player->audioDemuxer.isOpus) {   // AAC: no SPE left for cellAdec
       closeVideoDemuxer(&player->audioDemuxer);
       player->hasAudioDemuxer = 0;
    }

@@ -364,6 +364,8 @@ static struct {
    int              audioTrackPick;    // index of the track playing now
    char             videoUrl[MAX_STREAM_URL];   // the video stream (every track pairs with it); kept for a reopen too
    char             audioUrl[MAX_STREAM_URL];   // the separate audio stream it opened with ("" = muxed)
+   char             aacUrl[MAX_STREAM_URL];     // (V3.0.0) the AAC stream (H.264's sound) ...
+   char             opusUrl[MAX_STREAM_URL];    // ... and the Opus one (VP9's): a quality switch takes the right one
    int              reopenPending;     // the player is being rebuilt after the end (reopenAt)
    float            reopenAtSec;       // where the rebuilt player starts
    int              switchTarget;      // switchWorker input: the track it is building
@@ -590,8 +592,18 @@ static void worker(uint64_t arg)
          if (choices[i] == video) state.qualityPick = i;
       }
    }
-   // a muxed pick (itag 18) already carries audio; a video-only pick needs a separate audio track
-   const StreamFormat *audio = video->hasAudio ? NULL : pickBestAudio(info);
+   // a muxed pick (itag 18) already carries audio; a video-only pick needs a separate audio track. (V3.0.0) VP9 takes
+   // the Opus stream - decoded on the PPU, as every SPE is on the picture - and H.264 the AAC one; a download has the
+   // one it was saved with.
+   const StreamFormat *aacAudio = video->hasAudio ? NULL : pickBestAudio(info);
+   const StreamFormat *opusAudio = video->hasAudio ? NULL : pickOpusAudio(info);
+   const StreamFormat *audio = video->isVp9 && opusAudio ? opusAudio : aacAudio;
+   if (strncmp(requestedInput, LOCAL_INPUT_PREFIX, strlen(LOCAL_INPUT_PREFIX)) == 0) {
+      audio = NULL;
+      for (int i = 0; i < info->formatCount && !audio; i++) if (info->formats[i].hasAudio && !info->formats[i].hasVideo) audio = &info->formats[i];
+   }
+   strCopy(state.aacUrl, sizeof state.aacUrl, aacAudio ? aacAudio->url : "");
+   strCopy(state.opusUrl, sizeof state.opusUrl, opusAudio ? opusAudio->url : "");
    logInfo("[yt] play video itag %d %dx%d %s, audio itag %d\n", video->itag, video->width, video->height,
            video->hasAudio ? "muxed" : "video-only", audio ? audio->itag : (video->hasAudio ? video->itag : 0));
 
@@ -629,7 +641,7 @@ static void worker(uint64_t arg)
          logWarn("[yt] TEE VP9 did not take itag %d: playing itag %d %dx%d instead\n", video->itag, fallback->itag,
                  fallback->width, fallback->height);
          video = fallback;
-         if (video->hasAudio) audio = NULL;
+         audio = video->hasAudio ? NULL : aacAudio;   // H.264's sound
          state.vidItag = video->itag; state.vidW = video->width; state.vidH = video->height; state.vidFps = video->fps;
          state.audItag = audio ? audio->itag : (video->hasAudio ? video->itag : 0);
          strCopy(state.videoUrl, sizeof state.videoUrl, video->url);
@@ -1535,7 +1547,7 @@ static void setQualityLabels(void)
    setLabelText(&qualityLabels[0], text);
    for (int i = 0; i < state.qualityCount; i++) {
       qualityName(name, sizeof name, state.qualities[i].height, state.qualities[i].fps);
-      snprintf(text, sizeof text, "%s%s%s", name, state.qualities[i].isVp9 ? (getVp9Spes() == 6 ? " VP9 (no sound)" : " VP9") : "",
+      snprintf(text, sizeof text, "%s%s%s", name, state.qualities[i].isVp9 ? (state.opusUrl[0] || getVp9Spes() != 6 ? " VP9" : " VP9 (no sound)") : "",
                getQualityCap() && i == state.qualityPick ? "  - on" : "");
       setLabelText(&qualityLabels[i + 1], text);
    }
@@ -1563,6 +1575,9 @@ static void chooseQuality(int choice)
    float at = state.seeking ? state.seekTarget : getVideoPositionSeconds(state.player);
    if (state.firstFrameSeen && !state.isLive) setWatchedPosition(requestedInput, (int)at);
    strCopy(state.videoUrl, sizeof state.videoUrl, quality->url);
+   // (V3.0.0) the sound that goes with it: Opus for VP9 (on the PPU), AAC for H.264
+   if (state.audioTrackCount <= 1 && (state.aacUrl[0] || state.opusUrl[0]))
+      strCopy(state.audioUrl, sizeof state.audioUrl, quality->isVp9 && state.opusUrl[0] ? state.opusUrl : state.aacUrl);
    state.vidItag = quality->itag; state.vidW = quality->width; state.vidH = quality->height; state.vidFps = quality->fps;
    state.qualityPick = index;
    setQualityChip();

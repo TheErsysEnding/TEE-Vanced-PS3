@@ -72,9 +72,16 @@ def split_list(value):
 #   folder, manifest (project-relative), left out of the build, files allowed besides the manifest's, C flags
 VENDORED = [
     ("src/tee_decoder", "tee_decoder.sha256", {"td_plat_ps3.c"}, set(), ""),
-    ("src/tee_vp9", "src/tee_vp9/tee_vp9.sha256", {"tv9_plat_ps3.c"},
-     {"tee_vp9.sha256", "tee_vp9.NOTICE", "libvpx.LICENSE", "libvpx.PATENTS"}, "-std=gnu99"),
+    # 0.2.1: the RSX part (rsx_mc.c, vp9_rsxmc.c, vp9_tables.c, tv9_rsx_programs.c, -DTV9_RSX) stays out until the
+    # display code keeps the rules of tv9_rsx_host.h - the picture runs on the SPEs alone (rsx = 0) meanwhile
+    ("src/tee_vp9", "src/tee_vp9/tee_vp9.sha256",
+     {"tv9_plat_ps3.c", "rsx_mc.c", "vp9_rsxmc.c", "vp9_tables.c", "tv9_rsx_programs.c"},
+     {"tee_vp9.sha256", "tee_vp9.NOTICE", "libvpx.LICENSE", "libvpx.PATENTS", "PSL1GHT.LICENSE"}, "-std=gnu99"),
 ]
+
+# TEE's Opus building block (libs/simple-lib-av/tee_opus, vendored unchanged): a library built with the SDK, linked
+# into the app as it is - its libopus sources lie beside it outside src/, so nothing of them is compiled here
+TEE_OPUS_LIB = WIN_REPO + "\\libs\\simple-lib-av\\tee_opus\\lib\\libtee_opus.a"
 
 def check_vendored(project_dir):
     """Stops the build unless every vendored module folder is exactly what its manifest lists."""
@@ -234,7 +241,7 @@ def emit_project(out, p, is_app):
         # (no --gc-sections: the SN linker rejects it as deprecated and dead-strips via the
         # --strip-unused-data already in the project's link options, so it is a no-op plus a warning)
         out.append(f'"{CC}" -o "{elf}" "{objdir}"\\*.o {p["link_opts"]} {libdirs} '
-                   f'{p["link_deps"]} -lm')
+                   f'{p["link_deps"]} "{TEE_OPUS_LIB}" -lm')
         out.append('if errorlevel 1 goto :failed')
         out.append(f'echo BUILT: {elf}')
     else:

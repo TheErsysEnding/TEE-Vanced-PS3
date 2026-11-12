@@ -33,9 +33,12 @@ static int extract(const char *input, StreamInfo *out)
 
    if (info.audioPath[0]) {
       StreamFormat *audio = &out->formats[out->formatCount++];
-      audio->itag = 140;
+      size_t n = strlen(info.audioPath);
+      int opus = n > 5 && strcmp(info.audioPath + n - 5, ".webm") == 0;   // (V3.0.0) VP9 downloads keep their Opus
+      audio->itag = opus ? 251 : 140;
       audio->hasAudio = 1;
-      strCopy(audio->container, sizeof audio->container, "mp4");
+      audio->isOpus = opus;
+      strCopy(audio->container, sizeof audio->container, opus ? "webm" : "mp4");
       snprintf(audio->url, sizeof audio->url, "%s", info.audioPath);
    }
    return 0;

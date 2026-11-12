@@ -6,4 +6,11 @@ bitstream parser follows libvpx's decoder. libvpx is Copyright (c) 2010, The Web
 licence in libvpx.LICENSE with the patent grant in libvpx.PATENTS. A program that ships this building block has
 to reproduce that licence in its documentation or other materials.
 
+The tables in vp9_tables.c and the structures in vp9_dec.h (the RSX part's rectangle builder needs them) follow
+libvpx as well and fall under the same licence.
+
+rsx_emit.h (the RSX part's command words) is derived from PSL1GHT's librsx (ppu/librsx/commands_impl.h and its
+program accessors): Copyright (c) 2011 PSL1GHT Development Team, MIT licence, see PSL1GHT.LICENSE. Its copyright
+notice and permission notice have to be included with copies of that file.
+
 Everything else here is the TEE VP9 project's own. It has no licence file of its own yet.
