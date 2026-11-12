@@ -55,7 +55,8 @@ struct TlsConn {
 // threads (the thumbnail fetchers) open connections at once. Created once by initTlsResolver at startup.
 static sys_lwmutex_t resolveLock;
 static int           resolveLockReady;
-void initTlsResolver(void)  { if (!resolveLockReady) { createLock(&resolveLock); resolveLockReady = 1; } }
+static sys_lwmutex_t timeLock;      // (V3.0.0 Test 12) certTimeNow's one network-time fetch
+void initTlsResolver(void)  { if (!resolveLockReady) { createLock(&resolveLock); createLock(&timeLock); resolveLockReady = 1; } }
 static void lockResolve(void)   { if (resolveLockReady) lock(&resolveLock); }
 static void unlockResolve(void) { if (resolveLockReady) unlock(&resolveLock); }
 
@@ -124,6 +125,140 @@ static int writeChannel(void *context, const unsigned char *data, size_t length)
    return getTlsChannel()->write(*(int *)context, data, (int)length);
 }
 
+// section: the time certificates are checked against (V3.0.0 Test 12)
+//
+// BearSSL checks a certificate's notBefore/notAfter against the time it is handed, and that was the console's clock:
+// a console whose clock is off - a flat clock battery puts it in the year 2000 - failed every certificate, so
+// nothing loaded. The console's clock is still used whenever it is plausible: not before the day this build was made
+// and at most TIME_PLAUSIBLE_SECONDS after it. Otherwise the time is a server's: the "Date" of one plain-HTTP HEAD
+// (no certificate to check on it), fetched once a run and kept as an offset to the console's clock. The console's
+// clock itself is never changed. Should the fetch fail, it is the console's clock, as before.
+#define TIME_HOST              "clients3.google.com"
+#define TIME_PLAUSIBLE_SECONDS (3ll * 366 * SECONDS_PER_DAY)
+
+// days since 1970-01-01 of a proleptic Gregorian date (month 1..12)
+static int64_t daysFromCivil(int64_t year, int month, int day)
+{
+   year -= month <= 2;
+   int64_t era = (year >= 0 ? year : year - 399) / 400;
+   int64_t yoe = year - era * 400;
+   int64_t doy = (153 * (month + (month > 2 ? -3 : 9)) + 2) / 5 + day - 1;
+   int64_t doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+   return era * 146097 + doe - 719468;
+}
+
+static int monthIndex(const char *name)   // "Jan" -> 1, 0 when it is no month
+{
+   static const char MONTHS[] = "JanFebMarAprMayJunJulAugSepOctNovDec";
+   for (int i = 0; i < 12; i++) if (strncmp(name, MONTHS + 3 * i, 3) == 0) return i + 1;
+   return 0;
+}
+
+// the start of the day this file was compiled ("Nov 12 2026")
+static int64_t buildEpoch(void)
+{
+   const char *date = __DATE__;
+   int month = monthIndex(date), day = atoi(date + 4), year = atoi(date + 7);
+   return month ? daysFromCivil(year, month, day) * SECONDS_PER_DAY : 0;
+}
+
+// "Thu, 12 Nov 2026 09:29:18 GMT" -> unix seconds, 0 when it does not read as that
+static int64_t parseHttpDate(const char *text)
+{
+   const char *at = strchr(text, ',');
+   if (!at) return 0;
+   at++;
+   int field[5];   // day, year, hour, minute, second - read as digits (no sscanf: it brings 60 KB of libc along)
+   int m = 0;
+   for (int i = 0; i < 5; i++) {
+      while (*at == ' ' || *at == ':') at++;
+      if (i == 1) {   // the month's name stands between the day and the year
+         m = monthIndex(at);
+         if (!m) return 0;
+         at += 3;
+         while (*at == ' ') at++;
+      }
+      if (*at < '0' || *at > '9') return 0;
+      field[i] = 0;
+      while (*at >= '0' && *at <= '9') field[i] = field[i] * 10 + (*at++ - '0');
+   }
+   int day = field[0], year = field[1], hour = field[2], minute = field[3], second = field[4];
+   if (!m || year < 2020 || day < 1 || day > 31) return 0;
+   return daysFromCivil(year, m, day) * SECONDS_PER_DAY + hour * 3600 + minute * 60 + second;
+}
+
+// the time a server says it is, over plain HTTP: 0 and *out on success
+static int fetchNetworkTime(int64_t *out)
+{
+   const TlsChannel *channel = getTlsChannel();
+   int handle = channel->open(TIME_HOST, 80);
+   if (handle < 0) return -1;
+   static const char REQUEST[] = "HEAD /generate_204 HTTP/1.1\r\nHost: " TIME_HOST "\r\nConnection: close\r\n\r\n";
+   int rc = -1;
+   if (channel->write(handle, REQUEST, (int)sizeof REQUEST - 1) == (int)sizeof REQUEST - 1) {
+      char head[1024];
+      int length = 0;
+      while (length < (int)sizeof head - 1) {
+         int got = channel->read(handle, head + length, (int)sizeof head - 1 - length);
+         if (got <= 0) break;
+         length += got;
+         head[length] = '\0';
+         if (strstr(head, "\r\n\r\n")) break;
+      }
+      head[length] = '\0';
+      for (char *line = head; line && *line; line = strchr(line, '\n') ? strchr(line, '\n') + 1 : NULL) {
+         if ((line[0] == 'D' || line[0] == 'd') && strncmp(line + 1, "ate:", 4) == 0) {
+            int64_t seconds = parseHttpDate(line + 5);
+            if (seconds > 0) { *out = seconds; rc = 0; }
+            break;
+         }
+      }
+   }
+   channel->close(handle);
+   return rc;
+}
+
+static void dateText(char *out, int cap, int64_t seconds)   // "2026-11-12", for the log
+{
+   int64_t z = seconds / SECONDS_PER_DAY + 719468, era = (z >= 0 ? z : z - 146096) / 146097;
+   int64_t doe = z - era * 146097, yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+   int64_t doy = doe - (365 * yoe + yoe / 4 - yoe / 100), mp = (5 * doy + 2) / 153;
+   int day = (int)(doy - (153 * mp + 2) / 5 + 1), month = (int)(mp < 10 ? mp + 3 : mp - 9);
+   snprintf(out, cap, "%04d-%02d-%02d", (int)(yoe + era * 400 + (month <= 2)), month, day);
+}
+
+static int64_t certTimeNow(void)
+{
+   sys_time_sec_t nowSeconds = 0;
+   sys_time_nsec_t nowNanoseconds = 0;
+   sys_time_get_current_time(&nowSeconds, &nowNanoseconds);
+   int64_t now = (int64_t)nowSeconds, built = buildEpoch();
+   if (!built || (now >= built && now <= built + TIME_PLAUSIBLE_SECONDS)) return now;
+
+   static int timeState;        // 0 not asked yet, 1 a server's offset known, 2 no server answered
+   static int64_t timeOffset;   // the server's time minus the console's
+   if (resolveLockReady) lock(&timeLock);
+   if (timeState == 0) {
+      int64_t network = 0;
+      char consoleDay[16], serverDay[16];
+      dateText(consoleDay, sizeof consoleDay, now);
+      if (fetchNetworkTime(&network) == 0) {
+         timeOffset = network - now;
+         timeState = 1;
+         dateText(serverDay, sizeof serverDay, network);
+         logWarn("[tls] the console's clock says %s, a server %s: certificates are checked at the server's time\n",
+                 consoleDay, serverDay);
+      } else {
+         timeState = 2;
+         logWarn("[tls] the console's clock says %s and no server gave the time: certificates are checked against "
+                 "the console's clock\n", consoleDay);
+      }
+   }
+   int64_t result = timeState == 1 ? now + timeOffset : now;
+   if (resolveLockReady) unlock(&timeLock);
+   return result;
+}
+
 // section: connection setup
 
 TlsConn *openTlsConn(const char *host)
@@ -144,10 +279,9 @@ TlsConn *openTlsConn(const char *host)
    br_ssl_client_init_full(&conn->client, &conn->x509, TLS_TRUST_ANCHORS, TLS_TRUST_ANCHORS_COUNT);
 
    // BearSSL has no built-in clock, so hand the X.509 engine the current UTC time; without it the cert's
-   // notBefore/notAfter can't be checked and validation fails with BR_ERR_X509_TIME_UNKNOWN.
-   sys_time_sec_t nowSeconds = 0;
-   sys_time_nsec_t nowNanoseconds = 0;
-   sys_time_get_current_time(&nowSeconds, &nowNanoseconds);
+   // notBefore/notAfter can't be checked and validation fails with BR_ERR_X509_TIME_UNKNOWN. (Test 12) the console's
+   // clock when it is plausible, a server's otherwise (certTimeNow)
+   int64_t nowSeconds = certTimeNow();
    br_x509_minimal_set_time(&conn->x509, (uint32_t)(nowSeconds / SECONDS_PER_DAY) + DAYS_0AD_TO_EPOCH, (uint32_t)(nowSeconds % SECONDS_PER_DAY));
 
    unsigned char seed[32];
