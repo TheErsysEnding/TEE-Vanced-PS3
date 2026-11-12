@@ -792,6 +792,15 @@ void setGridHero(VideoGrid *grid, int on)
 }
 
 // the selection's texts on the hero labels (UI thread, when the selection changes)
+// (V3.0.0) a download on its way (the Downloads page): what the hero says beside its bar
+static void heroDownloadText(const SearchResult *item, char *out, int cap)
+{
+   int percent = 0;
+   int state = getDownloadProgress(item->videoId, &percent);
+   if (state == 1) snprintf(out, cap, "Downloading \xC2\xB7 %d%%", percent);
+   else            snprintf(out, cap, "%s", state == 2 ? "Waiting" : "Downloading");
+}
+
 static void labelHero(VideoGrid *grid, int i)
 {
    const SearchResult *item = &grid->results.items[i];
@@ -819,10 +828,11 @@ static void labelHero(VideoGrid *grid, int i)
    int watched = !(total > 0 && position > 0) && !item->isLive && grid->isWatched && grid->isWatched(item->videoId);
    const char *badge = item->isLive ? "LIVE" : watched ? "Watched"
                      : (grid->isWatchLater && grid->isWatchLater(item->videoId)) ? "Watch Later" : "";
-   setLabelText(&grid->heroBadge, badge);
+   setLabelText(&grid->heroBadge, item->downloadState ? "" : badge);
    char left[32];
    left[0] = 0;
-   if (total > 0 && position > 0 && position < total) {
+   if (item->downloadState) heroDownloadText(item, left, sizeof left);   // (V3.0.0) its download, not its viewing
+   else if (total > 0 && position > 0 && position < total) {
       int minutes = (total - position + 59) / 60;
       snprintf(left, sizeof left, "%d min left", minutes);
    }
@@ -833,6 +843,13 @@ static void labelHero(VideoGrid *grid, int i)
 static void updateHero(VideoGrid *grid)
 {
    if (!grid->hero) return;
+   // (V3.0.0) a download's percent moves on its own: its words follow (setLabelText redraws only on a change)
+   if (grid->stage == GRID_READY && grid->heroIndex >= 0 && grid->heroIndex < grid->results.count &&
+       grid->results.items[grid->heroIndex].downloadState) {
+      char left[32];
+      heroDownloadText(&grid->results.items[grid->heroIndex], left, sizeof left);
+      setLabelText(&grid->heroLeft, left);
+   }
    if (grid->heroThreadActive && grid->heroDone) {
       joinThread(grid->heroTid);
       grid->heroThreadActive = 0;
@@ -911,7 +928,14 @@ void drawGridHero(VideoGrid *grid)
       int total = durationToSeconds(item->duration);
       int position = grid->watchedPosition ? grid->watchedPosition(item->videoId) : 0;
       float progress = total > 0 ? (float)position / (float)total : 0.0f;
-      uiDrawProgressBar(x, barY, HERO_PROGRESS_W, 6, progress, activeTheme->progressTrack, activeTheme->accent, 3);
+      uint32_t track = activeTheme->progressTrack, fill = activeTheme->accent;
+      if (item->downloadState) {   // (V3.0.0) the download's bar: white, filling green
+         int percent = 0;
+         progress = getDownloadProgress(item->videoId, &percent) == 1 ? (float)percent / 100.0f : 0.0f;
+         track = DOWNLOAD_BAR_TRACK;
+         fill = DOWNLOAD_BAR_FILL;
+      }
+      uiDrawProgressBar(x, barY, HERO_PROGRESS_W, 6, progress, track, fill, 3);
       uiDrawLabelAt(&grid->heroLeft, x + HERO_PROGRESS_W + 20, uiLabelYForCenter(&grid->heroLeft, barY - 12, 30));
    }
 }

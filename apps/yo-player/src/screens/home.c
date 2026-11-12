@@ -1001,6 +1001,21 @@ static void updateHome(void)
    }
 
    const SearchResult *selected = gridSelected(&home.grid);
+   // (V3.0.0) on the Downloads page the hints follow the selection: a download on its way can only be stopped
+   static int pendingHints = -1;
+   int wantPending = home.category == HOME_DOWNLOADS ? (selected && selected->downloadState) : -1;
+   if (wantPending != pendingHints) {
+      pendingHints = wantPending;
+      if (wantPending >= 0) {
+         uiSetHintShown(&hintsTop, CROSS_HINT, !wantPending);
+         uiSetHintShown(&hintsTop, SQUARE_HINT, !wantPending);
+         uiSetHintCaption(&hintsTop, TRIANGLE_HINT, wantPending ? "Stop download" : "Delete");
+      } else {
+         uiSetHintShown(&hintsTop, CROSS_HINT, 1);
+         uiSetHintShown(&hintsTop, SQUARE_HINT, 1);
+      }
+      fitTitleWidth();
+   }
    if (!selected) return;
    if (home.category == HOME_DOWNLOADS && selected->downloadState) {   // (V3.0.0) on its way: Triangle stops it
       if (isPadButtonPressed(PAD_BTN_TRIANGLE)) {
