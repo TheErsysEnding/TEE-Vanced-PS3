@@ -91,6 +91,7 @@ typedef struct {
    char views[24];         // "6,100 views"
    char published[24];     // "1 hour ago"
    int  isLive;            // 1 = live now (no duration; shown as a red LIVE badge)
+   int  downloadState;     // (V3.0.0) the Downloads page: 1 downloading, 2 waiting - dimmed, with its bar
 } SearchResult;
 
 // "3:15" / "1:02:33" -> seconds. 0 for anything that is not a plain duration (live, or unknown), so a

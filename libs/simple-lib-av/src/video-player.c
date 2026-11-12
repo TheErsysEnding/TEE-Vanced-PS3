@@ -156,6 +156,12 @@ struct VideoPlayer {
    uint64_t syncLastUs;         // when the last present ran
    int      syncVblanks;        // vblanks counted toward the next picture
    int      syncSpeedSet;       // the sound's tempo is not 1.0 at the moment
+   // (V3.0.0) VP9: the sound waits for the picture. Its Opus track is a stream of its own, a few KB a second, so a
+   // picture short of input (or of decoding time) fell behind a sound that ran on - up to 0.7 s in the hardest
+   // minutes of a 1440p60 stream (TEE, 2026-11-12). Past AV_HOLD_ENGAGE_NS behind, the sound pauses (clock frozen)
+   // until the picture has caught up, the way a player waits while it buffers.
+   int      audioHeld;
+   uint64_t audioHeldSinceUs;
    uint64_t syncLogUs;          // when the last display-sync line went to the log
 };
 
@@ -178,6 +184,9 @@ static uint64_t audioClockNs(VideoPlayer *player)
 }
 
 #define CLOCK_SNAP_NS   40000000ll   // further than this from the audio (a seek, a stall): jump, don't glide
+#define AV_HOLD_ENGAGE_NS  100000000ll   // (V3.0.0, VP9) the picture this far behind the sound: the sound waits
+#define AV_HOLD_READY      2             // ... until the picture has caught up and both ready slots are full (VP9_SLOTS)
+#define AV_HOLD_MAX_US     2000000ull    // ... or, caught up, after this long whatever is decoded
 #define CLOCK_FILTER    32           // the smoothed clock moves 1/32 of the way to the audio at every present
 
 // the clock the picture is paced against: the audio feed while it runs, wall time otherwise.
@@ -211,7 +220,7 @@ static uint64_t presentationClockNs(VideoPlayer *player, uint64_t nowUs)
 // UI thread, once per present (under player->lock): steers the smoothed clock toward the audio clock
 static void steerPresentationClock(VideoPlayer *player, uint64_t nowUs)
 {
-   if (!player->audioClockValid || !player->started || player->paused) { player->clockSmoothValid = 0; return; }
+   if (!player->audioClockValid || !player->started || player->paused || player->audioHeld) { player->clockSmoothValid = 0; return; }
    int64_t offset = (int64_t)audioClockNs(player) - (int64_t)(nowUs * 1000);
    int64_t error  = offset - player->clockOffsetNs;
    if (!player->clockSmoothValid || error > CLOCK_SNAP_NS || error < -CLOCK_SNAP_NS) {
@@ -531,6 +540,7 @@ static void performSeek(VideoPlayer *player)
    player->currentPts = landedNs;
    player->basePts    = landedNs;
    player->audioClockValid = 0;
+   player->audioHeld = 0;                // (V3.0.0) the pre-roll below holds and releases the sound itself
    player->audioWaitStartUs = 0;         // fresh pre-roll: each seek gets the full window to wait for audio,
                                          // else a stale timer trips instantly and video starts on the wall clock
    player->statsSecondUs = 0;            // the stutter statistics start over with the new position
@@ -915,6 +925,7 @@ static void setUpDisplaySync(VideoPlayer *player)
 void setVideoVp9Spes(int spes) { vp9Spes = spes == 5 ? 5 : 6; }
 
 int isVideoVp9(const VideoPlayer *player) { return player && player->vp9; }
+int isAudioOpus(const VideoPlayer *player) { return player && player->opus; }
 
 static void logVp9Line(const char *line) { logInfo("[tee-vp9] %s\n", line); }
 
@@ -1292,6 +1303,37 @@ const uint8_t *getVideoFrame(VideoPlayer *player, int *width, int *height)
       player->syncSpeedSet = 0;
    }
 
+   // (V3.0.0) VP9: the sound waits for a picture that fell behind it (see audioHeld). Decided here, done after the
+   // lock is dropped (mixer calls must run outside player->lock).
+   int holdAction = 0;   // 1: pause the sound, 2: let it run on
+   char holdLine[128];
+   holdLine[0] = 0;
+   if (player->audioHeld && (player->paused || !player->vp9 || !player->audioFeedOpen || !player->audioClockValid)) {
+      player->audioHeld = 0;   // the user's pause owns the feed now; at the end of the sound, what is left plays out
+      if (!player->paused) holdAction = 2;
+   } else if (player->vp9 && player->audioFeedOpen && player->audioClockValid && player->started && !player->paused) {
+      int64_t behindNs = (int64_t)clock - (int64_t)player->currentPts;   // > 0: the picture is behind the sound
+      int readyAfter = 0;
+      for (int i = 0; i < FRAME_SLOTS; i++) if (player->slots[i].state == SLOT_READY) readyAfter++;
+      if (!player->audioHeld) {
+         if (behindNs > AV_HOLD_ENGAGE_NS && !player->ended) {
+            player->audioHeld = 1;
+            player->audioHeldSinceUs = nowUs;
+            holdAction = 1;
+            snprintf(holdLine, sizeof holdLine, "[video-player] the sound waits for the picture: %d ms behind it, %d decoded\n",
+                     (int)(behindNs / 1000000), readyAfter);
+         }
+      } else {
+         uint64_t heldUs = nowUs - player->audioHeldSinceUs;
+         if (player->ended || (behindNs <= 0 && (readyAfter >= AV_HOLD_READY || heldUs >= AV_HOLD_MAX_US))) {
+            player->audioHeld = 0;
+            holdAction = 2;
+            snprintf(holdLine, sizeof holdLine, "[video-player] the sound runs on after %d ms, %d pictures decoded ahead\n",
+                     (int)(heldUs / 1000), readyAfter);
+         }
+      }
+   }
+
    // the stutter statistics: a present with a new picture, pictures dropped as late, a present with none due,
    // and none ready at all (the decoder behind, not just early)
    char statsLine[200];
@@ -1322,6 +1364,8 @@ const uint8_t *getVideoFrame(VideoPlayer *player, int *width, int *height)
 
    // release the audio held through pre-roll (mixer call must run outside player->lock)
    if (releaseAudio && player->audioFeedOpen) pauseAudioPcmFeed(0);
+   if (holdAction && player->audioFeedOpen) pauseAudioPcmFeed(holdAction == 1);   // (V3.0.0) the VP9 hold
+   if (holdLine[0]) logInfo("%s", holdLine);
    return buffer;
 }
 
@@ -1391,7 +1435,7 @@ long getVideoLiveFirstSq(const VideoPlayer *player)
 
 const char *getVideoDecoderName(const VideoPlayer *player)
 {
-   if (player && player->vp9) return "TEE VP9";
+   if (player && player->vp9) return "TEE Decoder";   // TEE: the format is on the video line, the decoder is the TEE Decoder
    return player ? getH264DecoderName(player->decoder) : "none";
 }
 

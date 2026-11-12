@@ -65,6 +65,9 @@ static struct {
    volatile int     percent;
    char             activeTitle[160];
    char             activeId[16];  // videoId of the running download (for dedupe; valid while active)
+   int              activeQuality; // (V3.0.0) its DownloadQuality, and for the Downloads page the form it is in
+   char             activeFormat[24];   // "1440p60 · VP9" once the stream is picked
+   volatile int     cancelActive;  // (V3.0.0) cancelDownload: abort the running download only
    volatile unsigned revision;     // (V3.0.0) the Downloads page's: a download landed or was deleted
    int              batchTotal;    // (V3.0.0) downloads asked for since the queue last ran empty ...
    int              batchDone;     // ... and how many of them are finished (or failed): the rail's "1/10"
@@ -119,7 +122,7 @@ static int remux(const char *videoUrl, const char *audioUrl, const char *outPath
    uint64_t total = video->durationNs;
    int failed = 0;
 
-   while (!dl.cancelAll && (videoRc == 1 || audioRc == 1)) {
+   while (!dl.cancelAll && !dl.cancelActive && (videoRc == 1 || audioRc == 1)) {
       if (videoRc == 1 && (audioRc != 1 || videoAu.pts <= audioAu.pts)) {
          if (writeMp4Video(&mux, videoAu.data, videoAu.size, videoAu.pts, videoAu.keyframe)) { failed = 1; break; }
          if (total) { uint64_t done = videoAu.pts * 100 / total; dl.percent = done > 100 ? 100 : (int)done; }
@@ -133,7 +136,7 @@ static int remux(const char *videoUrl, const char *audioUrl, const char *outPath
    }
 
    if (closeMp4Muxer(&mux)) failed = 1;
-   if (!failed && !dl.cancelAll) { dl.percent = 100; result = 0; }
+   if (!failed && !dl.cancelAll && !dl.cancelActive) { dl.percent = 100; result = 0; }
 
 cleanup:
    if (videoOpen) closeVideoDemuxer(video);
@@ -146,6 +149,7 @@ cleanup:
 static void runAppDownload(const QueueItem *item, const StreamInfo *info);   // below
 static void runXmbDownload(const QueueItem *item, StreamInfo *info);         // below
 static void finishJob(const char *videoId);                                  // below
+static int  readJob(const char *videoId, QueueItem *item);                   // below (V3.0.0, listDownloads)
 
 static void runOneDownload(const QueueItem *item)
 {
@@ -278,7 +282,7 @@ static int copyStream(const char *url, const char *path, int from, int to, long 
    uint8_t *buffer = (uint8_t *)malloc(cap);
    uint64_t done = 0;
    int failed = !buffer;
-   while (!failed && !dl.cancelAll && (!total || done < total)) {
+   while (!failed && !dl.cancelAll && !dl.cancelActive && (!total || done < total)) {
       uint64_t want = total && total - done < (uint64_t)cap ? total - done : (uint64_t)cap;
       int64_t got = readVideoSource(&source, buffer, want);
       if (got <= 0) { if (total) failed = 1; break; }
@@ -290,7 +294,7 @@ static int copyStream(const char *url, const char *path, int from, int to, long 
    if (closeFs(&file) != 0) failed = 1;
    closeVideoSource(&source);
    *bytes = (long long)done;
-   return failed || dl.cancelAll || !done ? -1 : 0;
+   return failed || dl.cancelAll || dl.cancelActive || !done ? -1 : 0;
 }
 
 // the date as the console clock has it, YYYY-MM-DD (days -> civil date, Howard Hinnant's algorithm)
@@ -321,6 +325,11 @@ static void runAppDownload(const QueueItem *item, const StreamInfo *info)
    // VP9's sound is the Opus stream (TEE Opus on the PPU plays it beside all 6 SPEs); H.264's the AAC one
    const StreamFormat *audio = video && video->isVp9 && pickOpusAudio(info) ? pickOpusAudio(info) : pickBestAudio(info);
    if (!video) { logError("[dl] no stream to download for %s\n", item->videoId); return; }
+   lock(&dl.mutex);
+   snprintf(dl.activeFormat, sizeof dl.activeFormat, "%dp%d \xC2\xB7 %s", video->height, video->fps,
+            video->isVp9 ? "VP9" : "H.264");
+   unlock(&dl.mutex);
+   dl.revision++;   // the Downloads page shows it from here on
 
    char folder[160], videoPath[200], audioPath[200], part[208], infoPath[200];
    folderOf(folder, sizeof folder, item->videoId);
@@ -346,7 +355,8 @@ static void runAppDownload(const QueueItem *item, const StreamInfo *info)
       deleteFile(videoPath);
       deleteFile(audioPath);
       removeDirPath(folder);
-      logInfo("[dl] %s %s\n", item->videoId, dl.cancelAll ? "cancelled" : "failed");
+      if (dl.cancelActive) finishJob(item->videoId);   // (V3.0.0) cancelled on the Downloads page: nothing to ask about
+      logInfo("[dl] %s %s\n", item->videoId, dl.cancelAll || dl.cancelActive ? "cancelled" : "failed");
       return;
    }
 
@@ -449,7 +459,98 @@ int listDownloads(SearchResults *out)
       out->count++;
    }
    closeDir(&dir);
+
+   // (V3.0.0) the app's own downloads on their way, at the top: the running one, then the queue in its order. A
+   // complete copy of the same video (downloaded again) gives way to it.
+   QueueItem pending[MAX_QUEUE + 1];
+   int states[MAX_QUEUE + 1], pendingCount = 0;
+   char activeFormat[sizeof dl.activeFormat];
+   lock(&dl.mutex);
+   if (dl.active && dl.activeQuality != DOWNLOAD_XMB) {
+      memset(&pending[0], 0, sizeof pending[0]);
+      strCopy(pending[0].videoId, sizeof pending[0].videoId, dl.activeId);
+      strCopy(pending[0].title, sizeof pending[0].title, dl.activeTitle);
+      pending[0].quality = dl.activeQuality;
+      states[pendingCount++] = 1;
+   }
+   strCopy(activeFormat, sizeof activeFormat, dl.activeFormat);
+   for (int i = 0; i < dl.count && pendingCount < MAX_QUEUE + 1; i++) {
+      if (dl.queue[i].quality == DOWNLOAD_XMB || dl.queue[i].fromGallery || dl.queue[i].remuxLocal) continue;
+      pending[pendingCount] = dl.queue[i];
+      states[pendingCount++] = 2;
+   }
+   unlock(&dl.mutex);
+   for (int p = 0; p < pendingCount; p++) {   // the running one's channel and length: from its job, as queued
+      QueueItem job;
+      if (states[p] == 1 && readJob(pending[p].videoId, &job) == 0) { strCopy(pending[p].author, sizeof pending[p].author, job.author);
+                                                                      strCopy(pending[p].duration, sizeof pending[p].duration, job.duration); }
+      for (int i = 0; i < out->count; i++)
+         if (strcmp(out->items[i].videoId, pending[p].videoId) == 0) {
+            for (int j = i + 1; j < out->count; j++) out->items[j - 1] = out->items[j];
+            out->count--;
+            break;
+         }
+   }
+   int room = MAX_SEARCH_RESULTS - out->count;
+   if (pendingCount > room) pendingCount = room;
+   if (pendingCount > 0) {
+      for (int i = out->count - 1; i >= 0; i--) out->items[i + pendingCount] = out->items[i];
+      for (int p = 0; p < pendingCount; p++) {
+         SearchResult *item = &out->items[p];
+         memset(item, 0, sizeof *item);
+         strCopy(item->videoId, sizeof item->videoId, pending[p].videoId);
+         strCopy(item->title, sizeof item->title, pending[p].title[0] ? pending[p].title : pending[p].videoId);
+         strCopy(item->author, sizeof item->author, pending[p].author);
+         strCopy(item->duration, sizeof item->duration, pending[p].duration);
+         if (states[p] == 1 && activeFormat[0]) strCopy(item->views, sizeof item->views, activeFormat);
+         else strCopy(item->views, sizeof item->views, pending[p].quality == DOWNLOAD_1440P ? "1440p60 \xC2\xB7 VP9"
+                                                                                       : "1080p60 \xC2\xB7 H.264");
+         strCopy(item->published, sizeof item->published, states[p] == 1 ? "Downloading" : "Waiting");
+         item->downloadState = states[p];
+      }
+      out->count += pendingCount;
+   }
    return out->count;
+}
+
+int getDownloadProgress(const char *videoId, int *percent)
+{
+   if (!dl.initialized || !videoId || !videoId[0]) return 0;
+   int state = 0;
+   lock(&dl.mutex);
+   if (dl.active && strcmp(dl.activeId, videoId) == 0) {
+      state = 1;
+      if (percent) *percent = dl.percent < 0 ? 0 : dl.percent > 100 ? 100 : dl.percent;
+   } else {
+      for (int i = 0; i < dl.count; i++) if (strcmp(dl.queue[i].videoId, videoId) == 0) { state = 2; break; }
+      if (percent) *percent = 0;
+   }
+   unlock(&dl.mutex);
+   return state;
+}
+
+int cancelDownload(const char *videoId)
+{
+   if (!dl.initialized || !videoId || !videoId[0]) return -1;
+   int found = 0, queued = 0;
+   lock(&dl.mutex);
+   if (dl.active && strcmp(dl.activeId, videoId) == 0) {
+      dl.cancelActive = 1;   // the worker stops at its next block and cleans up after itself
+      found = 1;
+   } else {
+      for (int i = 0; i < dl.count; i++)
+         if (strcmp(dl.queue[i].videoId, videoId) == 0) {
+            for (int j = i + 1; j < dl.count; j++) dl.queue[j - 1] = dl.queue[j];
+            dl.count--;
+            if (dl.batchTotal > 0) dl.batchTotal--;   // the rail's "1/10" no longer counts it
+            found = queued = 1;
+            break;
+         }
+   }
+   unlock(&dl.mutex);
+   if (queued) finishJob(videoId);   // nothing written yet but the job
+   if (found) { dl.revision++; logInfo("[dl] %s cancelled on the Downloads page\n", videoId); }
+   return found ? 0 : -1;
 }
 
 int deleteDownload(const char *videoId)
@@ -589,12 +690,18 @@ static void downloadWorker(uint64_t arg)
       dl.percent = 0;
       strCopy(dl.activeTitle, sizeof dl.activeTitle, item.title);
       strCopy(dl.activeId, sizeof dl.activeId, item.videoId);
+      dl.activeQuality = item.remuxLocal || item.fromGallery ? DOWNLOAD_XMB : item.quality;
+      dl.activeFormat[0] = 0;
+      dl.cancelActive = 0;
       unlock(&dl.mutex);
 
       runOneDownload(&item);
       lock(&dl.mutex);
       dl.batchDone++;
+      dl.active = 0;          // (V3.0.0) not listed as running any more, whatever came of it
+      dl.cancelActive = 0;
       unlock(&dl.mutex);
+      dl.revision++;
    }
    exitThread();
 }
@@ -645,6 +752,7 @@ static int enqueueItem(const SearchResult *item, DownloadQuality quality, int fr
          dl.queue[dl.count].remuxLocal = remuxLocal;
          writeJob(&dl.queue[dl.count]);   // from now until it is done (findInterruptedDownloads)
          dl.count++;
+         dl.revision++;                   // (V3.0.0) the Downloads page lists it, waiting
          if (!dl.workerSpawned) { dl.workerSpawned = 1; spawn = 1; }
       }
    }

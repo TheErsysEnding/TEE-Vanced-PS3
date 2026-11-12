@@ -122,6 +122,7 @@ static int isLiveCategory(int category)
 static unsigned downloadsRevisionSeen;
 static char     pendingDeleteId[16];   // the download the notice asks about ...
 static char     pendingMoveId[16];     // ... or the one it asks to move into the XMB
+static char     pendingCancelId[16];   // ... or the one on its way it asks to stop (V3.0.0)
 #define SQUARE_HINT 1                  // Square's slot in the top hint row: "To XMB" on the Downloads page
 
 // each category's fully-loaded results, so returning to a tab skips the feed fetch (thumbnails still refetch).
@@ -926,13 +927,17 @@ static void updateHome(void)
             } else if (pendingMoveId[0]) {   // into the XMB: the page loses it once the XMB has it (revision)
                moveDownloadToXmb(pendingMoveId);
                pendingMoveId[0] = 0;
+            } else if (pendingCancelId[0]) {   // (V3.0.0) stopped: the page re-reads the list (revision)
+               cancelDownload(pendingCancelId);
+               pendingCancelId[0] = 0;
             } else {
                unsubscribeConfirmed();
             }
          }
          return;
       }
-      if (isPadButtonPressed(PAD_BTN_CIRCLE)) { home.noticeVisible = 0; home.noticeIsConfirm = 0; pendingDeleteId[0] = 0; pendingMoveId[0] = 0; }
+      if (isPadButtonPressed(PAD_BTN_CIRCLE)) { home.noticeVisible = 0; home.noticeIsConfirm = 0; pendingDeleteId[0] = 0; pendingMoveId[0] = 0;
+                                                pendingCancelId[0] = 0; }
       return;
    }
 
@@ -997,6 +1002,26 @@ static void updateHome(void)
 
    const SearchResult *selected = gridSelected(&home.grid);
    if (!selected) return;
+   if (home.category == HOME_DOWNLOADS && selected->downloadState) {   // (V3.0.0) on its way: Triangle stops it
+      if (isPadButtonPressed(PAD_BTN_TRIANGLE)) {
+         char message[256];
+         snprintf(message, sizeof message, "Stop downloading \"%s\"? What is in so far is thrown away.", selected->title);
+         strCopy(pendingCancelId, sizeof pendingCancelId, selected->videoId);
+         showNotice(message);
+         uiSetHintCaption(&confirmHints, 0, "Stop download");
+         home.noticeIsConfirm = 1;
+         return;
+      }
+      if (isPadButtonPressed(PAD_BTN_CROSS)) {
+         char message[256];
+         snprintf(message, sizeof message, selected->downloadState == 1
+                  ? "\"%s\" is still downloading. It plays here once it is in."
+                  : "\"%s\" waits for the downloads before it. It plays here once it is in.", selected->title);
+         showNotice(message);
+         return;
+      }
+      if (isPadButtonPressed(PAD_BTN_SQUARE) || isPadButtonPressed(PAD_BTN_R3)) return;
+   }
    if (home.category == HOME_DOWNLOADS) {   // (V3.0.0) X plays it from disk, Triangle deletes it
       if (isPadButtonPressed(PAD_BTN_TRIANGLE)) {
          char message[256];

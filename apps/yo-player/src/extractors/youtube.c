@@ -1294,6 +1294,28 @@ static int parseChannelTile(const char *tile, const char *end, SearchResult *ite
       }
       at = lineEnd;
    }
+   // (V3.0.0, a diagnosis for the Subscriptions page) once a run: does a channel tile carry the channel's picture? The
+   // host and the size part of its first image only - never the path, which names the channel.
+   static int pictureLogged;
+   if (!pictureLogged) {
+      pictureLogged = 1;
+      static const char URL_KEY[] = "\"url\":\"https://";
+      const char *url = findIn(tile, end, URL_KEY);
+      int images = 0;
+      for (const char *at = tile; (at = findIn(at, end, URL_KEY)) != NULL; at += sizeof URL_KEY - 1) images++;
+      char host[48] = "", size[48] = "";
+      if (url) {
+         const char *h = url + sizeof URL_KEY - 1, *slash = h;
+         while (slash < end && *slash != '/' && *slash != '"' && slash - h < (int)sizeof host - 1) slash++;
+         memcpy(host, h, (size_t)(slash - h));
+         host[slash - h] = 0;
+         const char *quote = slash, *equals = NULL;
+         while (quote < end && *quote != '"') { if (*quote == '=') equals = quote; quote++; }
+         if (equals && quote - equals - 1 < (int)sizeof size) { memcpy(size, equals + 1, (size_t)(quote - equals - 1)); size[quote - equals - 1] = 0; }
+      }
+      logInfo("[yt] channel tiles: %d image url(s) in the first, %s%s%s\n", images, url ? host : "no picture",
+              size[0] ? ", size " : "", size);
+   }
    return 1;
 }
 

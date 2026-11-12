@@ -2046,13 +2046,15 @@ static void updateStatLabels(void)
    getAudioTrackInfo(state.player, &rate, &channels);
    float pos = getVideoPositionSeconds(state.player), duration = getVideoDurationSeconds(state.player);
 
-   snprintf(line, sizeof line, "Video  itag %d   %dx%d   H.264", state.vidItag, state.vidW, state.vidH);
+   snprintf(line, sizeof line, "Video  itag %d   %dx%d   %s", state.vidItag, state.vidW, state.vidH,
+            isVideoVp9(state.player) ? "VP9" : "H.264");
    setLabelText(&statLabels[0], line);
    // the decoder on the frame-rate line: the video line is already as wide as the panel
    snprintf(line, sizeof line, "FPS  %d   (target %d)   %s", state.measuredFps, state.vidFps,
             getVideoDecoderName(state.player));
    setLabelText(&statLabels[1], line);
-   if (state.audItag) snprintf(line, sizeof line, "Audio  itag %d   AAC %d Hz   %d ch", state.audItag, rate, channels);
+   if (state.audItag) snprintf(line, sizeof line, "Audio  itag %d   %s %d Hz   %d ch", state.audItag,
+                               isAudioOpus(state.player) ? "Opus" : "AAC", rate, channels);
    else               strCopy(line, sizeof line, "Audio  none");
    setLabelText(&statLabels[2], line);
    // the times as row A writes them (formatTime: h:mm:ss past an hour), so the panel and the HUD under it

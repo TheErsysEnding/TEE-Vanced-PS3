@@ -72,3 +72,9 @@ int  getDownloadOverlayWidth(void);
 // (V3.0.0) for the rail's download indicator: 1 while downloads run or wait, with the running one's place in
 // this batch (*index of *total - "1/10"; the batch starts over once the queue has run empty) and its percent
 int  getDownloadStatus(int *index, int *total, int *percent);
+// (V3.0.0) the Downloads page lists the app's own downloads still on their way too (listDownloads, at the top,
+// SearchResult.downloadState): 1 while this one downloads (*percent), 2 while it waits in the queue, 0 otherwise
+int  getDownloadProgress(const char *videoId, int *percent);
+// (V3.0.0) stops a download of the app's own that runs or waits, and throws its half-written files away (an earlier
+// complete copy of the same video stays). 0 when there was one.
+int  cancelDownload(const char *videoId);

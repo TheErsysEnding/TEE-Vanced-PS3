@@ -62,6 +62,7 @@ int isVideoOnTeeDecoder(const VideoPlayer *player);
 // (slower: 50 - 63 pictures a second measured, so 1440p60 cannot hold 60). Process-wide; settings.txt vp9-spes=.
 void setVideoVp9Spes(int spes);
 int  isVideoVp9(const VideoPlayer *player);      // the picture comes from the TEE VP9 building block
+int  isAudioOpus(const VideoPlayer *player);     // (V3.0.0) the sound is Opus, on TEE Opus (VP9's own track)
 
 // where the planes of the picture getVideoFrame last handed out lie, for drawing it in place. A packed frame (H.264:
 // Y, U, V back to back) fills it as one block without a border; a VP9 picture is the decoder's own buffer: three

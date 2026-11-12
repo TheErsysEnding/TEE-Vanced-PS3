@@ -22,6 +22,7 @@
 #include "ui-fonts.h"           // label helpers (raw text, Manrope or FONT_POP), metrics, type scale
 #include "ui-draw.h"            // corners, focus glow + ring, badges, progress bar
 #include "dbg.h"                // paging diagnostics
+#include "downloads.h"          // getDownloadProgress: a download on its way, on the Downloads page (V3.0.0)
 #include "string-utilities.h"   // strCopy
 #include <sys/sys_time.h>       // sys_time_get_system_time: the hero waits until the selection rests
 #include <string.h>
@@ -78,6 +79,9 @@
 #define THUMB_UA    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
 
 #define PROGRESS_BAR_H 6        // "you got this far" line along the bottom edge of a thumbnail
+// (V3.0.0) a download on its way (the Downloads page): the rail indicator's bar, a white track filling green
+#define DOWNLOAD_BAR_TRACK 0xFFF0F7FBu
+#define DOWNLOAD_BAR_FILL  0xFF22C55Eu
 #define BADGE_INSET    10       // badges sit this far in from the thumbnail's edges (Bild 4)
 #define BADGE_SPACE    8        // two badges along one edge keep at least this far apart, or the left one goes
 // The glow texture's own alpha at a card's edge (84 of 255, measured on schein-r23): the page under a focused
@@ -1055,6 +1059,8 @@ static void drawTinted(const Label *label, int x, int y, uint32_t color)
 typedef struct {
    float progress;   // share of the video watched, 0 = no line to draw
    int   watched;
+   int   downloading;     // (V3.0.0) on its way to the Downloads page: dimmed, its bar instead of the watched line
+   float downloadShare;   // ... how much of it is in
 } TileState;
 
 static TileState tileState(const VideoGrid *grid, int i)
@@ -1062,7 +1068,15 @@ static TileState tileState(const VideoGrid *grid, int i)
    TileState state;
    state.progress = 0.0f;
    state.watched  = 0;
+   state.downloading = 0;
+   state.downloadShare = 0.0f;
    const SearchResult *item = &grid->results.items[i];
+   if (item->downloadState) {   // (V3.0.0) live, not as listed: the page re-reads the list once it is done
+      int percent = 0;
+      state.downloading = 1;
+      if (getDownloadProgress(item->videoId, &percent) == 1) state.downloadShare = (float)percent / 100.0f;
+      return state;
+   }
    int total    = durationToSeconds(item->duration);
    int position = (grid->watchedPosition && !item->isLive) ? grid->watchedPosition(item->videoId) : 0;
    if (total > 0 && position > 0) state.progress = position >= total ? 1.0f : (float)position / (float)total;
@@ -1085,10 +1099,14 @@ static uint32_t cornerColor(float strength)
 static void drawImage(VideoGrid *grid, int i, int x, int y, int w, int h, int radius, uint32_t behind, TileState state)
 {
    if (grid->thumbs[i].tex.offset)
-      drawGfxTexture(x, y, w, h, grid->thumbs[i].tex, 0, 0, 1, 1, state.watched ? activeTheme->watchedThumbTint : 0xFFFFFFFF, GFX_FILTER_LINEAR);
+      drawGfxTexture(x, y, w, h, grid->thumbs[i].tex, 0, 0, 1, 1,
+                     state.watched || state.downloading ? activeTheme->watchedThumbTint : 0xFFFFFFFF, GFX_FILTER_LINEAR);
    else
       fillGfxRectangle(x, y, w, h, activeTheme->surface);
-   if (state.progress > 0.0f)
+   if (state.downloading)
+      uiDrawProgressBar(x, y + h - PROGRESS_BAR_H, w, PROGRESS_BAR_H, state.downloadShare, DOWNLOAD_BAR_TRACK,
+                        DOWNLOAD_BAR_FILL, 0);
+   else if (state.progress > 0.0f)
       uiDrawProgressBar(x, y + h - PROGRESS_BAR_H, w, PROGRESS_BAR_H, state.progress,
                         activeTheme->progressTrack, activeTheme->accent, 0);
    uiDrawImageCorners(x, y, w, h, radius, behind);
@@ -1214,8 +1232,8 @@ static void drawRow(VideoGrid *grid, int i)
    drawImage(grid, i, tx, ty, grid->tileW, grid->thumbH, LIST_THUMB_RADIUS,
              selected ? activeTheme->surface1 : activeTheme->appBg, state);
    if (selected) uiDrawFocusRing(rx, ry, grid->width, grid->rowH, UI_RING_ROW, activeTheme->focusBorder);
-   drawBadges(grid, i, tx, ty, grid->tileW, grid->thumbH, state.progress > 0.0f ? LIST_BADGE_BOTTOM : BADGE_INSET,
-              state.watched);
+   drawBadges(grid, i, tx, ty, grid->tileW, grid->thumbH,
+              state.progress > 0.0f || state.downloading ? LIST_BADGE_BOTTOM : BADGE_INSET, state.watched);
 
    int lines = grid->titles2[i].tt.tex.w > 0 ? 2 : 1;
    int top   = ty + (grid->thumbH - (lines * LIST_TITLE_LINE + LIST_META_GAP + META_BOX)) / 2;

@@ -43,6 +43,13 @@ SPEs alone (no RSX prediction yet - that will be the RSX test builds). Played in
   or play it afterwards). On the Downloads page, Square moves a video into the XMB after the same warning: a
   30 fps or 720p H.264 copy is remuxed as it is, a 1440p or 1080p60 one is fetched again as the XMB's MP4; the
   app's copy goes once the XMB has it.
+- **Test 10 Sync** (12 Nov): picture and sound stay together through the hardest minutes of a 1440p60 stream (the
+  Elden Ring DLC video at 17:11, where the picture had fallen up to 0.7 s behind). Every 4 MB of a YouTube stream is
+  a new TLS connection, and the reader got nothing during each handshake: the next one is now opened while the
+  current one still has 1.5 MB to go, and each connection asks for a 256 KB receive buffer instead of the console's
+  few packets. Should the picture still fall 100 ms behind, the sound waits for it. The Downloads page lists the
+  downloads on their way at the top, dimmed, with a white bar filling green and the form they come in; Triangle stops
+  one. The stats panel says VP9 and Opus where they play (it said H.264 and AAC), and names the TEE Decoder.
 - **Test 9 Sound** (12 Nov): 1440p VP9 has sound - YouTube's Opus stream (itag 251) is read from its WebM and
   decoded on the PPU by TEE's Opus building block 0.1.0, beside the TEE VP9 building block 0.2.1 on all 6 SPEs
   (the RSX part of 0.2.1 is not switched on yet). A quality switch takes the sound that goes with the picture

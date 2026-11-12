@@ -38,6 +38,14 @@
 #define PREFETCH_SECONDS 20   // media the prefetch may run ahead of the reader
 #define WINDOW_SECONDS   10   // media one request asks for
 
+// (TEE Vanced V3.0.0) the next window is opened ahead, on a helper thread (see nextWindowThread)
+#define NEXT_IDLE    0   // none asked for
+#define NEXT_OPENING 1   // its handshake is under way
+#define NEXT_READY   2   // open, waiting for the current window to run out
+#define NEXT_FAILED  3   // it did not open: the window's end opens one the usual way
+#define PREOPEN_LEFT (1536 * 1024)   // bytes left in the current window when the next one's handshake starts
+#define RATE_LOG_US  10000000ull     // a fetching stream's throughput line, every 10 s
+
 
 // prefetch-thread idle/backoff waits, in milliseconds.
 #define ERROR_IDLE_MS        20   // latched failure: idle until the reader closes the stream
@@ -70,6 +78,19 @@ struct HttpStream {
    sys_lwmutex_t    stateLock;     // guards ring window + position + flags
    sys_ppu_thread_t prefetchThread;
    int              prefetchActive;
+   // (TEE Vanced V3.0.0) every window is a new TLS connection, and its handshake (250 - 450 ms on the PS3) left the
+   // reader without a byte between two windows: in the hardest minutes of a 1440p60 VP9 stream (25 Mbit/s) the
+   // decoder waited for its input a sixth of the time, and the picture fell behind its sound (TEE, 2026-11-12). So
+   // the next window is opened on a helper thread while the current one still has PREOPEN_LEFT to go.
+   void            *nextConn;      // the next window's connection once NEXT_READY; the prefetch thread takes it over
+   uint64_t         nextStart;     // where it starts: the current window's end when it was asked for
+   uint64_t         nextEnd;       // one past its last byte
+   volatile int     nextState;     // NEXT_IDLE, NEXT_OPENING, NEXT_READY, NEXT_FAILED
+   sys_ppu_thread_t nextThread;
+   int              nextActive;    // nextThread spawned and not joined yet
+   uint64_t         rateSinceUs;   // the throughput line: since when, what came in, windows taken over
+   uint64_t         rateBytes;
+   int              rateWindows;
 };
 
 static HttpStream   streams[MAX_STREAMS];
@@ -142,8 +163,11 @@ static uint64_t getQueryNumber(const char *url, const char *parameter)
 static int usesQueryRange(const char *url) { return strstr(url, "googlevideo.com") != NULL; }
 
 // open a GET at offset via the bound transport: one range window on a query-range host, otherwise everything
-// from offset on. returns the connection, or NULL (also on non-2xx), and sets the stream's connEnd.
-static void *openConnection(HttpStream *stream, uint64_t offset, uint64_t *totalSize)
+// from offset on. returns the connection, or NULL (also on non-2xx); *connEndOut gets one past the last byte it
+// serves, *refusedOut whether the server turned it down. It only reads the stream, so the helper thread that opens
+// the next window ahead (nextWindowThread) can call it beside the prefetch thread.
+static void *openWindow(const HttpStream *stream, uint64_t offset, uint64_t *totalSize, uint64_t *connEndOut,
+                        int *refusedOut)
 {
    const HttpTransport *transport = getActiveTransport();
 
@@ -175,7 +199,7 @@ static void *openConnection(HttpStream *stream, uint64_t offset, uint64_t *total
    int status = 0;
    void *conn = transport->open("GET", request, headers, headerCount, NULL, 0, &status, totalSize);
    int refused = conn && status == 403 && stream->rangeInQuery;
-   stream->refused = refused;
+   if (refusedOut) *refusedOut = refused;
 
    if (conn && status != 200 && status != 206) {
       if (!refused) {
@@ -191,8 +215,41 @@ static void *openConnection(HttpStream *stream, uint64_t offset, uint64_t *total
    }
    if (!conn) return NULL;
 
-   stream->connEnd = connEnd;
+   *connEndOut = connEnd;
    return conn;
+}
+
+// the prefetch thread's open: sets the stream's connEnd and refused
+static void *openConnection(HttpStream *stream, uint64_t offset, uint64_t *totalSize)
+{
+   uint64_t connEnd = 0;
+   int refused = 0;
+   void *conn = openWindow(stream, offset, totalSize, &connEnd, &refused);
+   stream->refused = refused;
+   if (conn) stream->connEnd = connEnd;
+   return conn;
+}
+
+// (V3.0.0) the helper thread: opens the window at nextStart and hands it to the prefetch thread
+static void nextWindowThread(uint64_t arg)
+{
+   HttpStream *stream = (HttpStream *)(uintptr_t)arg;
+   uint64_t end = 0;
+   int refused = 0;
+   void *conn = openWindow(stream, stream->nextStart, NULL, &end, &refused);
+   stream->nextConn = conn;
+   stream->nextEnd = end;
+   __sync_synchronize();
+   stream->nextState = conn ? NEXT_READY : NEXT_FAILED;
+   exitThread();
+}
+
+// (V3.0.0) a seek, a failure or the close: wait for a next window still opening and close what it opened
+static void dropNextWindow(HttpStream *stream)
+{
+   if (stream->nextActive) { joinThread(stream->nextThread); stream->nextActive = 0; }
+   if (stream->nextConn) { getActiveTransport()->close(stream->nextConn); stream->nextConn = NULL; }
+   stream->nextState = NEXT_IDLE;
 }
 
 // copy n bytes at file offset from the ring into dst (handles the wrap). caller holds stateLock.
@@ -240,6 +297,26 @@ static void prefetchThread(uint64_t arg)
       // server is counting when it refuses.
       int seeked = needReconnect || position < ringStart || position > ringEnd + FORWARD_RECONNECT;
       if (seeked || windowSpent || !stream->conn) {
+         // (V3.0.0) the window ran out and the next one was opened ahead: carry on on it, no handshake in between
+         if (!seeked && windowSpent && stream->nextState != NEXT_IDLE) {
+            if (stream->nextState == NEXT_OPENING) { sleepMs(1); continue; }   // its handshake is nearly through
+            if (stream->nextState == NEXT_READY && stream->nextStart == ringEnd) {
+               joinThread(stream->nextThread);
+               stream->nextActive = 0;
+               transport->close(stream->conn);
+               stream->conn = stream->nextConn;
+               stream->nextConn = NULL;
+               stream->connEnd = stream->nextEnd;
+               stream->nextState = NEXT_IDLE;
+               stream->rateWindows++;
+               lock(&stream->stateLock);
+               stream->atEof = 0;
+               stream->errorRetries = 0;
+               unlock(&stream->stateLock);
+               continue;
+            }
+         }
+         dropNextWindow(stream);   // a seek, a failure, or one that does not follow on: open the usual way
          uint64_t offset = seeked ? position : ringEnd;
          if (stream->conn) { transport->close(stream->conn); stream->conn = NULL; }
 
@@ -274,6 +351,17 @@ static void prefetchThread(uint64_t arg)
          unlock(&stream->stateLock);
          if (!conn) sleepMs(RECONNECT_BACKOFF_MS);
          continue;
+      }
+
+      // (V3.0.0) the next window's handshake starts while this one still has PREOPEN_LEFT to go - only for streams in
+      // full RANGE_WINDOW windows: a slower one has seconds of slack in each window, and needs no second connection
+      if (stream->rangeInQuery && stream->nextState == NEXT_IDLE && stream->bytesPerSecond * WINDOW_SECONDS >= RANGE_WINDOW &&
+          stream->size && stream->connEnd < stream->size && stream->connEnd - ringEnd <= PREOPEN_LEFT) {
+         stream->nextStart = stream->connEnd;
+         stream->nextState = NEXT_OPENING;
+         stream->nextActive = spawnJoinableThread(&stream->nextThread, nextWindowThread, (uint64_t)(uintptr_t)stream,
+                                                  THREAD_PRIORITY_DEFAULT, THREAD_STACK_SIZE_64KB, "http-next") == 0;
+         if (!stream->nextActive) stream->nextState = NEXT_FAILED;   // the window's end opens it the usual way
       }
 
       // already buffered far enough ahead, or done: idle. (guard the unsigned subtraction)
@@ -324,6 +412,22 @@ static void prefetchThread(uint64_t arg)
          }
       }
       unlock(&stream->stateLock);
+
+      // (V3.0.0) what a big stream really gets, every RATE_LOG_US (idle stretches count, so a full buffer reads low)
+      if (got > 0 && stream->bytesPerSecond * WINDOW_SECONDS >= RANGE_WINDOW) {
+         uint64_t nowUs = sys_time_get_system_time();
+         if (!stream->rateSinceUs) stream->rateSinceUs = nowUs;
+         stream->rateBytes += (uint64_t)got;
+         uint64_t spanUs = nowUs - stream->rateSinceUs;
+         if (spanUs >= RATE_LOG_US) {
+            logInfo("[http] s%d fetched %llu KB in %llu ms (%llu KB/s), %d window(s) taken over without a handshake\n",
+                    stream->slot, (unsigned long long)(stream->rateBytes / 1024), (unsigned long long)(spanUs / 1000),
+                    (unsigned long long)(stream->rateBytes * 1000000ull / spanUs / 1024), stream->rateWindows);
+            stream->rateSinceUs = nowUs;
+            stream->rateBytes = 0;
+            stream->rateWindows = 0;
+         }
+      }
    }
    exitThread();
 }
@@ -446,6 +550,7 @@ void closeHttpStream(HttpStream *stream)
    if (!stream || !stream->inUse) return;
    stream->running = 0;
    if (stream->prefetchActive) { joinThread(stream->prefetchThread); stream->prefetchActive = 0; }
+   dropNextWindow(stream);   // (V3.0.0) a next window still opening, or opened and not taken over
    if (stream->lockReady) { destroyLock(&stream->stateLock); stream->lockReady = 0; }
    if (stream->conn) { getActiveTransport()->close(stream->conn); stream->conn = NULL; }
    free(stream->ring);
