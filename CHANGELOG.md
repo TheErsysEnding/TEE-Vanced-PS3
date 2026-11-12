@@ -43,6 +43,13 @@ SPEs alone (no RSX prediction yet - that will be the RSX test builds). Played in
   or play it afterwards). On the Downloads page, Square moves a video into the XMB after the same warning: a
   30 fps or 720p H.264 copy is remuxed as it is, a 1440p or 1080p60 one is fetched again as the XMB's MP4; the
   app's copy goes once the XMB has it.
+- **Test 18 Kids** (12 Nov): live streams "made for kids" play. The German Live search brings Peppa Pig Deutsch,
+  PAW Patrol Deutschland and other kids' 24/7 streams, and YouTube's player answered the app's VISIONOS client with
+  UNPLAYABLE, "This video is not available" - "Its details could not be fetched" in the list, "resolve failed" on X.
+  Probed: ANDROID_VR, TV, web and the embedded player refuse them too; IOS plays them, with direct urls whose live
+  segments googlevideo serves as it does VISIONOS's. A resolve that VISIONOS calls UNPLAYABLE without streams now asks
+  once more as IOS. Checked in RPCS3 with region DE: the three kids' streams in the list resolve (1080p30) and Peppa
+  Wutz plays live on the TEE Decoder at 30 pictures a second.
 - **Test 17 Live** (12 Nov): live streams open again after a 1080p video. On TEE's console every live stream said
   "couldn't open stream" once a 1080p video had played: the malloc heap keeps what a closed TEE Decoder gave back
   (85 MB) and never returns it, a live stream's segment windows (24 + 2 MB) were taken out of that hole, the next TEE
