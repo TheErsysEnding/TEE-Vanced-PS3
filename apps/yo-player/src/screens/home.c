@@ -596,7 +596,9 @@ static void unsubscribeConfirmed(void)
          if (strcmp(kept->items[i].channelId, home.pendingUnsubId) != 0) kept->items[out++] = kept->items[i];
       kept->count = out;
       categoryCached[HOME_SUBS] = out > 0;   // an empty page is fetched again rather than shown empty
+      int at = gridSelectedIndex(&home.grid);
       loadCategory();
+      keepGridSelection(&home.grid, at);   // (Test 15) on to the next channel, not back to the first
       return;
    }
 
@@ -638,7 +640,9 @@ static void unsubscribeConfirmed(void)
    // "No results", no selection. Let the normal load path report the empty list instead.
    if (kept->count == 0) { categoryCached[HOME_SUBS] = 0; loadCategory(); return; }
    categoryCached[HOME_SUBS] = 1;
+   int at = gridSelectedIndex(&home.grid);
    loadCategory();
+   keepGridSelection(&home.grid, at);   // (Test 15)
 }
 
 // A video Square just took out of the account's Watch Later leaves the page at once: YouTube is told on a worker,
@@ -652,7 +656,9 @@ static void dropFromPage(const char *videoId)
       if (strcmp(kept->items[i].videoId, videoId) != 0) kept->items[out++] = kept->items[i];
    kept->count = out;
    categoryCached[home.category] = out > 0;   // an empty page is fetched again rather than shown empty (see above)
+   int at = gridSelectedIndex(&home.grid);
    loadCategory();
+   keepGridSelection(&home.grid, at);   // (Test 15) on to the next video, not back to the first
 }
 
 // X on a subscription tile opens the channel. openChannelFor reads the channel's NAME from author, which on
@@ -807,7 +813,8 @@ static void initHome(void)
 static int leftOpensRail(void)
 {
    if (gridStage(&home.grid) != GRID_READY || !gridSelected(&home.grid) || home.grid.cols <= 1) return 1;
-   return gridSelectedIndex(&home.grid) % home.grid.cols == 0;
+   // (Test 15) on a later page LEFT off the first card goes back a page (video-grid.c); the rail is page 1's, and O's
+   return gridSelectedIndex(&home.grid) % home.grid.cols == 0 && gridPageIndex(&home.grid) == 0;
 }
 
 // What a pick in the rail does - from Home's own rail, or handed over by a screen that was over Home
@@ -957,7 +964,11 @@ static void updateHome(void)
                deleteDownload(pendingDeleteId);
                pendingDeleteId[0] = 0;
                downloadsRevisionSeen = getDownloadsRevision();
-               if (home.category == HOME_DOWNLOADS) loadCategory();
+               if (home.category == HOME_DOWNLOADS) {
+                  int at = gridSelectedIndex(&home.grid);
+                  loadCategory();
+                  keepGridSelection(&home.grid, at);   // (Test 15)
+               }
             } else if (pendingMoveId[0]) {   // into the XMB: the page loses it once the XMB has it (revision)
                moveDownloadToXmb(pendingMoveId);
                pendingMoveId[0] = 0;
@@ -1116,7 +1127,11 @@ static void updateHome(void)
       toggleWatchLater(selected);
       watchLaterRevisionSeen = getWatchLaterRevision();
       categoryCached[HOME_WATCHLATER] = 0;
-      if (home.category == HOME_WATCHLATER) loadCategory();   // reflect the add/remove immediately
+      if (home.category == HOME_WATCHLATER) {   // reflect the add/remove immediately, where the selection was
+         int at = gridSelectedIndex(&home.grid);
+         loadCategory();
+         keepGridSelection(&home.grid, at);   // (Test 15)
+      }
       return;
    }
    // live can't be downloaded: on a Live page R3 does nothing at all (its hint is hidden there, setHeading)

@@ -670,6 +670,22 @@ static void moveSelection(VideoGrid *grid, int delta)
    // row above, so the next press reaches the rail rather than a card three columns away. RIGHT stops at the
    // rightmost column to match: wrapped to the first card of the next row, the LEFT meant to take it back
    // would open the rail instead.
+   // (Test 15) a page of one row - Home's: RIGHT off its last card goes on to the next page's first, LEFT off its
+   // first card back to the previous page's last (on the first page LEFT stops: it belongs to the rail there)
+   if (grid->cols > 1 && grid->visibleRows == 1) {
+      if (delta == 1 && grid->selected == last) {
+         if (grid->page + 1 > pageCount(grid) - 1) return;   // not loaded (yet): the feed fetches it ahead
+         setPage(grid, grid->page + 1);
+         grid->selected = grid->page * size;
+         return;
+      }
+      if (delta == -1 && grid->selected == first && grid->page > 0) {
+         setPage(grid, grid->page - 1);
+         grid->selected = grid->page * size + size - 1;
+         if (grid->selected >= grid->results.count) grid->selected = grid->results.count - 1;
+         return;
+      }
+   }
    if (grid->cols > 1 && delta == -1 && column == 0)              return;
    if (grid->cols > 1 && delta ==  1 && column == grid->cols - 1) return;
 
@@ -703,6 +719,7 @@ void initVideoGrid(VideoGrid *grid, Font *font, int x, int y, int width, int hei
    grid->font = font;
    grid->x = x; grid->y = y; grid->width = width; grid->height = height;
    grid->view = GRID_VIEW_GRID;
+   grid->keepSelection = -1;
    grid->focusIndex = grid->focusFrom = -1;
 
    computeGeometry(grid);
@@ -994,6 +1011,8 @@ static int showsFocus(const VideoGrid *grid, int i) { return i == grid->selected
 
 GridView gridView(const VideoGrid *grid) { return grid->view; }
 
+void keepGridSelection(VideoGrid *grid, int index) { grid->keepSelection = index >= 0 ? index : -1; }
+
 void setGridView(VideoGrid *grid, GridView view)
 {
    if (view == grid->view) return;
@@ -1044,6 +1063,14 @@ void updateVideoGrid(VideoGrid *grid)
       if (grid->reloadPending) { grid->reloadPending = 0; applyDeferredSource(grid); }
    }
    if (grid->stage != GRID_READY) return;
+
+   // (Test 15) the selection a reload of the same feed asked to keep (keepGridSelection)
+   if (grid->keepSelection >= 0 && grid->results.count > 0) {
+      int index = grid->keepSelection < grid->results.count ? grid->keepSelection : grid->results.count - 1;
+      grid->keepSelection = -1;
+      setPage(grid, index / pageSize(grid));
+      grid->selected = index;
+   }
 
    if (!grid->inputSuppressed) {
       if      (isRepeatDue(&grid->horizontalRepeat, getPadButtonState(PAD_BTN_RIGHT))) moveSelection(grid, 1);

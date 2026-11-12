@@ -94,6 +94,7 @@ typedef struct {
    GridJob          job;
    int              thumbFetched;                          // thumbnails fetched so far (contiguous from 0)
    int              threadActive, reloadPending;
+   int              keepSelection;   // (Test 15) keepGridSelection: where the selection goes once the feed is ready (-1)
    sys_ppu_thread_t workerTid;
    volatile int     thumbNext, thumbEnd;
    int              moreEmpty, moreFailed;                 // consecutive fruitless / failed next-page fetches
@@ -160,6 +161,10 @@ void setGridFocusHidden(VideoGrid *grid, int hidden);
 // UP/DOWN volume, say - would otherwise read as long overdue and drive the list on the very first frame.
 // setGridInputSuppressed does the same when input comes back.
 void resetGridRepeat(VideoGrid *grid);
+// (Test 15) after a reload of the same feed with one item less (a video out of Watch Later, a channel unsubscribed, a
+// download deleted): the selection goes back to `index` - the item after the one that went - instead of the first
+// card, so a list can be cleared one item after the other. Taken once, when the feed is ready.
+void keepGridSelection(VideoGrid *grid, int index);
 
 // switch presentation, keeping the results, the thumbnails already fetched and the selection. Re-lays out the
 // labels for the new column width, so it is not free - drive it from a button, not per frame.
