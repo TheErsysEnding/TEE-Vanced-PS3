@@ -568,10 +568,16 @@ static void logUserMemory(const char *when, unsigned needMb)
 {
    sys_memory_info_t info;
    if (sys_memory_get_user_memory_size(&info) != CELL_OK) return;
-   if (needMb) logInfo("[decode-h264] user memory %s: %u MB free of %u MB, the TEE Decoder needs about %u MB\n", when,
-                       (unsigned)(info.available_user_memory >> 20), (unsigned)(info.total_user_memory >> 20), needMb);
-   else        logInfo("[decode-h264] user memory %s: %u MB free of %u MB\n", when,
-                       (unsigned)(info.available_user_memory >> 20), (unsigned)(info.total_user_memory >> 20));
+   // (Test 16) and the malloc heap: what it holds of the kernel's memory, and how much of that is in use - the rest
+   // is free for malloc (a closed decoder's memory) but not for the kernel (SPE groups, cellVdec)
+   struct malloc_managed_size heap;
+   unsigned heapMb = 0, usedMb = 0;
+   if (malloc_stats_fast(&heap) == 0) { heapMb = (unsigned)(heap.current_system_size >> 20); usedMb = (unsigned)(heap.current_inuse_size >> 20); }
+   if (needMb) logInfo("[decode-h264] user memory %s: %u MB free of %u MB (heap %u MB, %u MB of it in use), the TEE Decoder "
+                       "needs about %u MB\n", when, (unsigned)(info.available_user_memory >> 20),
+                       (unsigned)(info.total_user_memory >> 20), heapMb, usedMb, needMb);
+   else        logInfo("[decode-h264] user memory %s: %u MB free of %u MB (heap %u MB, %u MB of it in use)\n", when,
+                       (unsigned)(info.available_user_memory >> 20), (unsigned)(info.total_user_memory >> 20), heapMb, usedMb);
 }
 
 static H264Decoder *createTee(const H264StreamParams *params, char *why, int cap)
@@ -602,10 +608,7 @@ static H264Decoder *createTee(const H264StreamParams *params, char *why, int cap
    // turned the TEE Decoder down and left 1080p60 to cellVdec. Whether the memory is there is what malloc says:
    // tdec_open fails cleanly when it is not, and the caller falls back to cellVdec then.
    size_t need = tdec_picture_memory_size(&config) + config.records_bytes + config.input_bytes + TEE_FIXED_BYTES;
-   sys_memory_info_t info;
-   if (sys_memory_get_user_memory_size(&info) == CELL_OK)
-      logInfo("[decode-h264] user memory before the TEE Decoder: %u MB free of %u MB (heap not counted), it needs about %u MB\n",
-              (unsigned)(info.available_user_memory >> 20), (unsigned)(info.total_user_memory >> 20), (unsigned)(need >> 20));
+   logUserMemory("before the TEE Decoder", (unsigned)(need >> 20));   // (Test 16) with the heap's share
 
    H264Decoder *decoder = (H264Decoder *)calloc(1, sizeof *decoder);
    if (!decoder) { snprintf(why, cap, "out of memory"); return 0; }
