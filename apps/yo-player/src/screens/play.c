@@ -368,6 +368,11 @@ static struct {
    char             audioUrl[MAX_STREAM_URL];   // the separate audio stream it opened with ("" = muxed)
    char             aacUrl[MAX_STREAM_URL];     // (V3.0.0) the AAC stream (H.264's sound) ...
    char             opusUrl[MAX_STREAM_URL];    // ... and the Opus one (VP9's): a quality switch takes the right one
+   // (Test 14) the 1080p VP9 stream beside each 1440p one of the video (303 beside 308, 248 beside 271): a player on
+   // the 1440p one gets it beside, and changes over to it where 1440p is too heavy (createVideoPlayerVp9)
+   struct { char mainUrl[MAX_STREAM_URL], lowUrl[MAX_STREAM_URL]; int lowItag, lowW, lowH; } vp9Pairs[2];
+   int              vp9PairCount;
+   int              vp9LowItag, vp9LowW, vp9LowH;   // the pair of the player built last (the stats panel's 1080p line)
    int              reopenPending;     // the player is being rebuilt after the end (reopenAt)
    float            reopenAtSec;       // where the rebuilt player starts
    int              switchTarget;      // switchWorker input: the track it is building
@@ -437,7 +442,7 @@ static struct {
 #define STATS_TEXT_SIZE    UI_BODY_SIZE
 #define STATS_TEXT_WEIGHT  UI_BODY_WEIGHT
 #define STATS_Y            (TITLE_PLATE_BOTTOM + CHIP_GAP)   // 201
-#define STATS_PANEL_W      500
+#define STATS_PANEL_W      660    // (Test 14) room for "VP9 (1440p too heavy)" on the video line
 #define STATS_PAD_X        24
 #define STATS_PAD_Y        20
 #define STATS_LINE_H       32
@@ -536,6 +541,43 @@ static void addTranslatedSubtitles(const StreamInfo *info)
 
 // builds the player for a video and its audio; for an ended live stream picked up where it was left (playSq >= 0)
 // both descriptors begin at that segment
+// (Test 14) the 1440p VP9 streams of the video with the 1080p VP9 stream of the same frame rate beside each
+static void pairVp9Streams(const StreamInfo *info)
+{
+   state.vp9PairCount = 0;
+   for (int i = 0; i < info->formatCount && state.vp9PairCount < 2; i++) {
+      const StreamFormat *high = &info->formats[i];
+      if (!high->hasVideo || !high->isVp9 || high->height <= 1080 || !high->url[0]) continue;
+      for (int j = 0; j < info->formatCount; j++) {
+         const StreamFormat *low = &info->formats[j];
+         if (!low->vp9Fallback || !low->url[0] || low->needsCipher || (low->fps >= 50) != (high->fps >= 50)) continue;
+         strCopy(state.vp9Pairs[state.vp9PairCount].mainUrl, MAX_STREAM_URL, high->url);
+         strCopy(state.vp9Pairs[state.vp9PairCount].lowUrl, MAX_STREAM_URL, low->url);
+         state.vp9Pairs[state.vp9PairCount].lowItag = low->itag;
+         state.vp9Pairs[state.vp9PairCount].lowW = low->width;
+         state.vp9Pairs[state.vp9PairCount].lowH = low->height;
+         logInfo("[yt] VP9 itag %d has itag %d %dx%d beside it for the busy stretches\n", high->itag, low->itag, low->width,
+                 low->height);
+         state.vp9PairCount++;
+         break;
+      }
+   }
+}
+
+// (Test 14) a player for these streams: with the 1080p VP9 stream beside a 1440p one that has it
+static VideoPlayer *openPlayer(const char *videoUrl, const char *audioUrl)
+{
+   const char *low = NULL;
+   for (int i = 0; i < state.vp9PairCount && !low; i++)
+      if (strcmp(state.vp9Pairs[i].mainUrl, videoUrl) == 0) {
+         low = state.vp9Pairs[i].lowUrl;
+         state.vp9LowItag = state.vp9Pairs[i].lowItag;
+         state.vp9LowW = state.vp9Pairs[i].lowW;
+         state.vp9LowH = state.vp9Pairs[i].lowH;
+      }
+   return createVideoPlayerVp9(videoUrl, low, audioUrl, allocGfxVideoBuffer, freeGfxVideoBuffer);
+}
+
 static VideoPlayer *createPlayerFor(const StreamFormat *video, const StreamFormat *audio, long playSq)
 {
    char videoPath[MAX_STREAM_URL + 48], audioPath[MAX_STREAM_URL + 48];
@@ -548,7 +590,7 @@ static VideoPlayer *createPlayerFor(const StreamFormat *video, const StreamForma
          if (audioPath[0]) openAudio = audioPath;
       }
    }
-   return createVideoPlayerSplit(openVideo, openAudio, allocGfxVideoBuffer, freeGfxVideoBuffer);
+   return openPlayer(openVideo, openAudio);   // (Test 14) a live descriptor pairs with nothing
 }
 
 static void worker(uint64_t arg)
@@ -570,6 +612,7 @@ static void worker(uint64_t arg)
       if (isRenderableSubtitleLanguage(info->captions[i].languageCode))
          state.captionTracks[state.captionCount++] = info->captions[i];
    addTranslatedSubtitles(info);   // (V3.0.0, issue #4)
+   pairVp9Streams(info);           // (Test 14) 1440p's 1080p stream, for the busy stretches
 
    // which H.264 decoder this video may use: the TEE Decoder (TEE's own, on the SPEs) unless settings.txt says
    // video-decoder=sony or it failed earlier in this run; it also opens 1080p60, which cellVdec cannot keep up
@@ -987,8 +1030,7 @@ static void cycleSubtitles(void)
 static void switchWorker(uint64_t arg)
 {
    (void)arg;
-   VideoPlayer *player = createVideoPlayerSplit(state.videoUrl, state.audioTracks[state.switchTarget].url,
-                                                allocGfxVideoBuffer, freeGfxVideoBuffer);
+   VideoPlayer *player = openPlayer(state.videoUrl, state.audioTracks[state.switchTarget].url);
    if (player && state.switchStartSec > 1.0f) seekVideoPlayer(player, state.switchStartSec);
    state.pendingPlayer = player;
    __sync_synchronize();
@@ -1045,7 +1087,7 @@ static void reopenWorker(uint64_t arg)
       video = state.liveVideoOpen;
       audio = state.liveAudioOpen[0] ? state.liveAudioOpen : NULL;
    }
-   VideoPlayer *player = createVideoPlayerSplit(video, audio, allocGfxVideoBuffer, freeGfxVideoBuffer);
+   VideoPlayer *player = openPlayer(video, audio);
    if (player && state.reopenAtSec > 1.0f) seekVideoPlayer(player, state.reopenAtSec);
    state.pendingPlayer = player;
    __sync_synchronize();
@@ -2093,8 +2135,12 @@ static void updateStatLabels(void)
    getAudioTrackInfo(state.player, &rate, &channels);
    float pos = getVideoPositionSeconds(state.player), duration = getVideoDurationSeconds(state.player);
 
-   snprintf(line, sizeof line, "Video  itag %d   %dx%d   %s", state.vidItag, state.vidW, state.vidH,
-            isVideoVp9(state.player) ? "VP9" : "H.264");
+   if (isVideoOnLowTrack(state.player))   // (Test 14) the 1080p stream plays where 1440p is too heavy
+      snprintf(line, sizeof line, "Video  itag %d   %dx%d   VP9 (1440p too heavy)", state.vp9LowItag, state.vp9LowW,
+               state.vp9LowH);
+   else
+      snprintf(line, sizeof line, "Video  itag %d   %dx%d   %s", state.vidItag, state.vidW, state.vidH,
+               isVideoVp9(state.player) ? "VP9" : "H.264");
    setLabelText(&statLabels[0], line);
    // the decoder on the frame-rate line: the video line is already as wide as the panel
    snprintf(line, sizeof line, "FPS  %d   (target %d)   %s", state.measuredFps, state.vidFps,

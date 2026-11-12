@@ -25,6 +25,8 @@ typedef struct {
    int  isDrc;             // audio: the dynamic-range-compressed copy YouTube serves beside the normal mix
    int  isVp9;             // video: VP9 profile 0 in WebM - 1440p for the TEE VP9 building block (V3.0.0)
    int  isOpus;            // audio: Opus in WebM (itag 251) - VP9's sound, on the TEE Opus building block (V3.0.0)
+   int  vp9Fallback;       // (Test 14) VP9 1080p (303, 248): only the stream a 1440p player changes to where 1440p is
+                           // too heavy - hasVideo stays 0, so no list, pick or download ever takes it
 } StreamFormat;
 
 // How much an audio track is worth playing by default, lowest first. YouTube serves some videos with several

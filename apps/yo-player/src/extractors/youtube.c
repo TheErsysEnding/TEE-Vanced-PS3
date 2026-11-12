@@ -378,6 +378,10 @@ static void parseFormatArray(const char *arrayStart, const char *regionEnd, int 
       // array slot the AAC audio (listed after all the video) needs.
       int isVp9 = strstr(mimeType, "webm") && (strstr(mimeType, "\"vp9\"") || strstr(mimeType, "vp09.00.")) &&
                   format->height > 1080 && format->height <= 1440 && format->width <= 2560;
+      // (Test 14) VP9 1080p - 303 at 60 fps, 248 at 30 - is kept after all, beside 1440p: the stream the player changes
+      // to where 1440p is too heavy for the decoder (the VP9 session's measurement: 86 - 97 pictures a second in 1080p)
+      int isVp9Low = strstr(mimeType, "webm") && (strstr(mimeType, "\"vp9\"") || strstr(mimeType, "vp09.00.")) &&
+                     (format->itag == 303 || format->itag == 248) && format->height <= 1080 && format->width <= 1920;
       if (progressive)                              format->hasVideo = format->hasAudio = 1;
       // (V3.0.0) Opus in WebM, itag 251 only (the best of YouTube's three): VP9's sound, decoded on the PPU
       else if (strncmp(mimeType, "audio/", 6) == 0) {
@@ -385,7 +389,11 @@ static void parseFormatArray(const char *arrayStart, const char *regionEnd, int 
          format->hasAudio = isAac || isOpus;
          format->isOpus = isOpus && !isAac;
       }
-      else                                          { format->hasVideo = isAvc || isVp9; format->isVp9 = isVp9 && !isAvc; }
+      else {
+         format->hasVideo = isAvc || isVp9;
+         format->isVp9 = isVp9 && !isAvc;
+         if (!format->hasVideo && isVp9Low) format->isVp9 = format->vp9Fallback = 1;   // (Test 14) beside, not offered
+      }
 
       // an audio stream of a video with several audio tracks (other languages, AI dubs) is filed by track
       // instead - see collectAudioTrack; the chosen track's stream joins formats[] once the array is read
@@ -399,7 +407,7 @@ static void parseFormatArray(const char *arrayStart, const char *regionEnd, int 
 
       // keep only formats we can decode (H.264 video, VP9 1440p / AAC audio). dropping AV1/Opus frees array slots
       // so the AAC audio - which youtube lists AFTER all the video formats - isn't pushed past the cap.
-      if ((format->hasVideo || format->hasAudio) && !tracked) out->formatCount++;
+      if ((format->hasVideo || format->hasAudio || format->vp9Fallback) && !tracked) out->formatCount++;
       scan = objectEnd;
    }
 }

@@ -43,6 +43,16 @@ SPEs alone (no RSX prediction yet - that will be the RSX test builds). Played in
   or play it afterwards). On the Downloads page, Square moves a video into the XMB after the same warning: a
   30 fps or 720p H.264 copy is remuxed as it is, a 1440p or 1080p60 one is fetched again as the XMB's MP4; the
   app's copy goes once the XMB has it.
+- **Test 14 1080p** (12 Nov): VP9 changes between 1440p and 1080p on its own, so the hardest stretches keep 60
+  pictures a second (the VP9 session's task, with TEE VP9 0.2.2). Beside a 1440p stream the player opens YouTube's
+  1080p VP9 one (303 beside 308, 248 beside 271 - never offered on its own) and reads the bitrate of every section from
+  the 1440p stream's cues: it goes down to 1080p at the cue before a section of the next 10 s that is busier than
+  15 Mbit/s, and back up when the next 10 s stay under 12 Mbit/s and the last change is 10 s back. 0.2.2 takes the
+  other size at its key frame without a flush; the sound runs on. Should 1440p still fall behind (150 ms for a second,
+  or the sound held twice in 6 s), 1080p comes at the next cue and the threshold drops to 90 % of that section's
+  bitrate. A seek lands on the stream the rule wants there. Each change is logged with its reason and thresholds, the
+  10-second line gives the stream and rsx_frames, and the stats panel says "VP9 (1440p too heavy)". Checked in RPCS3:
+  both directions, again and again, at the cue points (all 50 first key frames of 308 and 303 lie at the same times).
 - **Test 13 Seek** (12 Nov): picture and sound start together after a seek. A seek while paused started the sound
   under the still picture (the pre-roll released it whatever the pause said), X pressed while a seek's first pictures
   were still coming started it seconds ahead of them, and a hold or release decided just before a seek undid the

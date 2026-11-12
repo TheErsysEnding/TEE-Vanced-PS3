@@ -23,6 +23,12 @@ VideoPlayer *createVideoPlayer(const char *path, VideoFrameAllocFn allocFrame, V
 // url plus an audio-only url). audioPath NULL means the audio is muxed into videoPath. A/V stay in
 // sync because both share one presentation timeline and the audio drives the clock.
 VideoPlayer *createVideoPlayerSplit(const char *videoPath, const char *audioPath, VideoFrameAllocFn allocFrame, VideoFrameFreeFn freeFrame);
+// (V3.0.0 Test 14) as createVideoPlayerSplit, for VP9 1440p with its 1080p VP9 stream beside it (YouTube's 303 for 308,
+// 248 for 271; lowVideoPath NULL = none): the player changes to the 1080p stream ahead of a stretch the decoder cannot
+// keep at 60 in 1440p - by the bitrate the 1440p stream's cues give for the next 10 s - and back after it. One decoder,
+// one sound: the sound runs on through a change. A 1080p stream that does not fit (another rate, no cues) is left out.
+VideoPlayer *createVideoPlayerVp9(const char *videoPath, const char *lowVideoPath, const char *audioPath,
+                                  VideoFrameAllocFn allocFrame, VideoFrameFreeFn freeFrame);
 void         destroyVideoPlayer(VideoPlayer *player);
 
 // returns the YUV 4:2:0 planar frame (Y then U then V, width*height*3/2 bytes) that should be shown
@@ -62,6 +68,7 @@ int isVideoOnTeeDecoder(const VideoPlayer *player);
 // (slower: 50 - 63 pictures a second measured, so 1440p60 cannot hold 60). Process-wide; settings.txt vp9-spes=.
 void setVideoVp9Spes(int spes);
 int  isVideoVp9(const VideoPlayer *player);      // the picture comes from the TEE VP9 building block
+int  isVideoOnLowTrack(const VideoPlayer *player);   // (Test 14) the 1080p VP9 stream plays in place of the 1440p one
 int  isAudioOpus(const VideoPlayer *player);     // (V3.0.0) the sound is Opus, on TEE Opus (VP9's own track)
 
 // where the planes of the picture getVideoFrame last handed out lie, for drawing it in place. A packed frame (H.264:
