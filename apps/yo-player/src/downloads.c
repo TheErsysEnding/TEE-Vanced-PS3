@@ -46,6 +46,12 @@
 #define OVERLAY_ICON_GAP   10       // the arrow -> the text
 #define OVERLAY_GAP        20       // between the overlay and the hint row under it
 #define OVERLAY_TEXT_MAX_W 560      // a guard: 32 bytes of title come to about 500 px with the words round it
+#define RESULT_TEXT_MAX_W  760      // (V3.0.0) the result's chip: "Download failed at 90%: "<title>""
+#define RESULT_SHOW_US     6000000ull   // ... stays this long from when a screen first draws it
+
+// (V3.0.0) how the last download ended, for the chip that says so (asked for on PSX-Place: a word that a download
+// is in, or that it failed - and where)
+enum { OUTCOME_FAILED, OUTCOME_DONE, OUTCOME_CANCELLED };
 
 typedef struct {
    char videoId[16]; char title[160]; char author[48]; char duration[12]; int quality;
@@ -68,6 +74,10 @@ static struct {
    int              activeQuality; // (V3.0.0) its DownloadQuality, and for the Downloads page the form it is in
    char             activeFormat[24];   // "1440p60 · VP9" once the stream is picked
    volatile int     cancelActive;  // (V3.0.0) cancelDownload: abort the running download only
+   int              outcome;       // (V3.0.0) the running download's end: OUTCOME_* (failed until it says otherwise)
+   char             resultText[224];    // ... the last one's, as the chip says it
+   int              resultOk;
+   volatile unsigned resultSeq;   // +1 for every new result (the UI thread picks it up)
    volatile unsigned revision;     // (V3.0.0) the Downloads page's: a download landed or was deleted
    int              batchTotal;    // (V3.0.0) downloads asked for since the queue last ran empty ...
    int              batchDone;     // ... and how many of them are finished (or failed): the rail's "1/10"
@@ -80,6 +90,9 @@ static Label    queueLabel;        // "(+N)" while more downloads wait behind th
 static UiDigits percentDigits;     // the percent, in fixed-width digits
 static char     percentText[8];    // " NN%" - the space before the number is part of it
 static Icon     overlayIcon;       // the download arrow at the chip's left end
+static Label    resultLabel;       // (V3.0.0) "Downloaded "<title>"" / "Download failed at 90%: "<title>""
+static unsigned resultSeqShown;    // ... the result the label holds
+static uint64_t resultShownUs;     // ... when a screen first drew it (0: not yet - it waits for a screen that draws it)
 static uint32_t overlayEdge;       // the hairline over surface-2, opaque: the chip's 2-px edge
 
 // ---- filename ----
@@ -203,6 +216,7 @@ static void runXmbDownload(const QueueItem *item, StreamInfo *info)
    else if (renamePath(partPath, finalPath) != 0) { deleteFile(partPath); logError("[dl] %s rename failed\n", item->videoId); }
    else {
       logInfo("[dl] %s done\n", item->videoId);
+      dl.outcome = OUTCOME_DONE;
       queueVideoExport(finalPath, item->title);
       if (item->fromGallery) deleteDownload(item->videoId);   // the XMB has it now (its job goes with it)
       else finishJob(item->videoId);
@@ -374,6 +388,7 @@ static void runAppDownload(const QueueItem *item, const StreamInfo *info)
       return;
    }
    dl.percent = 100;
+   dl.outcome = OUTCOME_DONE;
    dl.revision++;
    finishJob(item->videoId);
    logInfo("[dl] %s done: %lld bytes\n", item->videoId, videoBytes + audioBytes);
@@ -693,10 +708,27 @@ static void downloadWorker(uint64_t arg)
       dl.activeQuality = item.remuxLocal || item.fromGallery ? DOWNLOAD_XMB : item.quality;
       dl.activeFormat[0] = 0;
       dl.cancelActive = 0;
+      dl.outcome = OUTCOME_FAILED;
       unlock(&dl.mutex);
 
       runOneDownload(&item);
       lock(&dl.mutex);
+      if (dl.cancelActive || dl.cancelAll) dl.outcome = OUTCOME_CANCELLED;   // asked for: nothing to tell
+      if (dl.outcome != OUTCOME_CANCELLED) {
+         char title[sizeof item.title];
+         strCopy(title, sizeof title, item.title);
+         truncateUtf8(title, DISPLAY_TITLE_MAX);
+         const char *more = strcmp(title, item.title) != 0 ? "..." : "";
+         int toXmb = item.quality == DOWNLOAD_XMB || item.fromGallery || item.remuxLocal;
+         if (dl.outcome == OUTCOME_DONE)
+            snprintf(dl.resultText, sizeof dl.resultText, toXmb ? "In the XMB's Video column: \"%s%s\"" : "Downloaded \"%s%s\"",
+                     title, more);
+         else
+            snprintf(dl.resultText, sizeof dl.resultText, "Download failed at %d%%: \"%s%s\"",
+                     dl.percent < 0 ? 0 : dl.percent > 99 ? 99 : dl.percent, title, more);
+         dl.resultOk = dl.outcome == OUTCOME_DONE;
+         dl.resultSeq++;
+      }
       dl.batchDone++;
       dl.active = 0;          // (V3.0.0) not listed as running any more, whatever came of it
       dl.cancelActive = 0;
@@ -786,6 +818,15 @@ static void formatOverlay(char *out, int cap)
 
 void updateDownloadOverlay(void)
 {
+   if (dl.initialized && dl.resultSeq != resultSeqShown) {   // (V3.0.0) a new result: the chip says it next
+      char text[sizeof dl.resultText];
+      lock(&dl.mutex);
+      strCopy(text, sizeof text, dl.resultText);
+      resultSeqShown = dl.resultSeq;
+      unlock(&dl.mutex);
+      uiSetTextLabel(&resultLabel, OVERLAY_WEIGHT, text);
+      resultShownUs = 0;
+   }
    if (!dl.initialized || !dl.active) return;
    char text[128];
    formatOverlay(text, sizeof text);
@@ -820,6 +861,13 @@ static int overlayShown(void)
    return dl.initialized && dl.active && overlayLabel.tt.tex.w > 0;
 }
 
+// (V3.0.0) the last result, until RESULT_SHOW_US after a screen first drew it - a download that runs meanwhile waits
+static int resultShown(void)
+{
+   if (!dl.initialized || resultLabel.tt.tex.w <= 0) return 0;   // before a download that runs: it shows next
+   return resultShownUs == 0 || sys_time_get_system_time() - resultShownUs < RESULT_SHOW_US;
+}
+
 // the chip's parts, left to right: the arrow, the title, the percent and - while more wait - the "(+N)"
 static int iconSpan(void)    { return overlayIcon.tex ? OVERLAY_ICON + OVERLAY_ICON_GAP : 0; }
 static int queueSpan(void)
@@ -829,6 +877,7 @@ static int queueSpan(void)
 
 int getDownloadOverlayWidth(void)
 {
+   if (resultShown()) return OVERLAY_PAD_L + iconSpan() + resultLabel.tt.tex.w + OVERLAY_PAD_R;
    if (!overlayShown()) return 0;
    return OVERLAY_PAD_L + iconSpan() + overlayLabel.tt.tex.w + uiGetDigitsWidth(&percentDigits, percentText)
           + queueSpan() + OVERLAY_PAD_R;
@@ -847,11 +896,19 @@ void drawDownloadOverlayAt(int x, int y, UiAlign align)
               activeTheme->surface);
 
    int textX = x + OVERLAY_PAD_L;
+   int result = resultShown();
+   if (result && resultShownUs == 0) resultShownUs = sys_time_get_system_time();   // its time runs from now
    if (overlayIcon.tex) {
-      // the arrow's ink centred in its 22-px box and on the chip: drawIcon places the glyph's em box
+      // the arrow's ink centred in its 22-px box and on the chip: drawIcon places the glyph's em box - green when
+      // a download is in, red when it failed (V3.0.0)
+      uint32_t tint = !result ? activeTheme->accent : dl.resultOk ? 0xFF22C55Eu : activeTheme->live;
       drawIcon(&overlayIcon, textX + (OVERLAY_ICON - overlayIcon.tex->w) / 2 - overlayIcon.offsetX,
-               y + (OVERLAY_H - overlayIcon.tex->h) / 2 - overlayIcon.offsetY, activeTheme->accent);
+               y + (OVERLAY_H - overlayIcon.tex->h) / 2 - overlayIcon.offsetY, tint);
       textX += iconSpan();
+   }
+   if (result) {
+      uiDrawLabelAt(&resultLabel, textX, uiLabelYForCenter(&resultLabel, y, OVERLAY_H));
+      return;
    }
 
    // the three texts share one baseline: the title may have fallen back to FONT_POP, which puts its capitals
@@ -885,6 +942,8 @@ void initDownloads(void)
    uiInitTextLabel(&overlayLabel, OVERLAY_WEIGHT, 0, 0, OVERLAY_TEXT_MAX_W, OVERLAY_TEXT_SIZE, activeTheme->textPrimary, TEXT_NOWRAP_ELLIPSIS, "");
    // the queue count is secondary to what is downloading now: text-2
    uiInitLabel(&queueLabel, OVERLAY_WEIGHT, 0, 0, AUTO, OVERLAY_TEXT_SIZE, activeTheme->textSecondary, TEXT_NOWRAP, "");
+   uiInitTextLabel(&resultLabel, OVERLAY_WEIGHT, 0, 0, RESULT_TEXT_MAX_W, OVERLAY_TEXT_SIZE, activeTheme->textPrimary,
+                   TEXT_NOWRAP_ELLIPSIS, "");
    uiInitDigits(&percentDigits, PERCENT_WEIGHT, OVERLAY_TEXT_SIZE);
    strCopy(percentText, sizeof percentText, " 0%");
    // the icon font is loaded before this (main.c); a glyph that fails to rasterise leaves the arrow out
@@ -903,6 +962,7 @@ void shutdownDownloads(void)
    finishGfx();   // the overlay labels may have been sampled last frame
    freeLabel(&overlayLabel);
    freeLabel(&queueLabel);
+   freeLabel(&resultLabel);
    uiFreeDigits(&percentDigits);
    freeIcon(&overlayIcon);   // the texture belongs to the icon font's cache, which main.c frees
    // no closeFont: the fonts are shared (main.c closes them in termUiFonts, after this)

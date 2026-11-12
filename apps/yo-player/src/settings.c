@@ -38,7 +38,12 @@ static const char *DEFAULT_SETTINGS =
    "\n"
    "quality=auto\n"
    "# the highest video quality to play: auto = the best the console plays smoothly, or a height such as 1080,\n"
-   "# 720, 480, 360 or 144 - lower saves bandwidth on a slow connection. The player sets it too: START > Quality.\n";
+   "# 720, 480, 360 or 144 - lower saves bandwidth on a slow connection. The player sets it too: START > Quality.\n"
+   "\n"
+   "subtitle-language=off\n"
+   "# the language YouTube translates subtitles into when a video has none in it (Triangle offers it first):\n"
+   "# off, auto = the region's (Czechia: Czech), or a code such as cs, pl, sk, hu, de, en. YouTube refuses\n"
+   "# translations to this player at the moment (HTTP 429); the player says so when it does.\n";
 
 static SponsorblockMode sponsorblockMode = SPONSORBLOCK_ADS;
 static VideoDecoderSetting videoDecoder = VIDEO_DECODER_AUTO;
@@ -46,6 +51,7 @@ static int teeDecoderSpes = 4;
 static int vp9Spes = 6;
 static int downloadQuality = 0;   // download-quality=: the R3 page's last choice (downloads.h DownloadQuality)
 static int qualityCap = 0;   // quality=: the highest video height to play, 0 = auto
+static char subtitleLanguage[12] = "off";    // (V3.0.0) subtitle-language=: off, auto or a code
 
 // ---- content region ----
 
@@ -57,39 +63,39 @@ static int qualityCap = 0;   // quality=: the highest video height to play, 0 = 
 // Korea stays only while its Hangul titles prove legible on the console; deleting its line is the whole change -
 // nothing else refers to a position in this table.
 static const ContentRegion REGIONS[] = {
-   { "DE", "Germany" },
-   { "AT", "Austria" },
-   { "CH", "Switzerland" },
-   { "AU", "Australia" },
-   { "BE", "Belgium" },
-   { "BR", "Brazil" },
-   { "BG", "Bulgaria" },
-   { "CA", "Canada" },
-   { "HR", "Croatia" },
-   { "CZ", "Czechia" },
-   { "DK", "Denmark" },
-   { "FI", "Finland" },
-   { "FR", "France" },
-   { "GR", "Greece" },
-   { "HU", "Hungary" },
-   { "IE", "Ireland" },
-   { "IT", "Italy" },
-   { "JP", "Japan" },
-   { "MX", "Mexico" },
-   { "NL", "Netherlands" },
-   { "NO", "Norway" },
-   { "PL", "Poland" },
-   { "PT", "Portugal" },
-   { "RO", "Romania" },
-   { "RU", "Russia" },
-   { "RS", "Serbia" },
-   { "KR", "South Korea" },
-   { "ES", "Spain" },
-   { "SE", "Sweden" },
-   { "TR", "Turkey" },
-   { "UA", "Ukraine" },
-   { "GB", "United Kingdom" },
-   { "US", "United States" },   // the default: what every earlier build sent
+   { "DE", "Germany", "de" },
+   { "AT", "Austria", "de" },
+   { "CH", "Switzerland", "de" },
+   { "AU", "Australia", "en" },
+   { "BE", "Belgium", "nl" },
+   { "BR", "Brazil", "pt" },
+   { "BG", "Bulgaria", "bg" },
+   { "CA", "Canada", "en" },
+   { "HR", "Croatia", "hr" },
+   { "CZ", "Czechia", "cs" },
+   { "DK", "Denmark", "da" },
+   { "FI", "Finland", "fi" },
+   { "FR", "France", "fr" },
+   { "GR", "Greece", "el" },
+   { "HU", "Hungary", "hu" },
+   { "IE", "Ireland", "en" },
+   { "IT", "Italy", "it" },
+   { "JP", "Japan", "ja" },
+   { "MX", "Mexico", "es" },
+   { "NL", "Netherlands", "nl" },
+   { "NO", "Norway", "no" },
+   { "PL", "Poland", "pl" },
+   { "PT", "Portugal", "pt" },
+   { "RO", "Romania", "ro" },
+   { "RU", "Russia", "ru" },
+   { "RS", "Serbia", "sr" },
+   { "KR", "South Korea", "ko" },
+   { "ES", "Spain", "es" },
+   { "SE", "Sweden", "sv" },
+   { "TR", "Turkey", "tr" },
+   { "UA", "Ukraine", "uk" },
+   { "GB", "United Kingdom", "en" },
+   { "US", "United States", "en" },   // the default: what every earlier build sent
 };
 #define REGION_COUNT ((int)(sizeof REGIONS / sizeof REGIONS[0]))
 
@@ -197,6 +203,20 @@ void loadSettings(void)
       if      (settingValueEquals(dlq, "1440")) downloadQuality = 0;
       else if (settingValueEquals(dlq, "1080")) downloadQuality = 1;
       else if (settingValueEquals(dlq, "xmb"))  downloadQuality = 2;
+   }
+   // (V3.0.0) subtitle-language=: a code is letters and dashes ("cs", "pt-BR"), anything else is left at auto
+   const char *subtitles = findSettingValue(text, "subtitle-language");
+   if (subtitles) {
+      char value[sizeof subtitleLanguage];
+      int length = 0;
+      while (length < (int)sizeof value - 1 && ((subtitles[length] >= 'a' && subtitles[length] <= 'z') ||
+             (subtitles[length] >= 'A' && subtitles[length] <= 'Z') || subtitles[length] == '-')) {
+         value[length] = subtitles[length];
+         length++;
+      }
+      value[length] = 0;
+      if (length >= 2) strCopy(subtitleLanguage, sizeof subtitleLanguage, value);
+      else logWarn("[settings] subtitle-language takes off, auto or a code such as cs, using off\n");
    }
    const char *vp9 = findSettingValue(text, "vp9-spes");
    if (vp9) {
@@ -320,6 +340,14 @@ int getTeeDecoderSpes(void) { return teeDecoderSpes; }
 int getVp9Spes(void) { return vp9Spes; }
 
 int getDownloadQuality(void) { return downloadQuality; }
+
+const char *getSubtitleLanguage(void)
+{
+   if (strcmp(subtitleLanguage, "off") == 0) return "";
+   if (strcmp(subtitleLanguage, "auto") != 0) return subtitleLanguage;
+   const ContentRegion *region = getContentRegionAt(getContentRegionIndex());
+   return region && region->language ? region->language : "en";
+}
 
 int setDownloadQuality(int quality)
 {
