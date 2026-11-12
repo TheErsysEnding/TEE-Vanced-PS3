@@ -3,7 +3,37 @@
 Every release listed here was installed and used on a real PS3 (EVILNAT 4.92 DEX)
 before it was tagged. Anything that had not been is said so plainly.
 
-## v3.0.0 — not released yet
+## v3.0.0 — 2026-11-12
+
+Installed and used on TEE's console (EVILNAT 4.92 DEX) through eighteen test builds on 2026-11-11 and 2026-11-12
+(V3.0.0 Test 1 to Test 18). The release package is Test 18 with its version string changed. The XMB tile and
+background say what this version brings: 1440p 60 FPS SUPPORT · TEE DECODER.
+
+### In short
+
+- **1440p at 60 fps, with sound.** YouTube's 1440p VP9 plays on the TEE VP9 decoder (TEE's own, on all six SPEs),
+  its Opus sound on the TEE Opus building block (on the PPU). It is picked in START > Quality; Auto stays on 1080p60
+  H.264. In the busiest moments a 1440p60 video drops to YouTube's 1080p60 VP9 stream for a few seconds, at the next
+  key frame, and comes back after them; 1440p30 very likely plays through without that.
+- **The list view.** DOWN on Home, every search and every channel page: the whole feed from top to bottom, each video
+  with the best quality the PS3 plays of it ("1440p60", no codec), its channel's picture, and on the right its
+  details - description, quality, subtitles, audio tracks - with Channel and Subscribe right there.
+- **Downloads.** R3 downloads 1440p60 VP9 or 1080p60 H.264 into the app's own Downloads page (played from disk), or
+  an MP4 into the XMB's Video column; a note when one is in or failed; unfinished ones are offered again at the next
+  start.
+- **Subscriptions** with every channel you follow and its picture; channel pictures on the cards too.
+- **Subtitles** in Czech, Polish, Hungarian, Romanian, Turkish, Greek, Cyrillic and more (GitHub issue #1).
+- **Live**: Popular in Germany, Austria and Switzerland is a German live search instead of YouTube's world-wide mix;
+  streams "made for kids" play; live streams open again after a 1080p video.
+- **Also**: an ice-blue look; what is new, once per version, and the support page with its QR code; the BD Remote
+  Control (GitHub issue #6 - not tried with a real remote yet); a note when a newer release is out; certificates
+  checked at a server's time when the console's clock is wrong; a held UP or DOWN in the rail walks on; one package
+  for PS3HEN, CFW and DEX.
+- **Not there yet**: YouTube's automatically translated subtitles (GitHub issue #4) - YouTube refuses them to a
+  client that is not signed in (HTTP 429), so they are off by default. The TEE Decoder stalled twice on one 626 x 360
+  upload on TEE's console (not in RPCS3); that video then plays on cellVdec, the next one on the TEE Decoder again.
+
+### The test builds
 
 **V3.0.0 Test 1 SPE** (71-0fe8150, 2026-11-11): 1440p on the TEE VP9 building block 0.1.0, the picture on the
 SPEs alone (no RSX prediction yet - that will be the RSX test builds). Played in RPCS3, not yet on a console.
