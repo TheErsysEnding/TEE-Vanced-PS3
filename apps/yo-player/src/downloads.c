@@ -353,6 +353,15 @@ static void runAppDownload(const QueueItem *item, const StreamInfo *info)
    snprintf(audioPath, sizeof audioPath, "%s/audio.%s", folder, audio && audio->isOpus ? "webm" : "m4a");
    snprintf(infoPath, sizeof infoPath, "%s/info.txt", folder);
    deleteFile(infoPath);   // a download made again counts only once it is complete again
+   // (V3.0.0) and the copy from before goes: a rename does not replace a file, so downloading a video a second time
+   // failed at the end of its picture ("Download failed at 95%", RPCS3 2026-11-12) - and a copy in the other form
+   // (WebM after MP4) would have stayed behind unseen
+   static const char *before[] = { "video.webm", "video.mp4", "audio.webm", "audio.m4a" };
+   for (unsigned i = 0; i < sizeof before / sizeof before[0]; i++) {
+      char old[220];
+      snprintf(old, sizeof old, "%s/%s", folder, before[i]);
+      deleteFile(old);
+   }
    logInfo("[dl] %s -> %s (itag %d %dx%d %d fps %s, audio itag %d)\n", item->videoId, folder, video->itag, video->width,
            video->height, video->fps, video->isVp9 ? "VP9" : "H.264", audio ? audio->itag : 0);
 
