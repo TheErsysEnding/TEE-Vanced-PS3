@@ -43,6 +43,20 @@ SPEs alone (no RSX prediction yet - that will be the RSX test builds). Played in
   or play it afterwards). On the Downloads page, Square moves a video into the XMB after the same warning: a
   30 fps or 720p H.264 copy is remuxed as it is, a 1440p or 1080p60 one is fetched again as the XMB's MP4; the
   app's copy goes once the XMB has it.
+- **Test 17 Live** (12 Nov): live streams open again after a 1080p video. On TEE's console every live stream said
+  "couldn't open stream" once a 1080p video had played: the malloc heap keeps what a closed TEE Decoder gave back
+  (85 MB) and never returns it, a live stream's segment windows (24 + 2 MB) were taken out of that hole, the next TEE
+  Decoder's 32 MB block no longer fitted, the heap grew into the last of the kernel's memory - 33 MB free, then 0 - and
+  neither the TEE Decoder's SPEs (0x80010004) nor cellVdec (0x80610180) could start; after that nothing opened until
+  the app was restarted. The windows now come from the kernel in whole MB (sys_memory_allocate) and go back to it on
+  close; the decoder finds its old hole whole. Checked in RPCS3 in that order - 1080p on the TEE Decoder, then a live
+  stream: the decoder opens in the heap's free part and plays at 30 a second. The memory lines in dbg.txt now also say
+  what the heap holds and how much of it is in use. Live > Popular in Germany, Austria and Switzerland is a live search
+  for "live deutsch" instead of YouTube's shelf, which lists the same world-wide mix (Turkish, Polish, US, Telugu) for
+  every region and language: WELT, euronews deutsch, Vatican News Deutsch and German 24/7 channels come first now
+  (other regions, not probed, keep the shelf). A channel page is the list view too, with the channel's name and picture
+  on every video and only Subscribe in the details (the page is that channel). In the rail a held UP or DOWN walks on
+  through the entries (it stops at the first and the last; a fresh press still wraps round).
 - **Test 16 Search** (12 Nov): a search's results are the list view too - the rows under the field, the selection's
   details beside them, UP off the first result into the field as before, RIGHT to Channel and Subscribe (a channel page
   keeps its three big rows). The TEE Decoder stays on after one odd video: on TEE's console it stopped twice on a
