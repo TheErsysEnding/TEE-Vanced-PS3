@@ -43,6 +43,17 @@ SPEs alone (no RSX prediction yet - that will be the RSX test builds). Played in
   or play it afterwards). On the Downloads page, Square moves a video into the XMB after the same warning: a
   30 fps or 720p H.264 copy is remuxed as it is, a 1440p or 1080p60 one is fetched again as the XMB's MP4; the
   app's copy goes once the XMB has it.
+- **Test 12 Fix** (12 Nov): the 1440p freeze is gone. Test 10 and 11 asked for a 256 KB receive buffer on every
+  connection, and on the console each connection then failed after about 256 KB; replaced ten times a second, the
+  closed ones used up the console's sockets ("socket() failed"): the Elden Ring video froze at 17:12 with its sound
+  running on, and the console's FTP stopped answering. The default buffer is back (RPCS3 never showed it). A VP9
+  read failure is now tried again from the picture on screen, and a seek revives a stream that had given up.
+  Certificates are checked at a server's time when the console's clock is off (a flat clock battery: the year 2000),
+  instead of failing every connection. The BD Remote Control works the app (GitHub issue #6): Enter, Play and Pause
+  are X, Return and Stop are O, the arrows and scan keys move and seek, Prev/Next are L1/R1, Subtitle is Triangle,
+  Display is R3, the menu keys START. At every start the app looks at its GitHub page and says when a newer release
+  is out (Home, and under the version in Settings; `update-check=off` in settings.txt to leave GitHub alone).
+  `tools/package-universal.sh` builds the one package for every console.
 - **Test 11 Subs** (12 Nov): Czech and the other Central/Eastern European letters show in subtitles (GitHub issue
   #1): a cue is set in Manrope Bold wherever Manrope has its letters - Latin Extended-A, Greek, Cyrillic,
   Vietnamese - and only in FONT_POP otherwise (Japanese); FONT_POP's Latin is Latin-1 and left gaps. Subtitles in

@@ -82,8 +82,9 @@ connection), the chapters and autoplay.
 and L2/R2 go back through the last 12 hours of a live stream and R1 returns to
 live; its quality can be switched like a video's.
 
-**Its own look, "Ember".** A warm dark ground in TEE orange, matching the icon,
-the Manrope typeface, and a focus that can be seen from the sofa.
+**Its own look.** A dark ground with an ice-blue accent (since V3.0.0; v1.0 and
+v2.0.0 were orange, "Ember"), the Manrope typeface, and a focus that can be seen
+from the sofa.
 
 **Your own playlists.** Local lists that nobody else can change - and, signed
 in, your YouTube playlists above them. L3 files the selected video into a local
@@ -138,6 +139,25 @@ toolset, which needs Visual Studio; it reads the project files and emits direct
 (`pkg/make-param-sfo.py`), signs the ELF with `make_fself_npdrm` and packages it
 with `make_package_npdrm`, both from the SDK. The artwork in `branding/` is
 regenerated with `tools/make-branding.py` (Pillow).
+
+**One package for every console (PS3HEN, CFW and DEX).** A `make_fself_npdrm`
+EBOOT is fake-signed: CFW and DEX run it, PS3HEN does not. Since V3.0.0 the
+packages are signed as a real NPDRM SELF instead (a free license, the app's
+content id), which all three run - one package, no separate HEN build. On the
+Windows machine with the tools, in Git Bash:
+
+```sh
+SCETOOL_DIR=<folder of scetool.exe> PKG_CUSTOM=<path to pkg_custom.exe> \
+PPU_READELF=<cell sdk>/host-win32/ppu/bin/ppu-lv2-readelf.exe \
+  tools/package-universal.sh <path to yo-player.ppu.elf> <new output folder>
+```
+
+It stages `PARAM.SFO`, the artwork and `package.conf`, signs the EBOOT with
+scetool, packages it with pkg_custom, checks that the signed EBOOT decrypts to
+the ELF's loaded segments and prints the package's SHA-256. scetool needs its
+keys in its own `data/` folder; they are not part of this repository and never
+go into it - the script only passes the folder on. On CFW/DEX the app keeps its
+data in `/dev_hdd0/tee-vanced` (an older data folder is copied over once).
 
 **Verify what you built.** The build script stops on the first compile error and
 wipes its object directory first — an earlier version did neither, linked a
