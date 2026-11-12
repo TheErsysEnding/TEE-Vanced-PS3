@@ -122,6 +122,10 @@ typedef struct {
    Label            heroTitle, heroTitle2, heroMeta, heroDuration, heroBadge, heroLeft;
    int              inputSuppressed;                           // pad ignored, but the grid keeps working
    int              focusHidden;                               // the selection drawn like any other item
+   // (Test 15) the channels' pictures on the cards and in the hero (setGridAvatarSource)
+   const GfxTexture *(*avatarFor)(const char *channelId);
+   int              (*hasAvatar)(const char *channelId);
+   unsigned char    avatarMeta[MAX_SEARCH_RESULTS];            // the card's meta line starts after its picture
 } VideoGrid;
 
 // font is no longer used for drawing (see the header comment); pass uiGetFont(...) or NULL.
@@ -165,6 +169,20 @@ void resetGridRepeat(VideoGrid *grid);
 // download deleted): the selection goes back to `index` - the item after the one that went - instead of the first
 // card, so a list can be cleared one item after the other. Taken once, when the feed is ready.
 void keepGridSelection(VideoGrid *grid, int index);
+
+// (Test 15) Home's list view sets the selection itself: the page follows it, so the window of decoded pictures,
+// the hero's big picture and the fetch of the next page all follow the list.
+void setGridSelection(VideoGrid *grid, int index);
+// (Test 15) the selection's big picture - the hero's, its card's own until that is in - into (x, y, w, h) with
+// `tint` (its alpha fades it). 0 when there is no picture to draw yet.
+int  drawGridHeroPicture(VideoGrid *grid, int x, int y, int w, int h, uint32_t tint);
+// (Test 15) item i's card picture while it is decoded (the window round the selection), else NULL
+const GfxTexture *gridThumbnail(const VideoGrid *grid, int i);
+// (Test 15) the channels' pictures on the cards (before the meta line) and in the hero: avatarFor gives the texture
+// once it is in (NULL until then - asking for it), hasAvatar whether one can come at all. A card whose channel has
+// none keeps its meta line where it always was.
+void setGridAvatarSource(VideoGrid *grid, const GfxTexture *(*avatarFor)(const char *channelId),
+                         int (*hasAvatar)(const char *channelId));
 
 // switch presentation, keeping the results, the thumbnails already fetched and the selection. Re-lays out the
 // labels for the new column width, so it is not free - drive it from a button, not per frame.

@@ -687,9 +687,30 @@ static void parseLiveFromSeqnum(StreamInfo *out, const char *kind)
            edgeSq, rewritten, out->formatCount);
 }
 
+// (Test 15) the thread whose resolves log quietly (setExtractQuiet)
+static volatile sys_ppu_thread_t quietThread;
+static volatile int              quietSet;
+
+void setExtractQuiet(int quiet)
+{
+   sys_ppu_thread_t self;
+   sys_ppu_thread_get_id(&self);
+   if (quiet) { quietThread = self; __sync_synchronize(); quietSet = 1; }
+   else if (quietSet && quietThread == self) quietSet = 0;
+}
+
+static int isExtractQuiet(void)
+{
+   if (!quietSet) return 0;
+   sys_ppu_thread_t self;
+   sys_ppu_thread_get_id(&self);
+   return self == quietThread;
+}
+
 static int extract(const char *input, StreamInfo *out)
 {
    memset(out, 0, sizeof *out);
+   int quiet = isExtractQuiet();
 
    char videoId[16];
    if (!extractVideoId(input, videoId, sizeof videoId)) return -1;
@@ -731,14 +752,14 @@ static int extract(const char *input, StreamInfo *out)
    // Diagnostic: the whole ladder this client was offered. stream-select only ever reports the
    // one format it picked, which cannot tell you WHY - e.g. whether a 1080p30 rendition existed
    // at all, or whether the 1080p60 was simply the only 1080p on offer.
-   for (int i = 0; i < out->formatCount; i++) {
+   for (int i = 0; i < out->formatCount && !quiet; i++) {
       const StreamFormat *f = &out->formats[i];
       logInfo("[yt] fmt itag=%d %dx%d %dfps %s vid=%d aud=%d cipher=%d url=%d drc=%d\n",
               f->itag, f->width, f->height, f->fps, f->container,
               f->hasVideo, f->hasAudio, f->needsCipher, f->url[0] ? 1 : 0, f->isDrc);
    }
    // and every audio track, best first: the first one is what plays
-   for (int i = 0; i < out->audioTrackCount; i++) {
+   for (int i = 0; i < out->audioTrackCount && !quiet; i++) {
       const AudioTrack *t = &out->audioTracks[i];
       logInfo("[yt] audio track %d: %s [%s] rank=%d itag=%d%s\n", i, t->name, t->id, t->rank, t->itag, t->isDrc ? " drc" : "");
    }
@@ -783,7 +804,7 @@ static int extract(const char *input, StreamInfo *out)
       logError("[yt] no formats, respLen=%d playability=%s\n", respLen, statusText);
       if (visitorFromDisk && strcmp(statusText, "LOGIN_REQUIRED") == 0) dropVisitorData();   // stale session
    } else {
-      logInfo("[yt] resolved %d formats\n", out->formatCount);
+      if (!quiet) logInfo("[yt] resolved %d formats\n", out->formatCount);
       if (!visitorFromDisk) { saveVisitorData(); visitorFromDisk = 1; }   // persist a session that works
    }
 
@@ -909,6 +930,9 @@ static int parseRendererItem(const char *block, const char *end, SearchResult *i
 {
    if (!jsonString(block, end, "videoId", item->videoId, sizeof item->videoId) || !item->videoId[0]) return 0;
    readChannelId(block, end, item->channelId, sizeof item->channelId);
+   // (Test 15) the channel's picture, where the item carries one (search, Live): for the cards, the hero and the list
+   const char *avatar = findIn(block, end, "\"channelThumbnailSupportedRenderers\":{");
+   if (avatar) keepChannelAvatar(item->channelId, avatar, end);
    readField(block, end, "\"title\"", "text", item->title, sizeof item->title);
    if (!item->title[0])   // gridVideoRenderer (trending) uses a plain simpleText title
       readField(block, end, "\"title\"", "simpleText", item->title, sizeof item->title);
@@ -947,6 +971,8 @@ static int parseLockupItem(const char *block, const char *end, SearchResult *ite
    if (!jsonString(block, end, "contentId", item->videoId, sizeof item->videoId) || !item->videoId[0]) return 0;
 
    readChannelId(block, end, item->channelId, sizeof item->channelId);
+   const char *avatar = findIn(block, end, "\"avatarViewModel\":{");   // (Test 15) its channel's picture
+   if (avatar) keepChannelAvatar(item->channelId, avatar, end);
    readField(block, end, "\"lockupMetadataViewModel\"", "content", item->title, sizeof item->title);
    readField(block, end, "\"metadataParts\"",           "content", item->author, sizeof item->author);
    // on a channel's own page the first metadata part is the view count, not the channel name - drop it so

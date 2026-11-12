@@ -215,6 +215,11 @@ typedef struct Extractor {
    int (*getAccountPlaylist)(const char *playlistId, const char *continuation, SearchResults *out);
 } Extractor;
 
+// (Test 15) the calling thread's resolves (extract) leave out their per-format and per-audio-track lines from here
+// on (1) or no longer (0): Home's list resolves video after video in the background (video-details.c), two dozen
+// lines a video otherwise. What goes wrong is logged either way. One thread at a time.
+void setExtractQuiet(int quiet);
+
 // picks the first registered extractor that claims input, or NULL.
 const Extractor *findExtractor(const char *input);
 

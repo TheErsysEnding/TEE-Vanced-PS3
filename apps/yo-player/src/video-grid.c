@@ -85,6 +85,11 @@
 // (V3.0.0) a download on its way (the Downloads page): the rail indicator's bar, a white track filling green
 #define DOWNLOAD_BAR_TRACK 0xFFF0F7FBu
 #define DOWNLOAD_BAR_FILL  0xFF22C55Eu
+// (Test 15) the channel's picture before a card's meta line, and before the hero's
+#define CARD_AVATAR    26
+#define CARD_AVATAR_GAP 8
+#define HERO_AVATAR    40
+#define HERO_AVATAR_GAP 14
 #define BADGE_INSET    10       // badges sit this far in from the thumbnail's edges (Bild 4)
 #define BADGE_SPACE    8        // two badges along one edge keep at least this far apart, or the left one goes
 // The glow texture's own alpha at a card's edge (84 of 255, measured on schein-r23): the page under a focused
@@ -531,7 +536,10 @@ static void materializeTile(VideoGrid *grid, int i)
       const char *parts[3] = { author, item->views, item->published };
       joinMeta(meta, sizeof meta, parts, 3, 0);
       uiCleanText(meta, (int)sizeof meta, meta);
-      setFittedText(&grid->metas[i], uiPickFont(META_WEIGHT, meta), grid->textW, meta);
+      // (Test 15) the channel's picture before it, when one can come
+      grid->avatarMeta[i] = grid->hasAvatar && item->channelId[0] && item->videoId[0] && grid->hasAvatar(item->channelId);
+      int indent = grid->avatarMeta[i] ? CARD_AVATAR + CARD_AVATAR_GAP : 0;
+      setFittedText(&grid->metas[i], uiPickFont(META_WEIGHT, meta), grid->textW - indent, meta);
    }
    uiSetTextLabel(&grid->durations[i], UI_BADGE_WEIGHT, item->isLive ? "LIVE" : item->duration);
 }
@@ -943,7 +951,19 @@ void drawGridHero(VideoGrid *grid)
       uiDrawLabelAt(&grid->heroTitle2, x, uiLabelYForBaseline(&grid->heroTitle2, base));
    }
    base += HERO_META_GAP;
-   uiDrawLabelAt(&grid->heroMeta, x, uiLabelYForBaseline(&grid->heroMeta, base));
+   int metaX = x;
+   if (grid->avatarFor && grid->hasAvatar && item->videoId[0] && item->channelId[0] && grid->hasAvatar(item->channelId)) {
+      int ay = base - 8 - HERO_AVATAR / 2;   // round the line's middle
+      const GfxTexture *avatar = grid->avatarFor(item->channelId);
+      if (avatar) {
+         drawGfxTexture(x, ay, HERO_AVATAR, HERO_AVATAR, *avatar, 0.0f, 0.0f, 1.0f, 1.0f, 0xFFFFFFFF, GFX_FILTER_LINEAR);
+         uiDrawImageCorners(x, ay, HERO_AVATAR, HERO_AVATAR, HERO_AVATAR / 2, bg);   // a circle
+      } else {
+         uiFillCircle(x, ay, HERO_AVATAR, activeTheme->surface1);
+      }
+      metaX += HERO_AVATAR + HERO_AVATAR_GAP;
+   }
+   uiDrawLabelAt(&grid->heroMeta, metaX, uiLabelYForBaseline(&grid->heroMeta, base));
 
    int chipY = base + 26, chipX = x;
    if (grid->heroDuration.tt.tex.w > 0)
@@ -1012,6 +1032,45 @@ static int showsFocus(const VideoGrid *grid, int i) { return i == grid->selected
 GridView gridView(const VideoGrid *grid) { return grid->view; }
 
 void keepGridSelection(VideoGrid *grid, int index) { grid->keepSelection = index >= 0 ? index : -1; }
+
+void setGridSelection(VideoGrid *grid, int index)
+{
+   if (grid->results.count <= 0) return;
+   if (index < 0) index = 0;
+   if (index >= grid->results.count) index = grid->results.count - 1;
+   setPage(grid, index / pageSize(grid));
+   grid->selected = index;
+}
+
+const GfxTexture *gridThumbnail(const VideoGrid *grid, int i)
+{
+   if (i < 0 || i >= grid->results.count || !grid->thumbs[i].tex.offset) return NULL;
+   return &grid->thumbs[i].tex;
+}
+
+void setGridAvatarSource(VideoGrid *grid, const GfxTexture *(*avatarFor)(const char *channelId),
+                         int (*hasAvatar)(const char *channelId))
+{
+   grid->avatarFor = avatarFor;
+   grid->hasAvatar = hasAvatar;
+}
+
+int drawGridHeroPicture(VideoGrid *grid, int x, int y, int w, int h, uint32_t tint)
+{
+   if (grid->stage != GRID_READY || grid->selected < 0 || grid->selected >= grid->results.count) return 0;
+   int i = grid->selected;
+   const SearchResult *item = &grid->results.items[i];
+   if (grid->heroTex.offset && strcmp(grid->heroTexId, item->videoId) == 0) {
+      float v0 = grid->heroCrop ? 0.125f : 0.0f, v1 = grid->heroCrop ? 0.875f : 1.0f;
+      drawGfxTexture(x, y, w, h, grid->heroTex, 0.0f, v0, 1.0f, v1, tint, GFX_FILTER_LINEAR);
+      return 1;
+   }
+   if (grid->thumbs[i].tex.offset && item->videoId[0]) {
+      drawGfxTexture(x, y, w, h, grid->thumbs[i].tex, 0.0f, 0.0f, 1.0f, 1.0f, tint, GFX_FILTER_LINEAR);
+      return 1;
+   }
+   return 0;
+}
 
 void setGridView(VideoGrid *grid, GridView view)
 {
@@ -1290,8 +1349,21 @@ static void drawCard(VideoGrid *grid, int i, float grow)
    int base    = textTop + TILE_TITLE_BASE;
    drawTinted(title,  tx, uiLabelYForBaseline(title,  base), titleColor);
    drawTinted(title2, tx, uiLabelYForBaseline(title2, base + TILE_TITLE_LINE), titleColor);
-   drawTinted(&grid->metas[i],   tx, uiLabelYForBaseline(&grid->metas[i],
-              textTop + lines * TILE_TITLE_LINE + TILE_META_GAP + META_ASCENT), metaColor);
+   int metaBase = textTop + lines * TILE_TITLE_LINE + TILE_META_GAP + META_ASCENT;
+   int metaX = tx;
+   if (grid->avatarMeta[i] && grid->avatarFor) {   // (Test 15) the channel's picture first
+      const SearchResult *item = &grid->results.items[i];
+      int ay = metaBase - 7 - CARD_AVATAR / 2;
+      const GfxTexture *avatar = grid->avatarFor(item->channelId);
+      if (avatar) {
+         drawGfxTexture(tx, ay, CARD_AVATAR, CARD_AVATAR, *avatar, 0.0f, 0.0f, 1.0f, 1.0f, 0xFFFFFFFF, GFX_FILTER_LINEAR);
+         uiDrawImageCorners(tx, ay, CARD_AVATAR, CARD_AVATAR, CARD_AVATAR / 2, activeTheme->appBg);
+      } else {
+         uiFillCircle(tx, ay, CARD_AVATAR, activeTheme->surface1);
+      }
+      metaX += CARD_AVATAR + CARD_AVATAR_GAP;
+   }
+   drawTinted(&grid->metas[i], metaX, uiLabelYForBaseline(&grid->metas[i], metaBase), metaColor);
 }
 
 // list view: a row - the thumbnail on the left, the title and the meta line beside it, the block of text
