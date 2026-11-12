@@ -46,7 +46,7 @@
 #define OVERLAY_ICON_GAP   10       // the arrow -> the text
 #define OVERLAY_GAP        20       // between the overlay and the hint row under it
 #define OVERLAY_TEXT_MAX_W 560      // a guard: 32 bytes of title come to about 500 px with the words round it
-#define RESULT_TEXT_MAX_W  760      // (V3.0.0) the result's chip: "Download failed at 90%: "<title>""
+#define RESULT_TEXT_MAX_W  600      // (V3.0.0) the result's chip: "Download failed at 90%: "<title>"" (Home: clear of its hero)
 #define RESULT_SHOW_US     6000000ull   // ... stays this long from when a screen first draws it
 
 // (V3.0.0) how the last download ended, for the chip that says so (asked for on PSX-Place: a word that a download
@@ -930,6 +930,11 @@ void drawDownloadOverlayAt(int x, int y, UiAlign align)
 void drawDownloadOverlay(int screenWidth)
 {
    drawDownloadOverlayAt(screenWidth - UI_SAFE_X, UI_HINTS_BOTTOM_Y - OVERLAY_GAP - OVERLAY_H, UI_ALIGN_RIGHT);
+}
+
+void drawDownloadResultAt(int x, int y, UiAlign align)
+{
+   if (resultShown()) drawDownloadOverlayAt(x, y, align);   // with a result to show, the chip is the result
 }
 
 // ---- lifecycle ----

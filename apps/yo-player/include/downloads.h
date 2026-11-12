@@ -62,6 +62,10 @@ int  moveDownloadToXmb(const char *videoId);
 void updateDownloadOverlay(void);         // refresh the "Downloading ..." label; call each frame in a screen update
 // draws it bottom-right, above the hint row (UI_HINTS_BOTTOM_Y), if a download is active; call in a screen draw
 void drawDownloadOverlay(int screenWidth);
+// (V3.0.0) only the last download's result - "Downloaded ..." / "Download failed at 90%: ..." - for a few seconds from
+// the first time it is drawn, placed as drawDownloadOverlayAt places its chip: for a screen that shows the running
+// download elsewhere (Home: in the rail). Nothing otherwise.
+void drawDownloadResultAt(int x, int y, UiAlign align);
 // The same chip with its top at y and its left edge, middle or right edge at x (align), for a screen whose
 // content reaches down to its hint row - the search results run to just above it. Draws nothing while no
 // download is running.

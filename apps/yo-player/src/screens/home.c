@@ -1250,6 +1250,8 @@ static void drawHome(void)
    drawHeader();
    uiDrawHints(&hintsTop,    hintsTopRight(), HEADER_HINTS_Y,    UI_ALIGN_RIGHT);
    uiDrawHints(&hintsBottom, UI_SAFE_RIGHT,   UI_HINTS_BOTTOM_Y, UI_ALIGN_RIGHT);
+   // (V3.0.0) a download is in, or failed: a few seconds under the top hints, right, clear of the hero's title
+   drawDownloadResultAt(UI_SAFE_RIGHT, HEADER_HINTS_Y + UI_HINT_GLYPH_H + 12, UI_ALIGN_RIGHT);
    // (V3.0.0) the download shows in the rail now (sidebar.c): the old chip bottom right would lie over the cards
 
    drawSidebar(home.screenH);
