@@ -43,6 +43,15 @@ SPEs alone (no RSX prediction yet - that will be the RSX test builds). Played in
   or play it afterwards). On the Downloads page, Square moves a video into the XMB after the same warning: a
   30 fps or 720p H.264 copy is remuxed as it is, a 1440p or 1080p60 one is fetched again as the XMB's MP4; the
   app's copy goes once the XMB has it.
+- **Test 11 Subs** (12 Nov): Czech and the other Central/Eastern European letters show in subtitles (GitHub issue
+  #1): a cue is set in Manrope Bold wherever Manrope has its letters - Latin Extended-A, Greek, Cyrillic,
+  Vietnamese - and only in FONT_POP otherwise (Japanese); FONT_POP's Latin is Latin-1 and left gaps. Subtitles in
+  those languages are offered now. YouTube's auto-translated tracks (issue #4) can be asked for with
+  `subtitle-language=` in settings.txt (a code such as cs, or auto for the region's language), off by default:
+  YouTube refuses them to an anonymous player at the moment (HTTP 429, without a PO token), and the player says so.
+  Subscriptions lists every channel you follow, signed in from the account's own channel list (all of them in one
+  request), each tile the channel's picture and name. A word for a few seconds when a download is in, or at which
+  percent it failed (asked for on PSX-Place). Downloading a video a second time works (it failed at the end).
 - **Test 10 Sync** (12 Nov): picture and sound stay together through the hardest minutes of a 1440p60 stream (the
   Elden Ring DLC video at 17:11, where the picture had fallen up to 0.7 s behind). Every 4 MB of a YouTube stream is
   a new TLS connection, and the reader got nothing during each handshake: the next one is now opened while the
