@@ -43,6 +43,12 @@ SPEs alone (no RSX prediction yet - that will be the RSX test builds). Played in
   or play it afterwards). On the Downloads page, Square moves a video into the XMB after the same warning: a
   30 fps or 720p H.264 copy is remuxed as it is, a 1440p or 1080p60 one is fetched again as the XMB's MP4; the
   app's copy goes once the XMB has it.
+- **Test 13 Seek** (12 Nov): picture and sound start together after a seek. A seek while paused started the sound
+  under the still picture (the pre-roll released it whatever the pause said), X pressed while a seek's first pictures
+  were still coming started it seconds ahead of them, and a hold or release decided just before a seek undid the
+  seek's pause of the sound: X then seemed to play the picture without sound while it caught up. The sound is now
+  switched under the player's lock where it is decided, a pre-roll leaves a paused video paused, and X during a
+  pre-roll leaves the start of the sound to it. Each seek logs where picture and sound stand when it begins.
 - **Test 12 Fix** (12 Nov): the 1440p freeze is gone. Test 10 and 11 asked for a 256 KB receive buffer on every
   connection, and on the console each connection then failed after about 256 KB; replaced ten times a second, the
   closed ones used up the console's sockets ("socket() failed"): the Elden Ring video froze at 17:12 with its sound

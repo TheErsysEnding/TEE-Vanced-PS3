@@ -558,11 +558,11 @@ static void performSeek(VideoPlayer *player)
                                          // else a stale timer trips instantly and video starts on the wall clock
    player->statsSecondUs = 0;            // the stutter statistics start over with the new position
    player->statsShown = player->statsLate = player->statsRepeats = player->statsStarved = 0;
-   unlock(&player->lock);
-
    // hold the audio feed until the first post-seek frame actually presents (getVideoFrame releases it), so
-   // audio can't drain ahead and then race the video to catch up (the "speedup")
+   // audio can't drain ahead and then race the video to catch up (the "speedup"). (Test 13) In the same locked step
+   // that restarts the pre-roll, so nothing decided before it can start the sound again.
    if (player->audioFeedOpen) pauseAudioPcmFeed(1);
+   unlock(&player->lock);
 
    // the audio thread self-exits at end-of-stream (audioAlive=0, but its decoder/feed/buffers stay intact). a
    // seek repositions the audio demuxer, so respawn the thread to consume the new position - otherwise once
@@ -1215,6 +1215,8 @@ const uint8_t *getVideoFrame(VideoPlayer *player, int *width, int *height)
 {
    uint64_t nowUs = sys_time_get_system_time();
    int releaseAudio = 0;   // set when pre-roll fires, to un-hold the audio feed after the lock is dropped
+   char prerollLine[160];  // (V3.0.0 Test 13) where picture and sound stand when the pre-roll ends
+   prerollLine[0] = 0;
    lock(&player->lock);
 
    // a posted seek freezes presentation: frames decoded before the flush must not advance the
@@ -1246,7 +1248,15 @@ const uint8_t *getVideoFrame(VideoPlayer *player, int *width, int *height)
       player->basePts    = earliest;
       player->baseWallUs = nowUs;
       player->started    = 1;
-      releaseAudio       = 1;   // start the audio feed together with the first video frame
+      if (player->vp9)
+         snprintf(prerollLine, sizeof prerollLine, "[video-player] pre-roll done: picture at %d ms, sound at %d ms (%d frames "
+                  "played), %d ready%s\n", (int)(earliest / 1000000ull),
+                  player->audioClockValid ? (int)(audioClockNs(player) / 1000000ull) : -1,
+                  (int)getAudioPcmFeedPlayedFrames(), readyCount, player->paused ? ", paused" : "");
+      // start the audio feed together with the first video frame - unless the video is paused: a seek while paused
+      // ended its pre-roll here and let the sound run on under a still picture; X then "paused" it by playing the
+      // picture, which caught up seconds of video without sound (TEE, Test 12). Unpausing starts the feed.
+      releaseAudio       = !player->paused;
    }
 
    // the audio clock is the sync master while audio runs: it only advances as samples reach the
@@ -1374,14 +1384,16 @@ const uint8_t *getVideoFrame(VideoPlayer *player, int *width, int *height)
    int idx = player->displayIndex;
    const uint8_t *buffer = 0;
    if (idx >= 0) { buffer = slotPicture(&player->slots[idx]); *width = player->slots[idx].width; *height = player->slots[idx].height; }
+   // release the audio held through pre-roll, and the VP9 hold. (V3.0.0 Test 13) Under the lock, where they are
+   // decided: done after it, a seek the decode thread made in between (it pauses the sound for its pre-roll) was undone
+   // by them, and the sound ran under the old picture until the new one came. pauseAudioPcmFeed only sets a flag.
+   if (releaseAudio && player->audioFeedOpen) pauseAudioPcmFeed(0);
+   if (holdAction && player->audioFeedOpen) pauseAudioPcmFeed(holdAction == 1);
    unlock(&player->lock);
    if (statsLine[0]) logInfo("%s", statsLine);   // outside the lock: a file write must not hold up the decode thread
    if (syncLine[0]) logInfo("%s", syncLine);
-
-   // release the audio held through pre-roll (mixer call must run outside player->lock)
-   if (releaseAudio && player->audioFeedOpen) pauseAudioPcmFeed(0);
-   if (holdAction && player->audioFeedOpen) pauseAudioPcmFeed(holdAction == 1);   // (V3.0.0) the VP9 hold
    if (holdLine[0]) logInfo("%s", holdLine);
+   if (prerollLine[0]) logInfo("%s", prerollLine);
    return buffer;
 }
 
@@ -1397,8 +1409,14 @@ void setVideoPaused(VideoPlayer *player, int paused)
       player->baseWallUs += nowUs - player->pauseWallUs;   // don't count paused time against the clock
       player->clockSmoothValid = 0;                        // the smoothed clock picks the audio up afresh
    }
+   // (V3.0.0 Test 13) X during a pre-roll (a seek's pictures still coming) leaves the sound to the pre-roll, which starts
+   // it with the first picture: started at once, it ran under the old picture and the new one came seconds behind it.
+   // Held by the VP9 hold, it stays held until the picture has caught up.
+   if (player->audioFeedOpen) {
+      if (paused) pauseAudioPcmFeed(1);
+      else if (player->started && !player->audioHeld && player->seekRequestNs < 0) pauseAudioPcmFeed(0);
+   }
    unlock(&player->lock);
-   if (player->audioFeedOpen) pauseAudioPcmFeed(paused);
 }
 
 int isVideoPaused(const VideoPlayer *player) { return player->paused; }
