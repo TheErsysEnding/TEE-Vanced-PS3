@@ -639,7 +639,8 @@ static int decodeNextFrame(VideoPlayer *player, uint8_t *yuv, int *width, int *h
 // The TEE Decoder stopped while playing: an error it reported, a stream it cannot take after all (several
 // slices per picture only shows while decoding), or no picture for the stall window. Flush it once and go on
 // from the next keyframe; a second failure within 30 s, or a failed flush, hands the stream to cellVdec for
-// the rest of this run (disableH264TeeForSession). Returns 1 when decoding can go on. The old decoder is closed
+// the rest of this video (disableH264TeeForVideo, Test 15: it was the rest of the run, so one odd 360p stream took
+// 1080p60 away from every video after it). Returns 1 when decoding can go on. The old decoder is closed
 // before the next one opens, so their SPEs never add up.
 static int recoverDecoder(VideoPlayer *player, int *startedAtKeyframe)
 {
@@ -653,7 +654,7 @@ static int recoverDecoder(VideoPlayer *player, int *startedAtKeyframe)
       logWarn("[video-player] TEE Decoder flushed after a failure, going on from the next keyframe\n");
       return 1;
    }
-   disableH264TeeForSession(again ? "it failed twice within 30 s" : "its flush failed");
+   disableH264TeeForVideo(again ? "it failed twice within 30 s" : "its flush failed");
    destroyH264Decoder(player->decoder);
    player->decoder = createH264DecoderFor(&player->streamParams);   // cellVdec now
    if (!player->decoder) { logError("[video-player] no decoder after the TEE Decoder failed\n"); return 0; }
@@ -704,7 +705,7 @@ static void performSeek(VideoPlayer *player)
    // than going dark (a NULL decoder makes decode report end-of-stream until a later seek revives it)
    else if (!player->decoder || resetH264Decoder(player->decoder) != 0) {
       logWarn("[video-player] decoder reset failed, recreating decoder\n");
-      if (isTeeH264Decoder(player->decoder)) disableH264TeeForSession("its flush failed at a seek");
+      if (isTeeH264Decoder(player->decoder)) disableH264TeeForVideo("its flush failed at a seek");
       destroyH264Decoder(player->decoder);
       player->decoder = createH264DecoderFor(&player->streamParams);
       setH264CatchUpSkip(player->decoder, 0);   // fresh decoder, fresh start: re-armed while behind

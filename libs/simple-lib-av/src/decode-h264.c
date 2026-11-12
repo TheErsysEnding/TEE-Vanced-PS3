@@ -109,7 +109,8 @@ struct H264Decoder {
 
 static H264Policy policy = H264_POLICY_AUTO;
 static int teeSpes = 4;          // 4 = 1 CABAC + 3 pixel, 5 = 1 CABAC + 4 pixel
-static int teeOff;               // the TEE Decoder failed while playing: cellVdec until the app restarts
+static int teeOff;               // the TEE Decoder could not be closed or hung: cellVdec until the app restarts
+static int teeOffVideo;          // (Test 15) this video's stream kept stalling it: cellVdec until the next video
 static int teeOpen;              // one TEE Decoder at a time
 static int spuInitialized;
 
@@ -117,9 +118,20 @@ void setH264DecoderPolicy(H264Policy newPolicy, int spes)
 {
    policy = newPolicy == H264_POLICY_SONY ? H264_POLICY_SONY : H264_POLICY_AUTO;
    teeSpes = spes == 5 ? 5 : 4;
+   // (Test 15) called once for every new video (play.c, before its players are built): a stream that stalled the
+   // TEE Decoder held it off for that video only
+   if (teeOffVideo && !teeOff) logInfo("[decode-h264] TEE Decoder on again: the video that stalled it is done\n");
+   teeOffVideo = 0;
 }
 
-int isH264TeeUsable(void) { return policy == H264_POLICY_AUTO && !teeOff; }
+int isH264TeeUsable(void) { return policy == H264_POLICY_AUTO && !teeOff && !teeOffVideo; }
+
+void disableH264TeeForVideo(const char *why)
+{
+   if (!teeOff && !teeOffVideo)
+      logWarn("[decode-h264] TEE Decoder off for this video: %s - the next video tries it again\n", why ? why : "?");
+   teeOffVideo = 1;
+}
 
 void disableH264TeeForSession(const char *why)
 {

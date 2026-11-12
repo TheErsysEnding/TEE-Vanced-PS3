@@ -43,6 +43,10 @@ int isH264TeeUsable(void);
 
 // after the TEE Decoder failed while playing: cellVdec only until the app restarts. `why` goes to the log.
 void disableH264TeeForSession(const char *why);
+// (Test 15) the same for the video playing only: a stream that stalled the TEE Decoder twice (or whose flush failed)
+// plays on with cellVdec, and the next video - setH264DecoderPolicy - has the TEE Decoder again. What leaves the
+// decoder itself in doubt (it did not close, its thread hung) stays disableH264TeeForSession.
+void disableH264TeeForVideo(const char *why);
 
 typedef struct {
    int width, height;            // coded size (see above)
