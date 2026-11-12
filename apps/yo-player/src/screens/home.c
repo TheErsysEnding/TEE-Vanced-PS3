@@ -171,6 +171,7 @@ static Label    videoWordLabel;                 // (Test 15) the list view count
 static int      listHintsMode = -1;             // (Test 15) what the hints were last set for (updateListHints)
 static char     currentHeading[128];            // (Test 15) the title's text, to render it again after a refit
 static int      listWanted;                     // (Test 15) the list view is on: L1/R1 through Subscriptions keep it
+static HomeList homeList;                       // (Test 15) the list view's state (home-list.h)
 static UiDigits pageDigits;                     // ... round the numbers, which step in equal cells
 static Label    chipLabels[TREND_COUNT];        // Trending's categories, rendered white and tinted per state
 static Label    liveChipLabels[LIVE_COUNT];     // Live's, likewise
@@ -763,10 +764,10 @@ static int followsChannel(const char *channelId)
 static void updateListHints(void)
 {
    int mode = 0;
-   if (isHomeListOpen()) {
+   if (isHomeListOpen(&homeList)) {
       mode = 1;
       const SearchResult *item = gridSelected(&home.grid);
-      if (homeListButtonsFocused()) mode = !homeListSubscribeFocused() ? 2 : item && followsChannel(item->channelId) ? 4 : 3;
+      if (homeListButtonsFocused(&homeList)) mode = !homeListSubscribeFocused(&homeList) ? 2 : item && followsChannel(item->channelId) ? 4 : 3;
    }
    if (mode == listHintsMode) return;
    listHintsMode = mode;
@@ -785,26 +786,9 @@ static void toggleListSubscription(const SearchResult *item)
 {
    if (!item->channelId[0]) return;
    categoryCached[HOME_SUBS] = 0;
-   if (isAccountSignedIn()) {   // the button flips at once; YouTube is told on a worker, a refusal comes as a notice
-      setAccountFollowing(item->channelId, !isAccountFollowing(item->channelId));
-      accountChangesSeen = getAccountChangesRevision();
-      return;
-   }
-   int wantOn = !isSubscribed(item->channelId);
-   int rc = setSubscribed(item->channelId, item->author, wantOn);
-   if (rc == SUBSCRIBE_OK) return;
    char message[256];
-   if (rc == SUBSCRIBE_ERR_FULL)
-      snprintf(message, sizeof message, "Subscription list is full - %d channels is the maximum.", MAX_SUBSCRIPTIONS);
-   else if (rc == SUBSCRIBE_ERR_WRITE && !isStorageWritable())
-      snprintf(message, sizeof message, "The data folder could not be created or written at startup, so nothing can be "
-               "saved.\n\n%s", getSubscriptionsPath());
-   else if (rc == SUBSCRIBE_ERR_WRITE)
-      snprintf(message, sizeof message, "%s - but it could not be saved, so it will be gone after a restart.\n\n%s",
-               wantOn ? "Subscribed" : "Unsubscribed", getSubscriptionsPath());
-   else
-      snprintf(message, sizeof message, "This channel has no usable id, so it cannot be subscribed to.");
-   showNotice(message);
+   if (toggleHomeListSubscription(item, message, sizeof message)) showNotice(message);
+   if (isAccountSignedIn()) accountChangesSeen = getAccountChangesRevision();   // handled here, not by a reload
 }
 
 static void initHome(void)
@@ -881,7 +865,7 @@ static void initHome(void)
    setGridWatchLaterPredicate(&home.grid, tileInWatchLater);
    setGridProgressSource(&home.grid, getWatchedPosition);
    setGridAvatarSource(&home.grid, getChannelAvatarTexture, hasChannelAvatar);   // (Test 15)
-   initHomeList();
+   initHomeList(&homeList, 0, 0);
 
    subsRevisionSeen = getSubscriptionsRevision();
    watchLaterRevisionSeen = getWatchLaterRevision();
@@ -900,7 +884,7 @@ static void initHome(void)
 // screen (loading, nothing found) there is nothing for LEFT to move, and it opens the rail as it always did.
 static int leftOpensRail(void)
 {
-   if (isHomeListOpen()) return !homeListButtonsFocused();   // (Test 15) the list: LEFT is the rail's, the buttons' own
+   if (isHomeListOpen(&homeList)) return !homeListButtonsFocused(&homeList);   // (Test 15) the list: LEFT is the rail's, the buttons' own
    if (gridStage(&home.grid) != GRID_READY || !gridSelected(&home.grid) || home.grid.cols <= 1) return 1;
    // (Test 15) on a later page LEFT off the first card goes back a page (video-grid.c); the rail is page 1's, and O's
    return gridSelectedIndex(&home.grid) % home.grid.cols == 0 && gridPageIndex(&home.grid) == 0;
@@ -993,7 +977,7 @@ static void updateHome(void)
       if (isWelcomeDue()) { openWelcome(); return; }
    }
    updateChannelAvatars();   // (Test 15) every frame: the pictures the cards, the hero and the list asked for
-   reapHomeList();
+   reapHomeList(&homeList);
    updateListHints();
    if (pendingSection >= 0) {   // a pick from the account page (showHomeSection)
       int section = pendingSection;
@@ -1098,12 +1082,12 @@ static void updateHome(void)
          setSidebarFocused(0);
          actOnRailPick(picked);
       }
-      if (!isSidebarFocused()) setGridInputSuppressed(&home.grid, isHomeListOpen());   // the list keeps it muted
+      if (!isSidebarFocused()) setGridInputSuppressed(&home.grid, isHomeListOpen(&homeList));   // the list keeps it muted
       return;
    }
    // (Test 15) O in the list view takes it back to the cards (on the cards it opens the rail, as ever)
-   if (isHomeListOpen() && isPadButtonPressed(PAD_BTN_CIRCLE)) {
-      closeHomeList(1);
+   if (isHomeListOpen(&homeList) && isPadButtonPressed(PAD_BTN_CIRCLE)) {
+      closeHomeList(&homeList, 1);
       listWanted = 0;
       logListMemory("list view closed");   // the same level after every visit, however far the list went
       setGridInputSuppressed(&home.grid, 0);
@@ -1133,14 +1117,14 @@ static void updateHome(void)
 
    // (Test 15) DOWN on the cards of a page of videos opens the list view; a page without videos closes it
    // - a view kept across L1/R1: a page without videos shows its cards, the next page of videos the list again
-   if (isHomeListOpen() && !listAllowed()) closeHomeList(0);
-   if (!isHomeListOpen() && listAllowed() && gridStage(&home.grid) == GRID_READY && gridSelected(&home.grid) &&
+   if (isHomeListOpen(&homeList) && !listAllowed()) closeHomeList(&homeList, 0);
+   if (!isHomeListOpen(&homeList) && listAllowed() && gridStage(&home.grid) == GRID_READY && gridSelected(&home.grid) &&
        (listWanted || isPadButtonPressed(PAD_BTN_DOWN))) {
-      openHomeList(&home.grid);
+      openHomeList(&homeList, &home.grid);
       listWanted = 1;
       logListMemory("list view open");
    }
-   setGridInputSuppressed(&home.grid, isHomeListOpen());
+   setGridInputSuppressed(&home.grid, isHomeListOpen(&homeList));
 
    int pageBefore = gridPageIndex(&home.grid);
    updateVideoGrid(&home.grid);
@@ -1179,9 +1163,9 @@ static void updateHome(void)
       fitTitleWidth();
    }
    if (!selected) return;
-   if (isHomeListOpen()) {   // (Test 15) the list's moves and its buttons; the rest below, as on a card
-      HomeListAction action = updateHomeList(&home.grid);
-      if (!isHomeListOpen()) listWanted = 0;   // UP off the first video closed it
+   if (isHomeListOpen(&homeList)) {   // (Test 15) the list's moves and its buttons; the rest below, as on a card
+      HomeListAction action = updateHomeList(&homeList, &home.grid);
+      if (!isHomeListOpen(&homeList)) listWanted = 0;   // UP off the first video closed it
       if (action == HOME_LIST_HANDLED) return;
       selected = gridSelected(&home.grid);
       if (!selected) return;
@@ -1354,7 +1338,7 @@ static void drawPageCounter(int right)
 {
    char numbers[32];
    const Label *word = &pageWordLabel;
-   if (isHomeListOpen()) {   // (Test 15) the list counts videos
+   if (isHomeListOpen(&homeList)) {   // (Test 15) the list counts videos
       word = &videoWordLabel;
       snprintf(numbers, sizeof numbers, " %d / %d", gridSelectedIndex(&home.grid) + 1, gridResults(&home.grid)->count);
    } else {
@@ -1398,11 +1382,11 @@ static void drawHome(void)
    // page's too: while the rail has the pad none of those buttons does what its hint says, and drawn over the
    // scrim they looked as live as the menu. Only a notice goes on top of everything.
    int ready = gridStage(&home.grid) == GRID_READY;
-   if (ready && !isHomeListCovering()) {
+   if (ready && !isHomeListCovering(&homeList)) {
       drawGridHero(&home.grid);
       drawVideoGrid(&home.grid);
    }
-   if (isHomeListShown()) drawHomeList(&home.grid);   // (Test 15) over the cards, eased in and out
+   if (isHomeListShown(&homeList)) drawHomeList(&homeList, &home.grid);   // (Test 15) over the cards, eased in and out
    if (!ready) {
       // where the cards will be, clear of the collapsed rail; under the panel while the menu is open
       setLabelText(&statusLabel, gridStage(&home.grid) != GRID_EMPTY ? "Loading..." : home.category == HOME_DOWNLOADS
@@ -1432,7 +1416,7 @@ static void resumeHome(void)
    // before the push - long overdue, so the selection moved on the first frame back and then raced through
    // the pages. Fresh timers make a held button wait the normal hold delay; a new press still acts at once.
    resetGridRepeat(&home.grid);
-   resumeHomeList();   // (Test 15) the list's own timers likewise
+   resumeHomeList(&homeList);   // (Test 15) the list's own timers likewise
 
    // a subscribe/unsubscribe or watch-later change while we were away makes that cached feed stale.
    //
@@ -1531,7 +1515,7 @@ static void resumeHome(void)
 
 static void termHome(void)
 {
-   termHomeList();
+   termHomeList(&homeList);
    termVideoGrid(&home.grid);
    termChannelAvatars();
    termSidebar();

@@ -30,11 +30,13 @@
 // ---- the rows ----
 #define LIST_X           176
 #define LIST_W           760
-#define LIST_TOP         150
+#define LIST_TOP_HOME    150       // Home's first row; Search's starts under its field (HomeList.listTop)
+#define LIST_BOTTOM      964       // the last row's bottom edge, above the hint row
 #define ROW_STEP         118
 #define ROW_H            106
-#define LIST_VISIBLE        7
-#define ROW_SLOTS        (LIST_VISIBLE + 2)
+#define LIST_VISIBLE_MAX 7         // rows on screen at the most (Home's)
+#define LIST_VISIBLE     (visibleRows())
+#define ROW_SLOTS        (LIST_VISIBLE_MAX + 2)
 #define ROW_RADIUS       22
 #define ROW_THUMB_X      10
 #define ROW_THUMB_Y      8
@@ -56,7 +58,7 @@
 #define PANEL_X          1000
 #define PANEL_W          (UI_SAFE_RIGHT - PANEL_X)
 #define PANEL_TITLE_SIZE 40
-#define PANEL_TITLE_BASE 196
+#define PANEL_TITLE_BASE (L->listTop + 46)
 #define PANEL_META_SIZE  24
 #define PANEL_CHIP_H     42
 #define PANEL_CHIP_PAD   16
@@ -104,35 +106,44 @@ static int          panelDetails;        // the details shown are the resolve's 
 static int          panelFollowing = -1;
 static char         panelChannelId[32];
 
-static int          target;              // 1 open (or opening), 0 closed (or closing)
-static float        animFrom;
-static uint64_t     animSinceUs;
-static int          top;                 // the first row on screen
-static int          focusButtons, button;   // the details' buttons have the focus; which one (0 Channel, 1 Subscribe)
-static int          lastSelected = -1;
-static uint64_t     selectedSinceUs;
-static ButtonRepeat verticalRepeat, pageRepeat;
 static int          layerAlpha = 255;    // this frame's
-static int          skipInput;           // the frame that opened it: its DOWN must not move the selection too
-static int          initialised;
+static int          users;               // the lists using the labels above (Home's, Search's)
+static const HomeList *labelsFor;        // the list whose rows and details the labels hold now
+static HomeList    *L;                   // the list the call at hand is about
 
 // ---- helpers ----
 
+static int visibleRows(void)
+{
+   int rows = (LIST_BOTTOM - L->listTop + (ROW_STEP - ROW_H)) / ROW_STEP;
+   return rows < 1 ? 1 : rows > LIST_VISIBLE_MAX ? LIST_VISIBLE_MAX : rows;
+}
+
+// the rows' and the details' labels show this list's videos: another list's were in them (Search over Home)
+static void claimLabels(void)
+{
+   if (labelsFor == L) return;
+   labelsFor = L;
+   for (int s = 0; s < ROW_SLOTS; s++) { rows[s].index = -1; rows[s].videoId[0] = 0; }
+   panelVideoId[0] = 0;
+}
+
 static float openness(void)
 {
-   uint64_t elapsed = sys_time_get_system_time() - animSinceUs;
-   float to = target ? 1.0f : 0.0f;
+   if (L->embedded) return 1.0f;
+   uint64_t elapsed = sys_time_get_system_time() - L->animSinceUs;
+   float to = L->target ? 1.0f : 0.0f;
    if (elapsed >= OPEN_US) return to;
    float t = applyEasing((float)elapsed / (float)OPEN_US, EASE_OUT_CUBIC);
-   return animFrom + (to - animFrom) * t;
+   return L->animFrom + (to - L->animFrom) * t;
 }
 
 static void setTarget(int open, int animated)
 {
    float now = openness();
-   target = open;
-   animFrom = animated ? now : (open ? 1.0f : 0.0f);
-   animSinceUs = sys_time_get_system_time() - (animated ? 0 : OPEN_US);
+   L->target = open;
+   L->animFrom = animated ? now : (open ? 1.0f : 0.0f);
+   L->animSinceUs = sys_time_get_system_time() - (animated ? 0 : OPEN_US);
 }
 
 static uint32_t fade(uint32_t argb) { return uiWithAlpha(argb, (int)(((argb >> 24) * (uint32_t)layerAlpha + 127) / 255)); }
@@ -313,8 +324,16 @@ static void labelPanel(const SearchResult *item)
 
 // ---- open, close ----
 
-void initHomeList(void)
+void initHomeList(HomeList *list, int listTop, int embedded)
 {
+   memset(list, 0, sizeof *list);
+   list->listTop = listTop > 0 ? listTop : LIST_TOP_HOME;
+   list->embedded = embedded;
+   list->target = embedded;
+   list->lastSelected = -1;
+   L = list;
+   if (users++ > 0) return;   // the labels are there already
+   labelsFor = NULL;
    for (int s = 0; s < ROW_SLOTS; s++) {
       rows[s].index = -1;
       uiInitTextLabel(&rows[s].title, UI_WEIGHT_BOLD, 0, 0, ROW_TEXT_W, ROW_TITLE_SIZE, TINTABLE, TEXT_NOWRAP_ELLIPSIS, "");
@@ -337,69 +356,94 @@ void initHomeList(void)
    uiInitLabel(&subscribeButton, UI_WEIGHT_BOLD, 0, 0, AUTO, BUTTON_SIZE, TINTABLE, TEXT_NOWRAP, "Subscribe");
    memset(&descTex, 0, sizeof descTex);
    panelVideoId[0] = 0;
-   target = 0;
-   animFrom = 0.0f;
-   animSinceUs = 0;
-   initialised = 1;
 }
 
-void termHomeList(void)
+void termHomeList(HomeList *list)
 {
-   if (!initialised) return;
+   if (users <= 0) return;
    stopHomeList();
+   if (labelsFor == list) labelsFor = NULL;
+   if (--users > 0) return;   // another list still uses the labels
    for (int s = 0; s < ROW_SLOTS; s++) { freeLabel(&rows[s].title); freeLabel(&rows[s].quality_); freeLabel(&rows[s].meta); }
    freeLabel(&panelTitle); freeLabel(&panelMeta); freeLabel(&qualityChip); freeLabel(&durationChip);
    freeLabel(&liveChip); freeLabel(&subsChip); freeLabel(&audioChip); freeLabel(&rewindChip);
    freeLabel(&checkingLabel); freeLabel(&noteLabel); freeLabel(&channelName); freeLabel(&channelState);
    freeLabel(&channelButton); freeLabel(&subscribeButton);
    freeTextTexture(&descTex);
-   initialised = 0;
 }
 
 static void keepInView(int selected, int count)
 {
-   if (selected > top + LIST_VISIBLE - 2) top = selected - (LIST_VISIBLE - 2);
-   if (selected < top + 1) top = selected - 1;
-   if (top > count - LIST_VISIBLE) top = count - LIST_VISIBLE;
-   if (top < 0) top = 0;
+   if (selected > L->top + LIST_VISIBLE - 2) L->top = selected - (LIST_VISIBLE - 2);
+   if (selected < L->top + 1) L->top = selected - 1;
+   if (L->top > count - LIST_VISIBLE) L->top = count - LIST_VISIBLE;
+   if (L->top < 0) L->top = 0;
 }
 
-void openHomeList(VideoGrid *grid)
+void openHomeList(HomeList *list, VideoGrid *grid)
 {
+   L = list;
    const SearchResults *results = gridResults(grid);
    int selected = gridSelectedIndex(grid);
-   top = selected - 1;
+   L->top = selected - 1;
    keepInView(selected, results->count);
-   focusButtons = 0;
-   button = 0;
-   lastSelected = -1;
-   resumeHomeList();
-   skipInput = 1;
+   L->focusButtons = 0;
+   L->button = 0;
+   L->lastSelected = -1;
+   resumeHomeList(list);
+   L->skipInput = 1;
    setTarget(1, 1);
    logInfo("[home] list view open at %d of %d\n", selected + 1, results->count);
 }
 
-void closeHomeList(int animated)
+void closeHomeList(HomeList *list, int animated)
 {
-   if (!target && !animated) { setTarget(0, 0); return; }
+   L = list;
+   if (L->embedded) return;
+   if (!L->target && !animated) { setTarget(0, 0); return; }
    setTarget(0, animated);
-   focusButtons = 0;
+   L->focusButtons = 0;
 }
 
-int isHomeListOpen(void)         { return target; }
-int isHomeListShown(void)        { return target || openness() > 0.0f; }
-int isHomeListCovering(void)     { return target && openness() >= 1.0f; }
-int homeListButtonsFocused(void) { return target && focusButtons; }
-int homeListSubscribeFocused(void) { return target && focusButtons && button == 1; }
+int isHomeListOpen(HomeList *list)           { return list->target; }
+int isHomeListShown(HomeList *list)          { L = list; return L->target || openness() > 0.0f; }
+int isHomeListCovering(HomeList *list)       { L = list; return L->target && openness() >= 1.0f; }
+int homeListButtonsFocused(HomeList *list)   { return list->target && list->focusButtons; }
+int homeListSubscribeFocused(HomeList *list) { return list->target && list->focusButtons && list->button == 1; }
+void setHomeListFocusHidden(HomeList *list, int hidden) { list->focusHidden = hidden ? 1 : 0; }
 
-void resumeHomeList(void)
+void resumeHomeList(HomeList *list)
 {
+   L = list;
    uint64_t now = sys_time_get_system_time();
-   verticalRepeat.timer = now; verticalRepeat.repeats = 0;
-   pageRepeat.timer = now;     pageRepeat.repeats = 0;
+   L->verticalRepeat.timer = now; L->verticalRepeat.repeats = 0;
+   L->pageRepeat.timer = now;     L->pageRepeat.repeats = 0;
 }
 
-void reapHomeList(void) { if (!target) updateVideoDetails(NULL, 0); }
+void reapHomeList(HomeList *list) { if (!list->target) updateVideoDetails(NULL, 0); }
+
+int toggleHomeListSubscription(const SearchResult *item, char *message, int cap)
+{
+   if (!item->channelId[0]) return 0;
+   if (isAccountSignedIn()) {   // the button flips at once; YouTube is told on a worker, a refusal comes as a notice
+      setAccountFollowing(item->channelId, !isAccountFollowing(item->channelId));
+      return 0;
+   }
+   int wantOn = !isSubscribed(item->channelId);
+   int rc = setSubscribed(item->channelId, item->author, wantOn);
+   if (rc == SUBSCRIBE_OK) return 0;
+   if (rc == SUBSCRIBE_ERR_FULL)
+      snprintf(message, cap, "Subscription list is full - %d channels is the maximum.", MAX_SUBSCRIPTIONS);
+   else if (rc == SUBSCRIBE_ERR_WRITE && !isStorageWritable())
+      snprintf(message, cap, "The data folder could not be created or written at startup, so nothing can be saved.\n\n%s",
+               getSubscriptionsPath());
+   else if (rc == SUBSCRIBE_ERR_WRITE)
+      snprintf(message, cap, "%s - but it could not be saved, so it will be gone after a restart.\n\n%s",
+               wantOn ? "Subscribed" : "Unsubscribed", getSubscriptionsPath());
+   else
+      snprintf(message, cap, "This channel has no usable id, so it cannot be subscribed to.");
+   return 1;
+}
 
 void stopHomeList(void)
 {
@@ -409,28 +453,36 @@ void stopHomeList(void)
 
 // ---- input ----
 
-HomeListAction updateHomeList(VideoGrid *grid)
+HomeListAction updateHomeList(HomeList *list, VideoGrid *grid)
 {
-   if (!target) return HOME_LIST_PASS;
-   if (skipInput) { skipInput = 0; return HOME_LIST_HANDLED; }
+   L = list;
+   if (!L->target) return HOME_LIST_PASS;
+   uint64_t calledUs = sys_time_get_system_time();
+   if (calledUs - L->lastUpdateUs > 100000) resumeHomeList(list);   // something else had the pad meanwhile
+   L->lastUpdateUs = calledUs;
+   if (L->skipInput) { L->skipInput = 0; return HOME_LIST_HANDLED; }
    const SearchResults *results = gridResults(grid);
    int count = results->count, selected = gridSelectedIndex(grid);
    if (count <= 0) return HOME_LIST_HANDLED;
    const SearchResult *item = &results->items[selected];
    int hasChannel = item->channelId[0] != 0;
-   if (!hasChannel) focusButtons = 0;
+   if (!hasChannel) L->focusButtons = 0;
 
    int moved = 0;
-   if (isRepeatDue(&verticalRepeat, getPadButtonState(PAD_BTN_DOWN))) {
+   if (isRepeatDue(&L->verticalRepeat, getPadButtonState(PAD_BTN_DOWN))) {
       if (selected + 1 < count) { selected++; moved = 1; }
-   } else if (isRepeatDue(&verticalRepeat, getPadButtonState(PAD_BTN_UP))) {
-      if (selected == 0) { closeHomeList(1); return HOME_LIST_HANDLED; }   // UP off the first video: the cards
+   } else if (isRepeatDue(&L->verticalRepeat, getPadButtonState(PAD_BTN_UP))) {
+      if (selected == 0) {   // UP off the first video: Home's cards again, or the screen's own (Search's field)
+         if (L->embedded) return HOME_LIST_TOP;
+         closeHomeList(list, 1);
+         return HOME_LIST_HANDLED;
+      }
       selected--; moved = 1;
    }
-   if (isRepeatDue(&pageRepeat, getPadButtonState(PAD_BTN_R2))) {
+   if (isRepeatDue(&L->pageRepeat, getPadButtonState(PAD_BTN_R2))) {
       int to = selected + LIST_VISIBLE < count ? selected + LIST_VISIBLE : count - 1;
       if (to != selected) { selected = to; moved = 1; }
-   } else if (isRepeatDue(&pageRepeat, getPadButtonState(PAD_BTN_L2))) {
+   } else if (isRepeatDue(&L->pageRepeat, getPadButtonState(PAD_BTN_L2))) {
       int to = selected - LIST_VISIBLE > 0 ? selected - LIST_VISIBLE : 0;
       if (to != selected) { selected = to; moved = 1; }
    }
@@ -441,27 +493,27 @@ HomeListAction updateHomeList(VideoGrid *grid)
    keepInView(selected, count);
 
    if (isPadButtonPressed(PAD_BTN_RIGHT) && hasChannel) {
-      if (!focusButtons) { focusButtons = 1; button = 0; }
-      else button = 1;
+      if (!L->focusButtons) { L->focusButtons = 1; L->button = 0; }
+      else L->button = 1;
       return HOME_LIST_HANDLED;
    }
-   if (isPadButtonPressed(PAD_BTN_LEFT) && focusButtons) {
-      if (button == 1) button = 0;
-      else focusButtons = 0;
+   if (isPadButtonPressed(PAD_BTN_LEFT) && L->focusButtons) {
+      if (L->button == 1) L->button = 0;
+      else L->focusButtons = 0;
       return HOME_LIST_HANDLED;
    }
-   if (focusButtons && isPadButtonPressed(PAD_BTN_CROSS)) return button == 0 ? HOME_LIST_CHANNEL : HOME_LIST_SUBSCRIBE;
+   if (L->focusButtons && isPadButtonPressed(PAD_BTN_CROSS)) return L->button == 0 ? HOME_LIST_CHANNEL : HOME_LIST_SUBSCRIBE;
 
    // the selection's video first, once it rests, then what is next to it on screen
    uint64_t now = sys_time_get_system_time();
-   if (selected != lastSelected) { lastSelected = selected; selectedSinceUs = now; }
-   const char *wanted[LIST_VISIBLE + 4];
+   if (selected != L->lastSelected) { L->lastSelected = selected; L->selectedSinceUs = now; }
+   const char *wanted[LIST_VISIBLE_MAX + 4];
    int wantedCount = 0;
-   if (now - selectedSinceUs >= DETAILS_REST_US) {
+   if (now - L->selectedSinceUs >= DETAILS_REST_US) {
       wanted[wantedCount++] = results->items[selected].videoId;
       for (int i = selected + 1; i <= selected + 3 && i < count; i++) wanted[wantedCount++] = results->items[i].videoId;
       if (selected > 0) wanted[wantedCount++] = results->items[selected - 1].videoId;
-      for (int i = top; i < top + LIST_VISIBLE && i < count && wantedCount < LIST_VISIBLE + 4; i++)
+      for (int i = L->top; i < L->top + LIST_VISIBLE && i < count && wantedCount < LIST_VISIBLE + 4; i++)
          if (i < selected - 1 || i > selected + 3) wanted[wantedCount++] = results->items[i].videoId;
    }
    updateVideoDetails(wanted, wantedCount);
@@ -482,7 +534,7 @@ static void drawRow(const VideoGrid *grid, const SearchResults *results, int ind
    if (thumb) drawGfxTexture(tx, ty, ROW_THUMB_W, ROW_THUMB_H, *thumb, 0.0f, 0.0f, 1.0f, 1.0f, fade(0xFFFFFFFF), GFX_FILTER_LINEAR);
    else uiFillRect(tx, ty, ROW_THUMB_W, ROW_THUMB_H, fade(activeTheme->surface));
    uiDrawImageCorners(tx, ty, ROW_THUMB_W, ROW_THUMB_H, ROW_THUMB_RADIUS, behind);
-   if (selected && !focusButtons) uiDrawFocusRing(LIST_X, y, LIST_W, ROW_H, UI_RING_ROW, fade(activeTheme->focusBorder));
+   if (selected && !L->focusButtons && !L->focusHidden) uiDrawFocusRing(LIST_X, y, LIST_W, ROW_H, UI_RING_ROW, fade(activeTheme->focusBorder));
 
    int x = LIST_X + ROW_TEXT_X;
    drawAtBaseline(&slot->title, x, y + ROW_TITLE_BASE, activeTheme->textPrimary);
@@ -563,13 +615,15 @@ static void drawPanel(const SearchResult *item)
    if (item->channelId[0]) {
       int subscribeW = subscribeButton.tt.tex.w + 2 * BUTTON_PAD, channelW = channelButton.tt.tex.w + 2 * BUTTON_PAD;
       int bx = x + PANEL_W - BAR_PAD - subscribeW, by = BAR_Y + (BAR_H - BUTTON_H) / 2;
-      drawButton(bx, by, &subscribeButton, focusButtons && button == 1);
-      drawButton(bx - BUTTON_GAP - channelW, by, &channelButton, focusButtons && button == 0);
+      drawButton(bx, by, &subscribeButton, L->focusButtons && L->button == 1);
+      drawButton(bx - BUTTON_GAP - channelW, by, &channelButton, L->focusButtons && L->button == 0);
    }
 }
 
-void drawHomeList(VideoGrid *grid)
+void drawHomeList(HomeList *list, VideoGrid *grid)
 {
+   L = list;
+   claimLabels();
    float open = openness();
    if (open <= 0.0f) return;
    layerAlpha = (int)(open * 255.0f + 0.5f);
@@ -594,15 +648,15 @@ void drawHomeList(VideoGrid *grid)
    const SearchResults *results = gridResults(grid);
    int selected = gridSelectedIndex(grid);
    keepInView(selected, results->count);
-   int end = top + LIST_VISIBLE < results->count ? top + LIST_VISIBLE : results->count;
-   for (int i = top; i < end; i++) labelRow(results, i);
+   int end = L->top + LIST_VISIBLE < results->count ? L->top + LIST_VISIBLE : results->count;
+   for (int i = L->top; i < end; i++) labelRow(results, i);
    const SearchResult *item = &results->items[selected];
    labelPanel(item);
 
    // the glow under the selected row goes down before any row (it reaches past its neighbours)
-   int selectedY = LIST_TOP + (selected - top) * ROW_STEP + dy;
-   if (selected >= top && selected < end && !focusButtons)
+   int selectedY = L->listTop + (selected - L->top) * ROW_STEP + dy;
+   if (selected >= L->top && selected < end && !L->focusButtons && !L->focusHidden)
       uiDrawFocusGlow(LIST_X, selectedY, LIST_W, ROW_H, fade(activeTheme->focusGlow));
-   for (int i = top; i < end; i++) drawRow(grid, results, i, LIST_TOP + (i - top) * ROW_STEP + dy, i == selected);
+   for (int i = L->top; i < end; i++) drawRow(grid, results, i, L->listTop + (i - L->top) * ROW_STEP + dy, i == selected);
    drawPanel(item);
 }
