@@ -341,6 +341,9 @@ static void resetFeed(VideoGrid *grid)
    grid->moreEmpty = grid->moreFailed = 0;
    grid->page = grid->selected = grid->scrollRow = grid->winStart = grid->winEnd = 0;
    grid->focusIndex = grid->focusFrom = -1;   // a new feed: no card to shrink back from
+   // (V3.0.0) and the hero's words are written afresh: the same video at the same place on the next page (Continue
+   // watching, then Downloads) kept the last page's "Watched" - its picture stays, it is the same
+   grid->heroIndex = -1;
 }
 
 static void beginFeed(VideoGrid *grid)
