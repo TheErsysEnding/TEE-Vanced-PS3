@@ -67,6 +67,16 @@ static const char *WEB_UA =
 // player body: the client + the minted visitorData, then the video id. two %s: visitorData, videoId.
 static const char *PLAYER_BODY_FMT =
    "{\"context\":{\"client\":{" PLAYER_CLIENT ",\"visitorData\":\"%s\"}},\"videoId\":\"%s\",\"contentCheckOk\":true,\"racyCheckOk\":true}";
+// (Test 18) the client asked when VISIONOS says UNPLAYABLE: YouTube plays content "made for kids" - Peppa Pig Deutsch,
+// PAW Patrol Deutschland, 24/7 streams the German Live search finds - for no client the app used ("This video is not
+// available" for VISIONOS, ANDROID_VR, TV, web and embedded alike), but for IOS, with direct urls that googlevideo
+// serves live segments for (X-Head-Seqnum, sq) as it does VISIONOS's (probed 2026-11-12). Asked only then.
+#define IOS_VERSION "20.10.4"
+static const char *IOS_UA = "com.google.ios.youtube/20.10.4 (iPhone16,2; U; CPU iOS 18_3_2 like Mac OS X;)";
+static const char *PLAYER_BODY_IOS_FMT =
+   "{\"context\":{\"client\":{\"clientName\":\"IOS\",\"clientVersion\":\"" IOS_VERSION "\",\"deviceMake\":\"Apple\","
+   "\"deviceModel\":\"iPhone16,2\",\"osName\":\"iPhone\",\"osVersion\":\"18.3.2.22D82\",\"hl\":\"en\",\"gl\":\"US\","
+   "\"visitorData\":\"%s\"}},\"videoId\":\"%s\",\"contentCheckOk\":true,\"racyCheckOk\":true}";
 // The visitor-session mint keeps its own fixed client, byte for byte what it always sent: the session it returns
 // records the IP's country whatever gl says, and it is minted once and then reused for months.
 static const char *VISITOR_BODY =
@@ -717,8 +727,6 @@ static int extract(const char *input, StreamInfo *out)
    if (ensureVisitorData() != 0) return -1;
 
    char body[1024];
-   int bodyLen = snprintf(body, sizeof body, PLAYER_BODY_FMT, visitorData, videoId);
-
    HttpHeader headers[] = {
       { "Content-Type", "application/json" },
       { "User-Agent", PLAYER_UA },
@@ -733,10 +741,26 @@ static int extract(const char *input, StreamInfo *out)
    if (!resp) return -1;
 
    int respLen = 0, status = 0;
-   int rc = fetchHttp("POST", PLAYER_URL, headers, 7, body, bodyLen, resp, RESP_CAP, &respLen, &status);
-   if (rc < 0)        { logError("[yt] player POST failed rc=%d\n", rc); free(resp); return rc; }
-   if (status != 200) { logError("[yt] player POST status=%d respLen=%d\n", status, respLen); free(resp); return -status; }
-   const char *end = resp + respLen;
+   const char *end = resp;
+   // VISIONOS first; (Test 18) IOS once more when VISIONOS calls the video UNPLAYABLE and gives no streams
+   for (int asIos = 0; asIos < 2; asIos++) {
+      int bodyLen = snprintf(body, sizeof body, asIos ? PLAYER_BODY_IOS_FMT : PLAYER_BODY_FMT, visitorData, videoId);
+      if (asIos) {
+         headers[1].value = IOS_UA;
+         headers[2].value = "5";
+         headers[3].value = IOS_VERSION;
+      }
+      int rc = fetchHttp("POST", PLAYER_URL, headers, 7, body, bodyLen, resp, RESP_CAP, &respLen, &status);
+      if (rc < 0)        { logError("[yt] player POST failed rc=%d\n", rc); free(resp); return rc; }
+      if (status != 200) { logError("[yt] player POST status=%d respLen=%d\n", status, respLen); free(resp); return -status; }
+      end = resp + respLen;
+      if (asIos) break;
+      const char *play = strstr(resp, "\"playabilityStatus\"");
+      char playStatus[32] = "";
+      jsonString(play ? play : resp, end, "status", playStatus, sizeof playStatus);
+      if (strcmp(playStatus, "UNPLAYABLE") != 0 || strstr(resp, "\"streamingData\"")) break;
+      logInfo("[yt] %s: UNPLAYABLE for VISIONOS (made for kids?) - asking as IOS\n", videoId);
+   }
 
    // metadata
    const char *details = strstr(resp, "\"videoDetails\"");
