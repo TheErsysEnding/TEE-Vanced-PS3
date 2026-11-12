@@ -15,6 +15,7 @@
 #include "screens/account-page.h"     // Account in the rail while signed in: the account's page
 #include "downloads.h"
 #include "update-check.h"   // (V3.0.0 Test 12) a newer release is out: said once a start
+#include "screens/welcome-screen.h"   // (Test 15) a new version's changes, once
 #include "app-paths.h"      // APP_VERSION, in that notice
 #include "screens/download-choice.h"   // R3: in which form to download
 #include "ps-button.h"
@@ -897,6 +898,12 @@ static int actOnSection(int section)
 
 static void updateHome(void)
 {
+   // (Test 15) once a run, first thing: a version not welcomed yet shows its changes and the support page
+   static int welcomeChecked;
+   if (!welcomeChecked) {
+      welcomeChecked = 1;
+      if (isWelcomeDue()) { openWelcome(); return; }
+   }
    if (pendingSection >= 0) {   // a pick from the account page (showHomeSection)
       int section = pendingSection;
       pendingSection = -1;
