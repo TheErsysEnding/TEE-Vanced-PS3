@@ -43,6 +43,16 @@ SPEs alone (no RSX prediction yet - that will be the RSX test builds). Played in
   or play it afterwards). On the Downloads page, Square moves a video into the XMB after the same warning: a
   30 fps or 720p H.264 copy is remuxed as it is, a 1440p or 1080p60 one is fetched again as the XMB's MP4; the
   app's copy goes once the XMB has it.
+- **Test 16 Search** (12 Nov): a search's results are the list view too - the rows under the field, the selection's
+  details beside them, UP off the first result into the field as before, RIGHT to Channel and Subscribe (a channel page
+  keeps its three big rows). The TEE Decoder stays on after one odd video: on TEE's console it stopped twice on a
+  626 x 360 upload (coded 640 x 368, "no SPE answered for 2000 ms" after 74 and 19 pictures), and the app had then
+  switched it off until the next start - every H.264 video after it played on cellVdec, and 1080p60 was gone from the
+  quality menu (1440p, on TEE VP9, was not touched). Two stalls within 30 s or a failed flush now hand only that video
+  to cellVdec; the next one opens the TEE Decoder again. A decoder that does not close, or a decode thread that hangs,
+  still keeps it off for the run. The same stream plays without a stall in RPCS3 (822 pictures at 30 a second): the
+  stall itself is the TEE Decoder session's to look at. A button held while the field, the rail or a notice had the
+  pad waits the hold delay on the list (it ran 4 rows on before).
 - **Test 15 List** (12 Nov): Home has a list view (TEE's design). DOWN on the cards - on Live too - eases it in: the
   whole feed from top to bottom, each video with its picture, its title and under it the best quality the player plays
   of it ("1440p60", "1080p30", no codec; a stream "LIVE · 1080p30"), then its channel with the channel's picture. On
