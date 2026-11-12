@@ -32,6 +32,7 @@ typedef struct {
    int          top;                 // the first row on screen
    int          focusButtons, button;   // the details' buttons have the focus; which one (0 Channel, 1 Subscribe)
    int          focusHidden;         // the screen's own control has the focus: the selected row looks like the rest
+   int          noChannelButton;     // (Test 17) a channel's own page: the details have Subscribe only
    int          lastSelected;
    uint64_t     selectedSinceUs;
    ButtonRepeat verticalRepeat, pageRepeat;
@@ -50,6 +51,7 @@ int  isHomeListCovering(HomeList *list);      // fully open: nothing of the page
 int  homeListButtonsFocused(HomeList *list);  // the details' buttons have the focus (LEFT is theirs, not the rail's)
 int  homeListSubscribeFocused(HomeList *list);
 void setHomeListFocusHidden(HomeList *list, int hidden);
+void setHomeListChannelButton(HomeList *list, int shown);   // (Test 17) off on a channel's own page
 void resumeHomeList(HomeList *list);          // a button held over from a closed screen waits the hold delay
 HomeListAction updateHomeList(HomeList *list, VideoGrid *grid);   // after updateVideoGrid, while the feed is ready
 void reapHomeList(HomeList *list);            // every frame: a resolve that finished meanwhile is kept, even shut

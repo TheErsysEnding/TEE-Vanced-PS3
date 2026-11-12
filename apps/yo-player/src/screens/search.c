@@ -157,7 +157,15 @@ static int searchFetch(const char *token, SearchResults *out, void *user)
    (void)user;
    if (search.channelId[0]) {
       const char *first = search.channelSortToken[0] ? search.channelSortToken : NULL;
-      return getChannelVideos(search.channelId, token ? token : first, out);
+      int rc = getChannelVideos(search.channelId, token ? token : first, out);
+      // (Test 17) a channel's own videos come without the channel - the page is it: the list's details and its
+      // Subscribe button name the page's channel (it is also the channel a download or Watch Later keeps)
+      const char *name = out->channelName[0] ? out->channelName : search.channelName;
+      for (int i = 0; rc == 0 && i < out->count; i++) {
+         if (!out->items[i].channelId[0]) strCopy(out->items[i].channelId, sizeof out->items[i].channelId, search.channelId);
+         if (!out->items[i].author[0])    strCopy(out->items[i].author, sizeof out->items[i].author, name);
+      }
+      return rc;
    }
    return searchVideos(search.query, search.sort, token, out);
 }
@@ -319,9 +327,10 @@ static void toggleSubscription(void)
    showNotice(message);
 }
 
-// (Test 16) a search's results are Home's list view - the rows on the left, the selection's details on the right; a
-// channel page keeps its three big rows (its header already is the channel, with its Subscribe button)
-static int usesList(void) { return !search.channelId[0]; }
+// (Test 16) a search's results are Home's list view - the rows on the left, the selection's details on the right -
+// and (Test 17, TEE: "in der neuen version ... außer das dann dort channel steht") a channel page's videos too, its
+// details without the Channel button: the page is that channel
+static int usesList(void) { return 1; }
 
 static void reload(void)
 {
@@ -329,6 +338,7 @@ static void reload(void)
    // the list draws its own rows: the grid lays out cards it never draws, whose pages are wide enough to keep the
    // pictures of the list's rows decoded (a page of 8 and two rows either side)
    setGridView(&search.grid, usesList() ? GRID_VIEW_GRID : GRID_VIEW_LIST);
+   setHomeListChannelButton(&searchList, !search.channelId[0]);
    setGridInputSuppressed(&search.grid, usesList() || search.fieldFocused || search.buttonFocused || isSidebarFocused());
    setGridSource(&search.grid, searchFetch, NULL);
 }

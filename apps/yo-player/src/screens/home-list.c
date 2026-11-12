@@ -411,6 +411,11 @@ int isHomeListCovering(HomeList *list)       { L = list; return L->target && ope
 int homeListButtonsFocused(HomeList *list)   { return list->target && list->focusButtons; }
 int homeListSubscribeFocused(HomeList *list) { return list->target && list->focusButtons && list->button == 1; }
 void setHomeListFocusHidden(HomeList *list, int hidden) { list->focusHidden = hidden ? 1 : 0; }
+void setHomeListChannelButton(HomeList *list, int shown)
+{
+   list->noChannelButton = !shown;
+   if (!shown && list->button == 0) list->focusButtons = 0;
+}
 
 void resumeHomeList(HomeList *list)
 {
@@ -493,12 +498,12 @@ HomeListAction updateHomeList(HomeList *list, VideoGrid *grid)
    keepInView(selected, count);
 
    if (isPadButtonPressed(PAD_BTN_RIGHT) && hasChannel) {
-      if (!L->focusButtons) { L->focusButtons = 1; L->button = 0; }
+      if (!L->focusButtons) { L->focusButtons = 1; L->button = L->noChannelButton ? 1 : 0; }
       else L->button = 1;
       return HOME_LIST_HANDLED;
    }
    if (isPadButtonPressed(PAD_BTN_LEFT) && L->focusButtons) {
-      if (L->button == 1) L->button = 0;
+      if (L->button == 1 && !L->noChannelButton) L->button = 0;
       else L->focusButtons = 0;
       return HOME_LIST_HANDLED;
    }
@@ -616,7 +621,8 @@ static void drawPanel(const SearchResult *item)
       int subscribeW = subscribeButton.tt.tex.w + 2 * BUTTON_PAD, channelW = channelButton.tt.tex.w + 2 * BUTTON_PAD;
       int bx = x + PANEL_W - BAR_PAD - subscribeW, by = BAR_Y + (BAR_H - BUTTON_H) / 2;
       drawButton(bx, by, &subscribeButton, L->focusButtons && L->button == 1);
-      drawButton(bx - BUTTON_GAP - channelW, by, &channelButton, L->focusButtons && L->button == 0);
+      if (!L->noChannelButton)   // (Test 17) on a channel's own page there is no other channel to go to
+         drawButton(bx - BUTTON_GAP - channelW, by, &channelButton, L->focusButtons && L->button == 0);
    }
 }
 

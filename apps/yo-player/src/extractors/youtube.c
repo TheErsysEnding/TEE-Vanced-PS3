@@ -1751,6 +1751,23 @@ static const struct { const char *codes, *word; } NEWS_WORDS[] = {
    { "KR",       "\xeb\x89\xb4\xec\x8a\xa4" },                                           // 뉴스
 };
 
+// (Test 16) Popular in a German-speaking region: a live search for "live deutsch" in place of the Live destination's
+// shelf, which lists the same world-wide mix for every region and language (probed 2026-11-12, gl=DE with hl=en and
+// hl=de alike: German, Turkish, US and Telugu streams side by side). The search gave WELT, euronews deutsch, Vatican
+// News Deutsch and German 24/7 channels; plain "live" was as mixed as the shelf. Only the regions probed are listed:
+// any other keeps the shelf.
+static const struct { const char *codes, *query; } LIVE_LOCAL_QUERIES[] = {
+   { "DE AT CH", "live deutsch" },
+};
+
+static const char *liveLocalQuery(const char *gl)
+{
+   for (unsigned i = 0; i < sizeof LIVE_LOCAL_QUERIES / sizeof LIVE_LOCAL_QUERIES[0]; i++)
+      for (const char *code = LIVE_LOCAL_QUERIES[i].codes; code[0] && code[1]; code += code[2] ? 3 : 2)
+         if (code[0] == gl[0] && code[1] == gl[1]) return LIVE_LOCAL_QUERIES[i].query;
+   return NULL;
+}
+
 static const char *newsWord(const char *gl)
 {
    for (unsigned i = 0; i < sizeof NEWS_WORDS / sizeof NEWS_WORDS[0]; i++)
@@ -1826,9 +1843,12 @@ static int fetchLive(LiveCategory category, const char *continuation, SearchResu
    WebRequest request = { NULL, NULL, NULL, 0, 0 };
 
    if (!continuation) {
-      jsonEscape(LIVE_FEEDS[category].idOrQuery, escaped, sizeof escaped);
-      if (browse) bodyLen = snprintf(body, sizeof body, TRENDING_BODY_FMT, gl, escaped, LIVE_FEEDS[category].params);
-      else        bodyLen = snprintf(body, sizeof body, SEARCH_BODY_FMT, gl, escaped, LIVE_FEEDS[category].params);
+      const char *idOrQuery = LIVE_FEEDS[category].idOrQuery, *params = LIVE_FEEDS[category].params;
+      const char *local = category == LIVE_POPULAR ? liveLocalQuery(gl) : NULL;   // (Test 16) the region's own
+      if (local) { browse = 0; idOrQuery = local; params = LIVE_SEARCH_PARAMS; }
+      jsonEscape(idOrQuery, escaped, sizeof escaped);
+      if (browse) bodyLen = snprintf(body, sizeof body, TRENDING_BODY_FMT, gl, escaped, params);
+      else        bodyLen = snprintf(body, sizeof body, SEARCH_BODY_FMT, gl, escaped, params);
       request.pageOneGl = gl;
    } else {
       const char *token = splitLiveToken(continuation, &browse, sent, sizeof sent);

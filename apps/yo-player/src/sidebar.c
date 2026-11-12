@@ -12,6 +12,8 @@
 #include "ui-draw.h"          // rounded fills, uiWithAlpha, UI_SCREEN_W
 #include "account.h"          // signed in or not: the account entry's name and icon
 #include "downloads.h"        // getDownloadStatus: the download indicator
+#include "button-repeat.h"    // (Test 16) UP/DOWN held walk on through the entries
+#include <sys/sys_time.h>
 #include <stdio.h>             // snprintf
 #include <string.h>
 
@@ -153,17 +155,24 @@ void setSidebarCurrent(SidebarItem item)
 
 int isSidebarFocused(void) { return focused; }
 
+static ButtonRepeat railRepeat;   // (Test 16) a held UP/DOWN repeats, as in the lists
+
 void setSidebarFocused(int focus)
 {
    focused = focus ? 1 : 0;
-   if (focused) picked = current;   // always open on the entry you are actually looking at
+   if (focused) {
+      picked = current;   // always open on the entry you are actually looking at
+      railRepeat.timer = sys_time_get_system_time();   // a direction held from the page waits the hold delay
+      railRepeat.repeats = 0;
+   }
 }
 
-static int step(int from, int delta)
+// one entry on; a fresh press wraps round at either end, a held one stops there (it would spin round for ever)
+static int step(int from, int delta, int wrap)
 {
    int next = from + delta;
-   if (next < 0) next = SIDE_COUNT - 1;
-   if (next >= SIDE_COUNT) next = 0;
+   if (next < 0) next = wrap ? SIDE_COUNT - 1 : 0;
+   if (next >= SIDE_COUNT) next = wrap ? 0 : SIDE_COUNT - 1;
    return next;
 }
 
@@ -171,8 +180,9 @@ int updateSidebar(void)
 {
    if (!focused) return -1;
 
-   if (isPadButtonPressed(PAD_BTN_DOWN)) picked = step(picked, 1);
-   if (isPadButtonPressed(PAD_BTN_UP))   picked = step(picked, -1);
+   PadButtonState down = getPadButtonState(PAD_BTN_DOWN), up = getPadButtonState(PAD_BTN_UP);
+   if      (isRepeatDue(&railRepeat, down)) picked = step(picked, 1, down == PAD_BUTTON_STATE_PRESSED);
+   else if (isRepeatDue(&railRepeat, up))   picked = step(picked, -1, up == PAD_BUTTON_STATE_PRESSED);
 
    // O and RIGHT leave the rail without changing anything: RIGHT points back at the page, and you land where you
    // were on it. Only X commits the highlighted entry - RIGHT used to as well, so a RIGHT meant as "back" opened
