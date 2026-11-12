@@ -29,3 +29,5 @@ int listPlayableVideos(const StreamInfo *info, int teeUsable, const StreamFormat
 // dynamic-range-compressed copy. On a video with several audio tracks the extractor has already narrowed
 // formats[] to the original track's stream. NULL if none.
 const StreamFormat *pickBestAudio(const StreamInfo *info);
+// (V3.0.0) the Opus stream for VP9 (itag 251), NULL when there is none
+const StreamFormat *pickOpusAudio(const StreamInfo *info);

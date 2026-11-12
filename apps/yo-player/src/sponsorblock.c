@@ -36,10 +36,11 @@ static const unsigned CATEGORY_COLORS[SPONSOR_CATEGORY_COUNT] = {
    0xFF2BD45A,   // sponsor        - green
    0xFFF5D90A,   // selfpromo      - yellow
    0xFFC266FF,   // interaction    - violet
-   0xFF22D3EE,   // intro          - cyan
+   // coral since V3.0.0: Ember's cyan is all but the new ice-blue accent, the played part of the seek bar
+   0xFFFF6B6B,   // intro          - coral
    0xFF5B6BFF,   // outro          - blue
    // pink: SponsorBlock's orange (#FF9900) all but vanished against the TEE-orange played part of the
-   // seek bar, which is exactly where these spans are drawn
+   // seek bar (v1.0 - v2.0), which is exactly where these spans are drawn
    0xFFF25DB0,   // music_offtopic - pink
    0xFF9B6BFF,   // filler         - purple
 };

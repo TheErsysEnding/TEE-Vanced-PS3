@@ -20,10 +20,16 @@ SponsorblockMode getSponsorblockMode(void);
 typedef enum { VIDEO_DECODER_AUTO, VIDEO_DECODER_SONY } VideoDecoderSetting;
 VideoDecoderSetting getVideoDecoderSetting(void);
 int getTeeDecoderSpes(void);
+// settings.txt vp9-spes=6|5: the TEE VP9 building block's SPEs for 1440p - 6 (2 + 4, no sound) or 5 (1 + 4, sound)
+int getVp9Spes(void);
+// settings.txt download-quality=1440|1080|xmb: the R3 page's last choice (0, 1, 2 - downloads.h DownloadQuality)
+int getDownloadQuality(void);
+int setDownloadQuality(int quality);
 
 // settings.txt quality=auto|<height>: the highest video height to play (0 = auto, the best that plays smoothly).
 // setQualityCap changes it and saves it (0 saved, -1 not saved - the cap still applies for this run).
 int getQualityCap(void);
+int getUpdateCheck(void);   // (V3.0.0 Test 12) settings.txt update-check=: 1 on (the default), 0 off (update-check.h)
 int setQualityCap(int height);
 
 // ---- content region ----
@@ -34,9 +40,18 @@ int setQualityCap(int height);
 // from the fixed table are ever sent: YouTube answers an unknown or lower-case gl with an empty page, not an
 // error.
 
-// One country the lists come from: code = YouTube's gl (upper case), name = English display name.
-typedef struct { const char *code; const char *name; } ContentRegion;
+// One country the lists come from: code = YouTube's gl (upper case), name = English display name, language = the
+// code YouTube's subtitle translation takes for its main language (V3.0.0, see getSubtitleLanguage).
+typedef struct { const char *code; const char *name; const char *language; } ContentRegion;
 int  getContentRegionCount(void);
+
+// ---- subtitles (V3.0.0, GitHub issue #4) ----
+// The language YouTube translates a video's subtitles into when the video has none in it - its "auto-translated"
+// tracks. settings.txt subtitle-language=: off (the default), auto = the content region's language (Czechia: cs), or
+// a code such as cs, pl, sk, hu, de, en. "" when off; never NULL. Off by default because YouTube refuses translated
+// tracks to an anonymous player without a PO token (HTTP 429, probed 2026-11-12 with every client that gets
+// captions at all); the player then says so and drops the track.
+const char *getSubtitleLanguage(void);
 const ContentRegion *getContentRegionAt(int index);   // the fixed table in display order; NULL out of range
 int  getContentRegionIndex(void);                     // the current region's index into that table
 const char *getContentRegionCode(void);               // the current gl, e.g. "DE"; never NULL, always from the table

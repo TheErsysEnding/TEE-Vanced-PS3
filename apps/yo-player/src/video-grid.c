@@ -22,7 +22,9 @@
 #include "ui-fonts.h"           // label helpers (raw text, Manrope or FONT_POP), metrics, type scale
 #include "ui-draw.h"            // corners, focus glow + ring, badges, progress bar
 #include "dbg.h"                // paging diagnostics
+#include "downloads.h"          // getDownloadProgress: a download on its way, on the Downloads page (V3.0.0)
 #include "string-utilities.h"   // strCopy
+#include <sys/sys_time.h>       // sys_time_get_system_time: the hero waits until the selection rests
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -77,6 +79,17 @@
 #define THUMB_UA    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
 
 #define PROGRESS_BAR_H 6        // "you got this far" line along the bottom edge of a thumbnail
+// (V3.0.0) a channel's tile (Subscriptions): its picture, round, in the middle of the card
+#define AVATAR_FETCH_PX 176      // asked for at this size (a JPEG of ~11 KB)
+#define AVATAR_SHARE    0.78f    // the circle's diameter, of the thumbnail box's height
+// (V3.0.0) a download on its way (the Downloads page): the rail indicator's bar, a white track filling green
+#define DOWNLOAD_BAR_TRACK 0xFFF0F7FBu
+#define DOWNLOAD_BAR_FILL  0xFF22C55Eu
+// (Test 15) the channel's picture before a card's meta line, and before the hero's
+#define CARD_AVATAR    26
+#define CARD_AVATAR_GAP 8
+#define HERO_AVATAR    40
+#define HERO_AVATAR_GAP 14
 #define BADGE_INSET    10       // badges sit this far in from the thumbnail's edges (Bild 4)
 #define BADGE_SPACE    8        // two badges along one edge keep at least this far apart, or the left one goes
 // The glow texture's own alpha at a card's edge (84 of 255, measured on schein-r23): the page under a focused
@@ -108,8 +121,13 @@ static void thumbFetchThread(uint64_t arg)
          int i = __sync_fetch_and_add(&grid->thumbNext, 1);
          if (i >= grid->thumbEnd || grid->stopWorker) break;
 
-         char url[128];
-         snprintf(url, sizeof url, "https://i.ytimg.com/vi/%s/mqdefault.jpg", grid->results.items[i].videoId);
+         char url[256];
+         const SearchResult *item = &grid->results.items[i];
+         if (item->videoId[0]) snprintf(url, sizeof url, "https://i.ytimg.com/vi/%s/mqdefault.jpg", item->videoId);
+         else if (!getChannelAvatarUrl(item->channelId, AVATAR_FETCH_PX, url, sizeof url)) {   // (V3.0.0) a channel
+            grid->thumbs[i].state = THUMB_FAILED;   // no picture known: the tile keeps its round placeholder
+            continue;
+         }
          int length = 0, status = 0;
          int rc = fetchHttp("GET", url, headers, 2, NULL, 0, (char *)buffer, THUMB_CAP, &length, &status);
          if (rc == 0 && status == 200 && length > 0) {
@@ -336,6 +354,9 @@ static void resetFeed(VideoGrid *grid)
    grid->moreEmpty = grid->moreFailed = 0;
    grid->page = grid->selected = grid->scrollRow = grid->winStart = grid->winEnd = 0;
    grid->focusIndex = grid->focusFrom = -1;   // a new feed: no card to shrink back from
+   // (V3.0.0) and the hero's words are written afresh: the same video at the same place on the next page (Continue
+   // watching, then Downloads) kept the last page's "Watched" - its picture stays, it is the same
+   grid->heroIndex = -1;
 }
 
 static void beginFeed(VideoGrid *grid)
@@ -515,7 +536,10 @@ static void materializeTile(VideoGrid *grid, int i)
       const char *parts[3] = { author, item->views, item->published };
       joinMeta(meta, sizeof meta, parts, 3, 0);
       uiCleanText(meta, (int)sizeof meta, meta);
-      setFittedText(&grid->metas[i], uiPickFont(META_WEIGHT, meta), grid->textW, meta);
+      // (Test 15) the channel's picture before it, when one can come
+      grid->avatarMeta[i] = grid->hasAvatar && item->channelId[0] && item->videoId[0] && grid->hasAvatar(item->channelId);
+      int indent = grid->avatarMeta[i] ? CARD_AVATAR + CARD_AVATAR_GAP : 0;
+      setFittedText(&grid->metas[i], uiPickFont(META_WEIGHT, meta), grid->textW - indent, meta);
    }
    uiSetTextLabel(&grid->durations[i], UI_BADGE_WEIGHT, item->isLive ? "LIVE" : item->duration);
 }
@@ -654,6 +678,22 @@ static void moveSelection(VideoGrid *grid, int delta)
    // row above, so the next press reaches the rail rather than a card three columns away. RIGHT stops at the
    // rightmost column to match: wrapped to the first card of the next row, the LEFT meant to take it back
    // would open the rail instead.
+   // (Test 15) a page of one row - Home's: RIGHT off its last card goes on to the next page's first, LEFT off its
+   // first card back to the previous page's last (on the first page LEFT stops: it belongs to the rail there)
+   if (grid->cols > 1 && grid->visibleRows == 1) {
+      if (delta == 1 && grid->selected == last) {
+         if (grid->page + 1 > pageCount(grid) - 1) return;   // not loaded (yet): the feed fetches it ahead
+         setPage(grid, grid->page + 1);
+         grid->selected = grid->page * size;
+         return;
+      }
+      if (delta == -1 && grid->selected == first && grid->page > 0) {
+         setPage(grid, grid->page - 1);
+         grid->selected = grid->page * size + size - 1;
+         if (grid->selected >= grid->results.count) grid->selected = grid->results.count - 1;
+         return;
+      }
+   }
    if (grid->cols > 1 && delta == -1 && column == 0)              return;
    if (grid->cols > 1 && delta ==  1 && column == grid->cols - 1) return;
 
@@ -687,6 +727,7 @@ void initVideoGrid(VideoGrid *grid, Font *font, int x, int y, int width, int hei
    grid->font = font;
    grid->x = x; grid->y = y; grid->width = width; grid->height = height;
    grid->view = GRID_VIEW_GRID;
+   grid->keepSelection = -1;
    grid->focusIndex = grid->focusFrom = -1;
 
    computeGeometry(grid);
@@ -695,9 +736,262 @@ void initVideoGrid(VideoGrid *grid, Font *font, int x, int y, int width, int hei
    uiInitLabel(&grid->watchedBadge, UI_BADGE_WEIGHT, 0, 0, AUTO, UI_BADGE_SIZE, activeTheme->textSecondary, TEXT_NOWRAP, "WATCHED");
 }
 
+// ---- the Home preview (V3.0.0) ----
+// Laid out on the 1920 x 1080 canvas as TEE's mockup has it: the picture right of the text, 1400 x 788, fading
+// into the page towards the text and towards the cards; the text from the grid's left edge under the header.
+
+#define HERO_IMAGE_X    520
+#define HERO_IMAGE_W    1400
+#define HERO_IMAGE_H    788
+#define HERO_FADE_TOP   400       // the picture fades into the page from here to its bottom edge
+#define HERO_HEADER_H   170       // and is darkened behind the header row
+#define HERO_TEXT_W     1000
+#define HERO_TITLE_SIZE 54        // 54/800, two lines at most
+#define HERO_TITLE_BASE 204       // the first line's baseline
+#define HERO_TITLE_LINE 64
+#define HERO_META_SIZE  24        // channel . views . age, 24/600 in textSecondary
+#define HERO_META_GAP   50        // the title's last baseline -> the meta line's
+#define HERO_CHIP_H     40
+#define HERO_CHIP_PAD   15
+#define HERO_CHIP_SIZE  21
+#define HERO_CHIP_GAP   12
+#define HERO_PROGRESS_W 420
+#define HERO_SETTLE_US  350000    // the selection rests this long before its picture is fetched
+#define HERO_CAP        (512 * 1024)
+
+// the picture: hq720 (1280 x 720) where the video has one, sddefault (640 x 480, the 16:9 picture between bars)
+// where not - fetched into a buffer the UI thread turns into a texture
+static void heroFetchThread(uint64_t arg)
+{
+   VideoGrid *grid = (VideoGrid *)(uintptr_t)arg;
+   uint8_t *buffer = (uint8_t *)malloc(HERO_CAP);
+   int ok = 0;
+   if (buffer) {
+      HttpHeader headers[] = { { "User-Agent", THUMB_UA }, { "Accept-Encoding", "identity" } };
+      static const char *names[2] = { "hq720", "sddefault" };
+      for (int n = 0; n < 2 && !ok; n++) {
+         char url[128];
+         snprintf(url, sizeof url, "https://i.ytimg.com/vi/%s/%s.jpg", grid->heroFetchId, names[n]);
+         int length = 0, status = 0;
+         int rc = fetchHttp("GET", url, headers, 2, NULL, 0, (char *)buffer, HERO_CAP, &length, &status);
+         if (rc == 0 && status == 200 && length > 1024) {
+            uint8_t *copy = (uint8_t *)malloc((size_t)length);
+            if (copy) {
+               memcpy(copy, buffer, (size_t)length);
+               grid->heroJpeg = copy;
+               grid->heroJpegLen = length;
+               grid->heroFetchCrop = n == 1;
+               ok = 1;
+            }
+         }
+      }
+      free(buffer);
+   }
+   grid->heroOk = ok;
+   __sync_synchronize();
+   grid->heroDone = 1;
+   exitThread();
+}
+
+static void heroJoin(VideoGrid *grid)
+{
+   if (grid->heroThreadActive) { joinThread(grid->heroTid); grid->heroThreadActive = 0; }
+   if (grid->heroJpeg) { free(grid->heroJpeg); grid->heroJpeg = NULL; }
+}
+
+static void freeHero(VideoGrid *grid)
+{
+   heroJoin(grid);
+   if (grid->heroTex.offset) { freeGfxTexture(&grid->heroTex); memset(&grid->heroTex, 0, sizeof grid->heroTex); }
+   freeLabel(&grid->heroTitle);
+   freeLabel(&grid->heroTitle2);
+   freeLabel(&grid->heroMeta);
+   freeLabel(&grid->heroDuration);
+   freeLabel(&grid->heroBadge);
+   freeLabel(&grid->heroLeft);
+   grid->heroIndex = -1;
+   grid->heroTexId[0] = grid->heroWantId[0] = grid->heroFailedId[0] = 0;
+}
+
+void setGridHero(VideoGrid *grid, int on)
+{
+   if (on == grid->hero) return;
+   if (!on) { freeHero(grid); grid->hero = 0; return; }
+   grid->hero = 1;
+   grid->heroIndex = -1;
+   uiInitTextLabel(&grid->heroTitle,  UI_WEIGHT_EXTRABOLD, 0, 0, HERO_TEXT_W, HERO_TITLE_SIZE, activeTheme->textPrimary, TEXT_NOWRAP_ELLIPSIS, "");
+   uiInitTextLabel(&grid->heroTitle2, UI_WEIGHT_EXTRABOLD, 0, 0, HERO_TEXT_W, HERO_TITLE_SIZE, activeTheme->textPrimary, TEXT_NOWRAP_ELLIPSIS, "");
+   uiInitTextLabel(&grid->heroMeta,   UI_WEIGHT_SEMIBOLD,  0, 0, HERO_TEXT_W, HERO_META_SIZE,  activeTheme->textSecondary, TEXT_NOWRAP_ELLIPSIS, "");
+   uiInitTextLabel(&grid->heroDuration, UI_WEIGHT_BOLD, 0, 0, AUTO, HERO_CHIP_SIZE, activeTheme->textPrimary, TEXT_NOWRAP, "");
+   uiInitLabel(&grid->heroBadge, UI_WEIGHT_BOLD, 0, 0, AUTO, HERO_CHIP_SIZE, activeTheme->textPrimary, TEXT_NOWRAP, "");
+   uiInitLabel(&grid->heroLeft, UI_WEIGHT_SEMIBOLD, 0, 0, AUTO, 20, activeTheme->textSecondary, TEXT_NOWRAP, "");
+}
+
+// the selection's texts on the hero labels (UI thread, when the selection changes)
+// (V3.0.0) a download on its way (the Downloads page): what the hero says beside its bar
+static void heroDownloadText(const SearchResult *item, char *out, int cap)
+{
+   int percent = 0;
+   int state = getDownloadProgress(item->videoId, &percent);
+   if (state == 1) snprintf(out, cap, "Downloading \xC2\xB7 %d%%", percent);
+   else            snprintf(out, cap, "%s", state == 2 ? "Waiting" : "Downloading");
+}
+
+static void labelHero(VideoGrid *grid, int i)
+{
+   const SearchResult *item = &grid->results.items[i];
+   char title[sizeof item->title], author[sizeof item->author];
+   tileTexts(item, title, (int)sizeof title, author, (int)sizeof author);
+   Font *font = uiPickFont(UI_WEIGHT_EXTRABOLD, title);
+   char line[sizeof item->title];
+   int next = 0;
+   int length = fitFirstLine(font, HERO_TITLE_SIZE, title, HERO_TEXT_W - FIT_SLACK, &next);
+   if (length >= (int)sizeof line) length = (int)sizeof line - 1;
+   memcpy(line, title, (size_t)length);
+   line[length] = '\0';
+   setFittedText(&grid->heroTitle,  font, HERO_TEXT_W, line);
+   setFittedText(&grid->heroTitle2, font, HERO_TEXT_W, title + next);
+
+   const char *parts[3] = { author, item->views, item->published };
+   char meta[160];
+   joinMeta(meta, sizeof meta, parts, 3, 0);
+   uiCleanText(meta, (int)sizeof meta, meta);
+   setFittedText(&grid->heroMeta, uiPickFont(UI_WEIGHT_SEMIBOLD, meta), HERO_TEXT_W, meta);
+   uiSetTextLabel(&grid->heroDuration, UI_WEIGHT_BOLD, item->isLive ? "" : item->duration);
+
+   int total = durationToSeconds(item->duration);
+   int position = (grid->watchedPosition && !item->isLive) ? grid->watchedPosition(item->videoId) : 0;
+   int watched = !(total > 0 && position > 0) && !item->isLive && grid->isWatched && grid->isWatched(item->videoId);
+   const char *badge = item->isLive ? "LIVE" : watched ? "Watched"
+                     : (grid->isWatchLater && grid->isWatchLater(item->videoId)) ? "Watch Later" : "";
+   setLabelText(&grid->heroBadge, item->downloadState ? "" : badge);
+   char left[32];
+   left[0] = 0;
+   if (item->downloadState) heroDownloadText(item, left, sizeof left);   // (V3.0.0) its download, not its viewing
+   else if (total > 0 && position > 0 && position < total) {
+      int minutes = (total - position + 59) / 60;
+      snprintf(left, sizeof left, "%d min left", minutes);
+   }
+   setLabelText(&grid->heroLeft, left);
+}
+
+// UI thread, every frame: follows the selection, fetches its picture once it rests, adopts a fetched one
+static void updateHero(VideoGrid *grid)
+{
+   if (!grid->hero) return;
+   // (V3.0.0) a download's percent moves on its own: its words follow (setLabelText redraws only on a change)
+   if (grid->stage == GRID_READY && grid->heroIndex >= 0 && grid->heroIndex < grid->results.count &&
+       grid->results.items[grid->heroIndex].downloadState) {
+      char left[32];
+      heroDownloadText(&grid->results.items[grid->heroIndex], left, sizeof left);
+      setLabelText(&grid->heroLeft, left);
+   }
+   if (grid->heroThreadActive && grid->heroDone) {
+      joinThread(grid->heroTid);
+      grid->heroThreadActive = 0;
+      if (grid->heroOk && grid->heroJpeg && strcmp(grid->heroFetchId, grid->heroWantId) == 0) {
+         GfxTexture tex = loadGfxTextureMem(grid->heroJpeg, (uint32_t)grid->heroJpegLen);
+         if (tex.offset) {
+            if (grid->heroTex.offset) retireGfxTexture(&grid->heroTex);
+            grid->heroTex = tex;
+            grid->heroCrop = grid->heroFetchCrop;
+            strCopy(grid->heroTexId, sizeof grid->heroTexId, grid->heroFetchId);
+         }
+      } else if (!grid->heroOk) {
+         strCopy(grid->heroFailedId, sizeof grid->heroFailedId, grid->heroFetchId);   // the card's picture it is
+      }
+      if (grid->heroJpeg) { free(grid->heroJpeg); grid->heroJpeg = NULL; }
+   }
+   if (grid->stage != GRID_READY || grid->selected < 0 || grid->selected >= grid->results.count) return;
+   const SearchResult *item = &grid->results.items[grid->selected];
+   uint64_t now = sys_time_get_system_time();
+   if (grid->selected != grid->heroIndex || strcmp(grid->heroWantId, item->videoId) != 0) {
+      labelHero(grid, grid->selected);
+      grid->heroIndex = grid->selected;
+      strCopy(grid->heroWantId, sizeof grid->heroWantId, item->videoId);
+      grid->heroSinceUs = now;
+   }
+   if (!grid->heroThreadActive && item->videoId[0] && strcmp(grid->heroTexId, grid->heroWantId) != 0 &&
+       strcmp(grid->heroFailedId, grid->heroWantId) != 0 && now - grid->heroSinceUs >= HERO_SETTLE_US) {
+      strCopy(grid->heroFetchId, sizeof grid->heroFetchId, grid->heroWantId);
+      grid->heroDone = grid->heroOk = 0;
+      grid->heroThreadActive = (spawnJoinableThread(&grid->heroTid, heroFetchThread, (uint64_t)(uintptr_t)grid,
+                                THREAD_PRIORITY_DEFAULT, THREAD_STACK_SIZE_64KB, "yt-hero") == 0);
+   }
+}
+
+void drawGridHero(VideoGrid *grid)
+{
+   if (!grid->hero || grid->stage != GRID_READY || grid->heroIndex < 0 || grid->heroIndex >= grid->results.count) return;
+   int i = grid->heroIndex;
+   const SearchResult *item = &grid->results.items[i];
+   uint32_t bg = activeTheme->appBg;
+
+   // the picture: the big one once it is here, the card's own until then
+   if (grid->heroTex.offset && strcmp(grid->heroTexId, item->videoId) == 0) {
+      float v0 = grid->heroCrop ? 0.125f : 0.0f, v1 = grid->heroCrop ? 0.875f : 1.0f;
+      drawGfxTexture(HERO_IMAGE_X, 0, HERO_IMAGE_W, HERO_IMAGE_H, grid->heroTex, 0.0f, v0, 1.0f, v1, 0xFFFFFFFF, GFX_FILTER_LINEAR);
+   } else if (grid->thumbs[i].tex.offset) {
+      drawGfxTexture(HERO_IMAGE_X, 0, HERO_IMAGE_W, HERO_IMAGE_H, grid->thumbs[i].tex, 0.0f, 0.0f, 1.0f, 1.0f, 0xFFFFFFFF, GFX_FILTER_LINEAR);
+   }
+   // dark towards the text, towards the cards and behind the header row
+   UiGradientStop across[3] = { { 0.0f, uiWithAlpha(bg, 255) }, { 0.55f, uiWithAlpha(bg, 150) }, { 1.0f, uiWithAlpha(bg, 80) } };
+   uiFillGradientH(HERO_IMAGE_X, 0, HERO_IMAGE_W, HERO_IMAGE_H, across, 3);
+   UiGradientStop down[2] = { { 0.0f, uiWithAlpha(bg, 0) }, { 1.0f, uiWithAlpha(bg, 255) } };
+   uiFillGradientV(0, HERO_FADE_TOP, UI_SCREEN_W, HERO_IMAGE_H - HERO_FADE_TOP + 1, down, 2);
+   UiGradientStop header[2] = { { 0.0f, uiWithAlpha(bg, 190) }, { 1.0f, uiWithAlpha(bg, 0) } };
+   uiFillGradientV(HERO_IMAGE_X, 0, HERO_IMAGE_W, HERO_HEADER_H, header, 2);
+
+   // the text
+   int x = grid->x;
+   int base = HERO_TITLE_BASE;
+   uiDrawLabelAt(&grid->heroTitle, x, uiLabelYForBaseline(&grid->heroTitle, base));
+   if (grid->heroTitle2.tt.tex.w > 0) {
+      base += HERO_TITLE_LINE;
+      uiDrawLabelAt(&grid->heroTitle2, x, uiLabelYForBaseline(&grid->heroTitle2, base));
+   }
+   base += HERO_META_GAP;
+   int metaX = x;
+   if (grid->avatarFor && grid->hasAvatar && item->videoId[0] && item->channelId[0] && grid->hasAvatar(item->channelId)) {
+      int ay = base - 8 - HERO_AVATAR / 2;   // round the line's middle
+      const GfxTexture *avatar = grid->avatarFor(item->channelId);
+      if (avatar) {
+         drawGfxTexture(x, ay, HERO_AVATAR, HERO_AVATAR, *avatar, 0.0f, 0.0f, 1.0f, 1.0f, 0xFFFFFFFF, GFX_FILTER_LINEAR);
+         uiDrawImageCorners(x, ay, HERO_AVATAR, HERO_AVATAR, HERO_AVATAR / 2, bg);   // a circle
+      } else {
+         uiFillCircle(x, ay, HERO_AVATAR, activeTheme->surface1);
+      }
+      metaX += HERO_AVATAR + HERO_AVATAR_GAP;
+   }
+   uiDrawLabelAt(&grid->heroMeta, metaX, uiLabelYForBaseline(&grid->heroMeta, base));
+
+   int chipY = base + 26, chipX = x;
+   if (grid->heroDuration.tt.tex.w > 0)
+      chipX += uiDrawChip(chipX, chipY, HERO_CHIP_H, HERO_CHIP_PAD, &grid->heroDuration, activeTheme->surface) + HERO_CHIP_GAP;
+   if (grid->heroBadge.tt.tex.w > 0)
+      chipX += uiDrawChip(chipX, chipY, HERO_CHIP_H, HERO_CHIP_PAD, &grid->heroBadge,
+                          item->isLive ? activeTheme->live : activeTheme->accentSoft) + HERO_CHIP_GAP;
+   if (grid->heroLeft.tt.tex.w > 0) {
+      int barY = chipY + HERO_CHIP_H + 30;
+      int total = durationToSeconds(item->duration);
+      int position = grid->watchedPosition ? grid->watchedPosition(item->videoId) : 0;
+      float progress = total > 0 ? (float)position / (float)total : 0.0f;
+      uint32_t track = activeTheme->progressTrack, fill = activeTheme->accent;
+      if (item->downloadState) {   // (V3.0.0) the download's bar: white, filling green
+         int percent = 0;
+         progress = getDownloadProgress(item->videoId, &percent) == 1 ? (float)percent / 100.0f : 0.0f;
+         track = DOWNLOAD_BAR_TRACK;
+         fill = DOWNLOAD_BAR_FILL;
+      }
+      uiDrawProgressBar(x, barY, HERO_PROGRESS_W, 6, progress, track, fill, 3);
+      uiDrawLabelAt(&grid->heroLeft, x + HERO_PROGRESS_W + 20, uiLabelYForCenter(&grid->heroLeft, barY - 12, 30));
+   }
+}
+
 void termVideoGrid(VideoGrid *grid)
 {
    stopVideoGrid(grid);
+   freeHero(grid);
    freeThumbnails(grid);
    for (int i = 0; i < MAX_SEARCH_RESULTS; i++) freeTileLabels(grid, i);
    freeFocusTitle(grid);
@@ -737,6 +1031,47 @@ static int showsFocus(const VideoGrid *grid, int i) { return i == grid->selected
 
 GridView gridView(const VideoGrid *grid) { return grid->view; }
 
+void keepGridSelection(VideoGrid *grid, int index) { grid->keepSelection = index >= 0 ? index : -1; }
+
+void setGridSelection(VideoGrid *grid, int index)
+{
+   if (grid->results.count <= 0) return;
+   if (index < 0) index = 0;
+   if (index >= grid->results.count) index = grid->results.count - 1;
+   setPage(grid, index / pageSize(grid));
+   grid->selected = index;
+}
+
+const GfxTexture *gridThumbnail(const VideoGrid *grid, int i)
+{
+   if (i < 0 || i >= grid->results.count || !grid->thumbs[i].tex.offset) return NULL;
+   return &grid->thumbs[i].tex;
+}
+
+void setGridAvatarSource(VideoGrid *grid, const GfxTexture *(*avatarFor)(const char *channelId),
+                         int (*hasAvatar)(const char *channelId))
+{
+   grid->avatarFor = avatarFor;
+   grid->hasAvatar = hasAvatar;
+}
+
+int drawGridHeroPicture(VideoGrid *grid, int x, int y, int w, int h, uint32_t tint)
+{
+   if (grid->stage != GRID_READY || grid->selected < 0 || grid->selected >= grid->results.count) return 0;
+   int i = grid->selected;
+   const SearchResult *item = &grid->results.items[i];
+   if (grid->heroTex.offset && strcmp(grid->heroTexId, item->videoId) == 0) {
+      float v0 = grid->heroCrop ? 0.125f : 0.0f, v1 = grid->heroCrop ? 0.875f : 1.0f;
+      drawGfxTexture(x, y, w, h, grid->heroTex, 0.0f, v0, 1.0f, v1, tint, GFX_FILTER_LINEAR);
+      return 1;
+   }
+   if (grid->thumbs[i].tex.offset && item->videoId[0]) {
+      drawGfxTexture(x, y, w, h, grid->thumbs[i].tex, 0.0f, 0.0f, 1.0f, 1.0f, tint, GFX_FILTER_LINEAR);
+      return 1;
+   }
+   return 0;
+}
+
 void setGridView(VideoGrid *grid, GridView view)
 {
    if (view == grid->view) return;
@@ -774,6 +1109,8 @@ void setGridCached(VideoGrid *grid, const SearchResults *cached, GridFetchFn fet
 void stopVideoGrid(VideoGrid *grid)
 {
    if (grid->threadActive) { grid->stopWorker = 1; joinThread(grid->workerTid); grid->threadActive = 0; }
+   if (grid->heroThreadActive) { joinThread(grid->heroTid); grid->heroThreadActive = 0; grid->heroDone = 0; }   // (its
+   if (grid->heroJpeg) { free(grid->heroJpeg); grid->heroJpeg = NULL; }   // picture is fetched again on return)
    grid->reloadPending = 0;
 }
 
@@ -785,6 +1122,14 @@ void updateVideoGrid(VideoGrid *grid)
       if (grid->reloadPending) { grid->reloadPending = 0; applyDeferredSource(grid); }
    }
    if (grid->stage != GRID_READY) return;
+
+   // (Test 15) the selection a reload of the same feed asked to keep (keepGridSelection)
+   if (grid->keepSelection >= 0 && grid->results.count > 0) {
+      int index = grid->keepSelection < grid->results.count ? grid->keepSelection : grid->results.count - 1;
+      grid->keepSelection = -1;
+      setPage(grid, index / pageSize(grid));
+      grid->selected = index;
+   }
 
    if (!grid->inputSuppressed) {
       if      (isRepeatDue(&grid->horizontalRepeat, getPadButtonState(PAD_BTN_RIGHT))) moveSelection(grid, 1);
@@ -801,6 +1146,7 @@ void updateVideoGrid(VideoGrid *grid)
    labelWindow(grid);
    labelFocusTitle(grid);
    decodeWindowThumbnails(grid);
+   updateHero(grid);
 
    // idle background work: thumbnails for what is on screen, then the next page of results. The fetch runs a
    // page early, so turning to the last page usually finds the one after it already waiting.
@@ -834,6 +1180,8 @@ static void drawTinted(const Label *label, int x, int y, uint32_t color)
 typedef struct {
    float progress;   // share of the video watched, 0 = no line to draw
    int   watched;
+   int   downloading;     // (V3.0.0) on its way to the Downloads page: dimmed, its bar instead of the watched line
+   float downloadShare;   // ... how much of it is in
 } TileState;
 
 static TileState tileState(const VideoGrid *grid, int i)
@@ -841,7 +1189,15 @@ static TileState tileState(const VideoGrid *grid, int i)
    TileState state;
    state.progress = 0.0f;
    state.watched  = 0;
+   state.downloading = 0;
+   state.downloadShare = 0.0f;
    const SearchResult *item = &grid->results.items[i];
+   if (item->downloadState) {   // (V3.0.0) live, not as listed: the page re-reads the list once it is done
+      int percent = 0;
+      state.downloading = 1;
+      if (getDownloadProgress(item->videoId, &percent) == 1) state.downloadShare = (float)percent / 100.0f;
+      return state;
+   }
    int total    = durationToSeconds(item->duration);
    int position = (grid->watchedPosition && !item->isLive) ? grid->watchedPosition(item->videoId) : 0;
    if (total > 0 && position > 0) state.progress = position >= total ? 1.0f : (float)position / (float)total;
@@ -863,11 +1219,29 @@ static uint32_t cornerColor(float strength)
 // progress line along its bottom, then the corner masks, which round both.
 static void drawImage(VideoGrid *grid, int i, int x, int y, int w, int h, int radius, uint32_t behind, TileState state)
 {
+   const SearchResult *item = &grid->results.items[i];
+   if (!item->videoId[0] && item->channelId[0]) {   // (V3.0.0) a channel: its picture, round, on the card
+      fillGfxRectangle(x, y, w, h, activeTheme->surface);
+      int d = (int)((float)h * AVATAR_SHARE + 0.5f);
+      int ax = x + (w - d) / 2, ay = y + (h - d) / 2;
+      if (grid->thumbs[i].tex.offset) {
+         drawGfxTexture(ax, ay, d, d, grid->thumbs[i].tex, 0, 0, 1, 1, 0xFFFFFFFF, GFX_FILTER_LINEAR);
+         uiDrawImageCorners(ax, ay, d, d, d / 2, activeTheme->surface);   // the corners away: a circle
+      } else {
+         uiFillCircle(ax, ay, d, activeTheme->surface1);
+      }
+      uiDrawImageCorners(x, y, w, h, radius, behind);
+      return;
+   }
    if (grid->thumbs[i].tex.offset)
-      drawGfxTexture(x, y, w, h, grid->thumbs[i].tex, 0, 0, 1, 1, state.watched ? activeTheme->watchedThumbTint : 0xFFFFFFFF, GFX_FILTER_LINEAR);
+      drawGfxTexture(x, y, w, h, grid->thumbs[i].tex, 0, 0, 1, 1,
+                     state.watched || state.downloading ? activeTheme->watchedThumbTint : 0xFFFFFFFF, GFX_FILTER_LINEAR);
    else
       fillGfxRectangle(x, y, w, h, activeTheme->surface);
-   if (state.progress > 0.0f)
+   if (state.downloading)
+      uiDrawProgressBar(x, y + h - PROGRESS_BAR_H, w, PROGRESS_BAR_H, state.downloadShare, DOWNLOAD_BAR_TRACK,
+                        DOWNLOAD_BAR_FILL, 0);
+   else if (state.progress > 0.0f)
       uiDrawProgressBar(x, y + h - PROGRESS_BAR_H, w, PROGRESS_BAR_H, state.progress,
                         activeTheme->progressTrack, activeTheme->accent, 0);
    uiDrawImageCorners(x, y, w, h, radius, behind);
@@ -975,8 +1349,21 @@ static void drawCard(VideoGrid *grid, int i, float grow)
    int base    = textTop + TILE_TITLE_BASE;
    drawTinted(title,  tx, uiLabelYForBaseline(title,  base), titleColor);
    drawTinted(title2, tx, uiLabelYForBaseline(title2, base + TILE_TITLE_LINE), titleColor);
-   drawTinted(&grid->metas[i],   tx, uiLabelYForBaseline(&grid->metas[i],
-              textTop + lines * TILE_TITLE_LINE + TILE_META_GAP + META_ASCENT), metaColor);
+   int metaBase = textTop + lines * TILE_TITLE_LINE + TILE_META_GAP + META_ASCENT;
+   int metaX = tx;
+   if (grid->avatarMeta[i] && grid->avatarFor) {   // (Test 15) the channel's picture first
+      const SearchResult *item = &grid->results.items[i];
+      int ay = metaBase - 7 - CARD_AVATAR / 2;
+      const GfxTexture *avatar = grid->avatarFor(item->channelId);
+      if (avatar) {
+         drawGfxTexture(tx, ay, CARD_AVATAR, CARD_AVATAR, *avatar, 0.0f, 0.0f, 1.0f, 1.0f, 0xFFFFFFFF, GFX_FILTER_LINEAR);
+         uiDrawImageCorners(tx, ay, CARD_AVATAR, CARD_AVATAR, CARD_AVATAR / 2, activeTheme->appBg);
+      } else {
+         uiFillCircle(tx, ay, CARD_AVATAR, activeTheme->surface1);
+      }
+      metaX += CARD_AVATAR + CARD_AVATAR_GAP;
+   }
+   drawTinted(&grid->metas[i], metaX, uiLabelYForBaseline(&grid->metas[i], metaBase), metaColor);
 }
 
 // list view: a row - the thumbnail on the left, the title and the meta line beside it, the block of text
@@ -993,8 +1380,8 @@ static void drawRow(VideoGrid *grid, int i)
    drawImage(grid, i, tx, ty, grid->tileW, grid->thumbH, LIST_THUMB_RADIUS,
              selected ? activeTheme->surface1 : activeTheme->appBg, state);
    if (selected) uiDrawFocusRing(rx, ry, grid->width, grid->rowH, UI_RING_ROW, activeTheme->focusBorder);
-   drawBadges(grid, i, tx, ty, grid->tileW, grid->thumbH, state.progress > 0.0f ? LIST_BADGE_BOTTOM : BADGE_INSET,
-              state.watched);
+   drawBadges(grid, i, tx, ty, grid->tileW, grid->thumbH,
+              state.progress > 0.0f || state.downloading ? LIST_BADGE_BOTTOM : BADGE_INSET, state.watched);
 
    int lines = grid->titles2[i].tt.tex.w > 0 ? 2 : 1;
    int top   = ty + (grid->thumbH - (lines * LIST_TITLE_LINE + LIST_META_GAP + META_BOX)) / 2;

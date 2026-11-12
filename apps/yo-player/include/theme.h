@@ -1,8 +1,9 @@
 #pragma once
 
 // theme.h - yo-player's palette as one runtime-swappable struct, so every colour the UI draws comes
-// from one place. The shipped theme is TEE's own "Ember" palette (warm near-black, cream text, TEE orange
-// as the only accent); rounded shapes are white helper textures tinted with these colours (ui-draw.h).
+// from one place. The shipped theme is TEE's own palette - since V3.0.0 ice blue (#38BDF8) as the only accent
+// on a deep blue-black, Ember's tokens in another hue (v1.0 - v2.0 were warm near-black with TEE orange);
+// rounded shapes are white helper textures tinted with these colours (ui-draw.h).
 //
 // Themes live in themes.txt in the app's data directory (getAppDataDir(), see app-paths.h), written on
 // first launch with the built-in [TEE] block so every key is visible to edit over FTP. Edit that block to
@@ -16,7 +17,7 @@ typedef struct {
    uint32_t appBg;              // whole-screen background (Ember "bg"); also the colour list fades end in
    uint32_t surface;            // raised surface (Ember "surface-2"): chips, fields, the rail, the thumbnail
                                 // placeholder before the image lands
-   uint32_t accent;             // TEE orange: seek-bar fill, progress, the selected value, volume fill
+   uint32_t accent;             // the accent (ice blue): seek-bar fill, progress, the selected value, volume fill
    uint32_t focusBorder;        // the focus ring around the selected thumbnail, row or card
    uint32_t focusGlow;          // tints the soft glow texture drawn under the focus ring (Ember
                                 // "accent-glow") - the console has no blur, so the glow is a texture

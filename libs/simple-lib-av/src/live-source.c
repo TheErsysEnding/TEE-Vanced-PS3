@@ -19,6 +19,7 @@
 #include "thread.h"             // lock + thread helpers
 #include "dbg.h"
 
+#include <sys/memory.h>          // (Test 16) sys_memory_allocate: the window outside the malloc heap
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
@@ -54,6 +55,7 @@ struct LiveSource {
 
    uint8_t *window;       // rolling buffer of the virtual stream (guarded by lock; only the prefetch moves or grows it)
    int      windowCap;    // its size: WINDOW_VIDEO or WINDOW_AUDIO, up to WINDOW_MAX
+   int      windowKernel;   // (Test 16) the window is the kernel's (allocWindow), not the heap's
    int      largest;      // the biggest segment so far (prefetch-thread owned)
    int      windowLen;
    uint64_t windowStart;  // virtual offset of window[0]
@@ -96,6 +98,30 @@ static void dropHistory(LiveSource *source)
    source->windowStart += drop;
 }
 
+// (Test 16) The window comes from the kernel in whole MB, not from the malloc heap, and goes back to it on close.
+// The heap keeps what a closed decoder gave back (the TEE Decoder's 85 MB at 1080p) and never returns it; a live
+// stream's 26 MB taken out of that hole left the next TEE Decoder's 32 MB block no room, the heap grew into the last
+// of the kernel's memory, the SPEs could not start (0x80010004) and cellVdec could not open either (0x80610180):
+// "couldn't open stream" on every live stream after a 1080p video, on TEE's console. Should the kernel have no
+// whole MB left, the heap's memory is taken as before. bytes is a whole number of MB.
+static uint8_t *allocWindow(size_t bytes, int *kernel)
+{
+   sys_addr_t address = 0;
+   if (sys_memory_allocate(bytes, SYS_MEMORY_PAGE_SIZE_1M, &address) == CELL_OK && address) {
+      *kernel = 1;
+      return (uint8_t *)(uintptr_t)address;
+   }
+   *kernel = 0;
+   return (uint8_t *)malloc(bytes);
+}
+
+static void freeWindow(uint8_t *window, int kernel)
+{
+   if (!window) return;
+   if (kernel) sys_memory_free((sys_addr_t)(uintptr_t)window);
+   else        free(window);
+}
+
 // makes the window hold at least `need` bytes (in whole MB, up to WINDOW_MAX) - for a segment bigger than any
 // before, which the open's size did not plan for. Under the lock, as the reader copies out of it. 1 ok, 0 too big
 // or out of memory.
@@ -105,8 +131,15 @@ static int growWindow(LiveSource *source, uint64_t need)
    if (need > WINDOW_MAX) return 0;
    uint64_t want = (need + 0xFFFFF) & ~(uint64_t)0xFFFFF;
    lock(&source->lock);
-   uint8_t *bigger = (uint8_t *)realloc(source->window, (size_t)want);
-   if (bigger) { source->window = bigger; source->windowCap = (int)want; }
+   int kernel = 0;
+   uint8_t *bigger = allocWindow((size_t)want, &kernel);
+   if (bigger) {
+      memcpy(bigger, source->window, (size_t)source->windowLen);
+      freeWindow(source->window, source->windowKernel);
+      source->window = bigger;
+      source->windowKernel = kernel;
+      source->windowCap = (int)want;
+   }
    unlock(&source->lock);
    if (bigger) logInfo("[live] window now %d MB\n", (int)(want >> 20));
    return bigger != NULL;
@@ -246,7 +279,7 @@ LiveSource *openLiveSource(const char *baseUrl, long startSq, long edgeSq, long 
    // manifest's path): an audio stream's segments need a fraction of a video stream's window
    int audio = strstr(baseUrl, "audio%2F") != NULL || strstr(baseUrl, "audio/mp4") != NULL;
    source->windowCap = audio ? WINDOW_AUDIO : WINDOW_VIDEO;
-   source->window = (uint8_t *)malloc(source->windowCap);
+   source->window = allocWindow((size_t)source->windowCap, &source->windowKernel);
    if (!source->window) { closeLiveSource(source); return NULL; }
 
    strCopy(source->base, sizeof source->base, baseUrl);
@@ -317,6 +350,6 @@ void closeLiveSource(LiveSource *source)
    source->cancel = 1;
    if (source->threadActive) { joinThread(source->prefetchThread); source->threadActive = 0; }
    if (source->lockReady) { destroyLock(&source->lock); source->lockReady = 0; }
-   free(source->window);
+   freeWindow(source->window, source->windowKernel);
    free(source);
 }

@@ -3,6 +3,177 @@
 Every release listed here was installed and used on a real PS3 (EVILNAT 4.92 DEX)
 before it was tagged. Anything that had not been is said so plainly.
 
+## v3.0.0 — 2026-11-12
+
+Installed and used on TEE's console (EVILNAT 4.92 DEX) through eighteen test builds on 2026-11-11 and 2026-11-12
+(V3.0.0 Test 1 to Test 18). The release package is Test 18 with its version string changed. The XMB tile and
+background say what this version brings: 1440p 60 FPS SUPPORT · TEE DECODER.
+
+### In short
+
+- **1440p at 60 fps, with sound.** YouTube's 1440p VP9 plays on the TEE VP9 decoder (TEE's own, on all six SPEs),
+  its Opus sound on the TEE Opus building block (on the PPU). It is picked in START > Quality; Auto stays on 1080p60
+  H.264. In the busiest moments a 1440p60 video drops to YouTube's 1080p60 VP9 stream for a few seconds, at the next
+  key frame, and comes back after them; 1440p30 very likely plays through without that.
+- **The list view.** DOWN on Home, every search and every channel page: the whole feed from top to bottom, each video
+  with the best quality the PS3 plays of it ("1440p60", no codec), its channel's picture, and on the right its
+  details - description, quality, subtitles, audio tracks - with Channel and Subscribe right there.
+- **Downloads.** R3 downloads 1440p60 VP9 or 1080p60 H.264 into the app's own Downloads page (played from disk), or
+  an MP4 into the XMB's Video column; a note when one is in or failed; unfinished ones are offered again at the next
+  start.
+- **Subscriptions** with every channel you follow and its picture; channel pictures on the cards too.
+- **Subtitles** in Czech, Polish, Hungarian, Romanian, Turkish, Greek, Cyrillic and more (GitHub issue #1).
+- **Live**: Popular in Germany, Austria and Switzerland is a German live search instead of YouTube's world-wide mix;
+  streams "made for kids" play; live streams open again after a 1080p video.
+- **Also**: an ice-blue look; what is new, once per version, and the support page with its QR code; the BD Remote
+  Control (GitHub issue #6 - not tried with a real remote yet); a note when a newer release is out; certificates
+  checked at a server's time when the console's clock is wrong; a held UP or DOWN in the rail walks on; one package
+  for PS3HEN, CFW and DEX.
+- **Not there yet**: YouTube's automatically translated subtitles (GitHub issue #4) - YouTube refuses them to a
+  client that is not signed in (HTTP 429), so they are off by default. The TEE Decoder stalled twice on one 626 x 360
+  upload on TEE's console (not in RPCS3); that video then plays on cellVdec, the next one on the TEE Decoder again.
+
+### The test builds
+
+**V3.0.0 Test 1 SPE** (71-0fe8150, 2026-11-11): 1440p on the TEE VP9 building block 0.1.0, the picture on the
+SPEs alone (no RSX prediction yet - that will be the RSX test builds). Played in RPCS3, not yet on a console.
+
+- **1440p VP9.** YouTube's 1440p (VP9 in WebM, itag 308 at 60 fps, 271 at 30) plays on TEE's own VP9 decoder on
+  all 6 SPEs, scaled to 1080p by the RSX. It is picked in START > Quality ("1440p60 VP9"); Auto stays on H.264,
+  and so do downloads. If the decoder does not open, the best H.264 plays instead.
+- **No sound at 1440p** in this test: the decoder needs all 6 SPEs and Sony's sound decoder a 7th.
+  settings.txt vp9-spes=5 gives the decoder 1 + 4 SPEs and keeps the sound, at 50 - 63 pictures a second.
+- **Test 2 SPE** (73-855683e): in Test 1 a busy scene (27 - 37 Mbit/s for half a minute, 10 on average) fell to
+  40 pictures a second - the download ran only 2 MB ahead, and the thread that read the network also handed the
+  pictures to the screen. Now the VP9 input has a thread of its own, and the decoder holds up to 20 MB of it
+  (about 4 s at that rate).
+- **Test 3 Blue** (76-105db65): the black-and-orange look is gone - ice blue (#38BDF8) on a deep blue-black,
+  dark as before. An older themes.txt is kept as themes.txt.bak and replaced once. The XMB tile and background
+  are blue too and say 1440p 60 FPS SUPPORT and TEE DECODER. SponsorBlock's intro is coral now (cyan was too
+  close to the new accent).
+- **Test 4 Blue**: the buttons are the app's own now, as in TEE's mockups - X, O, square, triangle and the d-pad
+  a round chip with a white symbol, L1 ... START / SELECT a key cap with its name (the console's full-colour art
+  is gone). Home shows the selected video big above one row of cards: its 1280 x 720 picture (fetched once the
+  selection rests) behind its title, channel, duration, a Watched / Watch Later / LIVE chip and how much is left.
+- **Test 5 Blue**: a download shows in the rail - the arrow, its place in the batch ("1/10") and a white bar
+  that fills green; the open rail says "Downloading 45%" beside it. (Home's old chip bottom right is gone: it
+  lay over the cards.) A finished download is handed to the XMB's Video column as before (checked in RPCS3).
+- **Test 6 Blue**: R3 asks in which form to download - 1440p60 VP9 or 1080p60 H.264 for the app's own new
+  Downloads page (rail entry "Downloads"), or the MP4 for the XMB as before; the last choice is kept. Those two
+  are stored as YouTube serves them (video + AAC, no remux) in tee-vanced/downloads with an info.txt; the page
+  lists them newest first with resolution, fps, codec, size and date, X plays them from disk (TEE VP9 / TEE
+  Decoder), Triangle deletes them. The running download shows on the rail's Downloads entry. A 1440p download
+  plays without sound until VP9 has sound.
+- **Test 7 Blue**: a download that did not finish - a power cut, a crash, leaving the app, or still waiting in
+  the queue - is found at the next start: one question, X starts it (or them) again from the beginning in the
+  form asked for, Triangle deletes what it left, O asks again next time. Each download keeps a job.txt from the
+  moment it is queued until it is done.
+- **Test 8 Blue**: downloads go to the app's gallery unless the XMB is picked for one - the R3 page never keeps
+  the XMB as its choice, and picking it shows a warning first (the system takes the file: TEE Vanced does not list
+  or play it afterwards). On the Downloads page, Square moves a video into the XMB after the same warning: a
+  30 fps or 720p H.264 copy is remuxed as it is, a 1440p or 1080p60 one is fetched again as the XMB's MP4; the
+  app's copy goes once the XMB has it.
+- **Test 18 Kids** (12 Nov): live streams "made for kids" play. The German Live search brings Peppa Pig Deutsch,
+  PAW Patrol Deutschland and other kids' 24/7 streams, and YouTube's player answered the app's VISIONOS client with
+  UNPLAYABLE, "This video is not available" - "Its details could not be fetched" in the list, "resolve failed" on X.
+  Probed: ANDROID_VR, TV, web and the embedded player refuse them too; IOS plays them, with direct urls whose live
+  segments googlevideo serves as it does VISIONOS's. A resolve that VISIONOS calls UNPLAYABLE without streams now asks
+  once more as IOS. Checked in RPCS3 with region DE: the three kids' streams in the list resolve (1080p30) and Peppa
+  Wutz plays live on the TEE Decoder at 30 pictures a second.
+- **Test 17 Live** (12 Nov): live streams open again after a 1080p video. On TEE's console every live stream said
+  "couldn't open stream" once a 1080p video had played: the malloc heap keeps what a closed TEE Decoder gave back
+  (85 MB) and never returns it, a live stream's segment windows (24 + 2 MB) were taken out of that hole, the next TEE
+  Decoder's 32 MB block no longer fitted, the heap grew into the last of the kernel's memory - 33 MB free, then 0 - and
+  neither the TEE Decoder's SPEs (0x80010004) nor cellVdec (0x80610180) could start; after that nothing opened until
+  the app was restarted. The windows now come from the kernel in whole MB (sys_memory_allocate) and go back to it on
+  close; the decoder finds its old hole whole. Checked in RPCS3 in that order - 1080p on the TEE Decoder, then a live
+  stream: the decoder opens in the heap's free part and plays at 30 a second. The memory lines in dbg.txt now also say
+  what the heap holds and how much of it is in use. Live > Popular in Germany, Austria and Switzerland is a live search
+  for "live deutsch" instead of YouTube's shelf, which lists the same world-wide mix (Turkish, Polish, US, Telugu) for
+  every region and language: WELT, euronews deutsch, Vatican News Deutsch and German 24/7 channels come first now
+  (other regions, not probed, keep the shelf). A channel page is the list view too, with the channel's name and picture
+  on every video and only Subscribe in the details (the page is that channel). In the rail a held UP or DOWN walks on
+  through the entries (it stops at the first and the last; a fresh press still wraps round).
+- **Test 16 Search** (12 Nov): a search's results are the list view too - the rows under the field, the selection's
+  details beside them, UP off the first result into the field as before, RIGHT to Channel and Subscribe (a channel page
+  keeps its three big rows). The TEE Decoder stays on after one odd video: on TEE's console it stopped twice on a
+  626 x 360 upload (coded 640 x 368, "no SPE answered for 2000 ms" after 74 and 19 pictures), and the app had then
+  switched it off until the next start - every H.264 video after it played on cellVdec, and 1080p60 was gone from the
+  quality menu (1440p, on TEE VP9, was not touched). Two stalls within 30 s or a failed flush now hand only that video
+  to cellVdec; the next one opens the TEE Decoder again. A decoder that does not close, or a decode thread that hangs,
+  still keeps it off for the run. The same stream plays without a stall in RPCS3 (822 pictures at 30 a second): the
+  stall itself is the TEE Decoder session's to look at. A button held while the field, the rail or a notice had the
+  pad waits the hold delay on the list (it ran 4 rows on before).
+- **Test 15 List** (12 Nov): Home has a list view (TEE's design). DOWN on the cards - on Live too - eases it in: the
+  whole feed from top to bottom, each video with its picture, its title and under it the best quality the player plays
+  of it ("1440p60", "1080p30", no codec; a stream "LIVE · 1080p30"), then its channel with the channel's picture. On
+  the right the selection's details on its own picture: title, channel, views, chips for the quality, the duration or
+  LIVE, subtitles, audio tracks and a stream's rewind, what the quality setting plays of it ("Auto plays it at
+  1080p60 - choose 1440p ..."), the start of its description, and a bar with the channel's picture and two buttons,
+  Channel and Subscribe (RIGHT goes there; Triangle still opens the channel). UP off the first video or O closes it,
+  on the video the list was at; X, Square, R3 and L3 do what they do on a card, and the player comes back to the
+  list. L1/R1 keep the view (Subscriptions and Downloads show their cards). Each video is resolved once, in the
+  background below the UI thread, one at a time, once the selection rests (a quarter of a second): about half a
+  second each in RPCS3, the last 64 kept; those resolves leave their format lines out of dbg.txt. The channels'
+  pictures now show before the cards' meta line and in the preview too, wherever YouTube's feed carries them
+  (search, Live, Trending, channel pages); the last 48 stay decoded. On Home RIGHT off the last card turns to the
+  next page and LEFT off the first back; taking a video out of Watch Later, unsubscribing or deleting a download
+  keeps the place in the list. The first start of a version shows its changes - "1440p 60 FPS SUPPORT" large, what
+  to expect of it - and then once "Support TheErsysEnding:" with the link and its QR code. Checked in RPCS3: the
+  list on Trending, Continue watching and Live, subscribe and back, play and back, 100 videos deep and back again
+  several times - VRAM levels off at 48 - 49 MB, user memory stays at 194 MB free.
+- **Test 14 1080p** (12 Nov): VP9 changes between 1440p and 1080p on its own, so the hardest stretches keep 60
+  pictures a second (the VP9 session's task, with TEE VP9 0.2.2). Beside a 1440p stream the player opens YouTube's
+  1080p VP9 one (303 beside 308, 248 beside 271 - never offered on its own) and reads the bitrate of every section from
+  the 1440p stream's cues: it goes down to 1080p at the cue before a section of the next 10 s that is busier than
+  15 Mbit/s, and back up when the next 10 s stay under 12 Mbit/s and the last change is 10 s back. 0.2.2 takes the
+  other size at its key frame without a flush; the sound runs on. Should 1440p still fall behind (150 ms for a second,
+  or the sound held twice in 6 s), 1080p comes at the next cue and the threshold drops to 90 % of that section's
+  bitrate. A seek lands on the stream the rule wants there. Each change is logged with its reason and thresholds, the
+  10-second line gives the stream and rsx_frames, and the stats panel says "VP9 (1440p too heavy)". Checked in RPCS3:
+  both directions, again and again, at the cue points (all 50 first key frames of 308 and 303 lie at the same times).
+- **Test 13 Seek** (12 Nov): picture and sound start together after a seek. A seek while paused started the sound
+  under the still picture (the pre-roll released it whatever the pause said), X pressed while a seek's first pictures
+  were still coming started it seconds ahead of them, and a hold or release decided just before a seek undid the
+  seek's pause of the sound: X then seemed to play the picture without sound while it caught up. The sound is now
+  switched under the player's lock where it is decided, a pre-roll leaves a paused video paused, and X during a
+  pre-roll leaves the start of the sound to it. Each seek logs where picture and sound stand when it begins.
+- **Test 12 Fix** (12 Nov): the 1440p freeze is gone. Test 10 and 11 asked for a 256 KB receive buffer on every
+  connection, and on the console each connection then failed after about 256 KB; replaced ten times a second, the
+  closed ones used up the console's sockets ("socket() failed"): the Elden Ring video froze at 17:12 with its sound
+  running on, and the console's FTP stopped answering. The default buffer is back (RPCS3 never showed it). A VP9
+  read failure is now tried again from the picture on screen, and a seek revives a stream that had given up.
+  Certificates are checked at a server's time when the console's clock is off (a flat clock battery: the year 2000),
+  instead of failing every connection. The BD Remote Control works the app (GitHub issue #6): Enter, Play and Pause
+  are X, Return and Stop are O, the arrows and scan keys move and seek, Prev/Next are L1/R1, Subtitle is Triangle,
+  Display is R3, the menu keys START. At every start the app looks at its GitHub page and says when a newer release
+  is out (Home, and under the version in Settings; `update-check=off` in settings.txt to leave GitHub alone).
+  `tools/package-universal.sh` builds the one package for every console.
+- **Test 11 Subs** (12 Nov): Czech and the other Central/Eastern European letters show in subtitles (GitHub issue
+  #1): a cue is set in Manrope Bold wherever Manrope has its letters - Latin Extended-A, Greek, Cyrillic,
+  Vietnamese - and only in FONT_POP otherwise (Japanese); FONT_POP's Latin is Latin-1 and left gaps. Subtitles in
+  those languages are offered now. YouTube's auto-translated tracks (issue #4) can be asked for with
+  `subtitle-language=` in settings.txt (a code such as cs, or auto for the region's language), off by default:
+  YouTube refuses them to an anonymous player at the moment (HTTP 429, without a PO token), and the player says so.
+  Subscriptions lists every channel you follow, signed in from the account's own channel list (all of them in one
+  request), each tile the channel's picture and name. A word for a few seconds when a download is in, or at which
+  percent it failed (asked for on PSX-Place). Downloading a video a second time works (it failed at the end).
+- **Test 10 Sync** (12 Nov): picture and sound stay together through the hardest minutes of a 1440p60 stream (the
+  Elden Ring DLC video at 17:11, where the picture had fallen up to 0.7 s behind). Every 4 MB of a YouTube stream is
+  a new TLS connection, and the reader got nothing during each handshake: the next one is now opened while the
+  current one still has 1.5 MB to go, and each connection asks for a 256 KB receive buffer instead of the console's
+  few packets. Should the picture still fall 100 ms behind, the sound waits for it. The Downloads page lists the
+  downloads on their way at the top, dimmed, with a white bar filling green and the form they come in; Triangle stops
+  one. The stats panel says VP9 and Opus where they play (it said H.264 and AAC), and names the TEE Decoder.
+- **Test 9 Sound** (12 Nov): 1440p VP9 has sound - YouTube's Opus stream (itag 251) is read from its WebM and
+  decoded on the PPU by TEE's Opus building block 0.1.0, beside the TEE VP9 building block 0.2.1 on all 6 SPEs
+  (the RSX part of 0.2.1 is not switched on yet). A quality switch takes the sound that goes with the picture
+  (Opus for VP9, AAC for H.264), and 1440p downloads keep their Opus sound. Checked in RPCS3: picture and sound
+  within 10 ms of each other, seeking with sound.
+- **One package for every console.** The EBOOT is signed as an NPDRM SELF (as the HEN package of v2.0.0 was), so
+  the same package installs on PS3HEN and on CFW/DEX. On CFW/DEX the data folder then becomes /dev_hdd0/tee-vanced;
+  the files of the old one are copied over once.
+
 ## v2.0.0 — 2026-11-07
 
 Installed and used on TEE's console (EVILNAT 4.92 DEX) through twelve test

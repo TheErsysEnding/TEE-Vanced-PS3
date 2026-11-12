@@ -94,6 +94,7 @@ typedef struct {
    GridJob          job;
    int              thumbFetched;                          // thumbnails fetched so far (contiguous from 0)
    int              threadActive, reloadPending;
+   int              keepSelection;   // (Test 15) keepGridSelection: where the selection goes once the feed is ready (-1)
    sys_ppu_thread_t workerTid;
    volatile int     thumbNext, thumbEnd;
    int              moreEmpty, moreFailed;                 // consecutive fruitless / failed next-page fetches
@@ -104,8 +105,27 @@ typedef struct {
    int              (*isWatched)(const char *videoId);     // fade predicate (NULL = no fade)
    int              (*isWatchLater)(const char *videoId);  // watch-later badge predicate (NULL = no badge)
    int              (*watchedPosition)(const char *videoId);   // seconds watched, for the progress line (NULL = none)
+   // (V3.0.0) the Home preview above the cards (setGridHero): the selection big, its 1280 x 720 thumbnail
+   // behind its title, channel, duration and progress. The picture is fetched on a thread of its own once the
+   // selection has rested a moment; until it lands the card's own thumbnail stands in.
+   int              hero;
+   int              heroIndex;                                 // the result the hero labels hold (-1 = none)
+   uint64_t         heroSinceUs;                               // when the selection last changed
+   char             heroWantId[16], heroTexId[16], heroFailedId[16], heroFetchId[16];
+   GfxTexture       heroTex;
+   int              heroCrop;                                  // heroTex is a 4:3 sddefault with bars: its 16:9 middle
+   sys_ppu_thread_t heroTid;
+   int              heroThreadActive;
+   volatile int     heroDone, heroOk, heroFetchCrop;
+   uint8_t         *heroJpeg;
+   int              heroJpegLen;
+   Label            heroTitle, heroTitle2, heroMeta, heroDuration, heroBadge, heroLeft;
    int              inputSuppressed;                           // pad ignored, but the grid keeps working
    int              focusHidden;                               // the selection drawn like any other item
+   // (Test 15) the channels' pictures on the cards and in the hero (setGridAvatarSource)
+   const GfxTexture *(*avatarFor)(const char *channelId);
+   int              (*hasAvatar)(const char *channelId);
+   unsigned char    avatarMeta[MAX_SEARCH_RESULTS];            // the card's meta line starts after its picture
 } VideoGrid;
 
 // font is no longer used for drawing (see the header comment); pass uiGetFont(...) or NULL.
@@ -129,6 +149,11 @@ void setGridProgressSource(VideoGrid *grid, int (*watchedPosition)(const char *v
 // timers, or a direction still held from the overlay would fire the moment focus came back.
 void setGridInputSuppressed(VideoGrid *grid, int suppressed);
 
+// (V3.0.0) the Home preview: on, the grid keeps the selection's labels and big picture ready, and drawGridHero
+// draws them above the cards (draw it before drawVideoGrid). The grid's own rectangle is where the cards go.
+void setGridHero(VideoGrid *grid, int on);
+void drawGridHero(VideoGrid *grid);
+
 // While something else on the screen has the focus (Search's field), the selection is drawn like any other item -
 // no plate, ring or glow - so only one thing on screen looks focused. The selection itself is kept for when the
 // focus comes back.
@@ -140,6 +165,24 @@ void setGridFocusHidden(VideoGrid *grid, int hidden);
 // UP/DOWN volume, say - would otherwise read as long overdue and drive the list on the very first frame.
 // setGridInputSuppressed does the same when input comes back.
 void resetGridRepeat(VideoGrid *grid);
+// (Test 15) after a reload of the same feed with one item less (a video out of Watch Later, a channel unsubscribed, a
+// download deleted): the selection goes back to `index` - the item after the one that went - instead of the first
+// card, so a list can be cleared one item after the other. Taken once, when the feed is ready.
+void keepGridSelection(VideoGrid *grid, int index);
+
+// (Test 15) Home's list view sets the selection itself: the page follows it, so the window of decoded pictures,
+// the hero's big picture and the fetch of the next page all follow the list.
+void setGridSelection(VideoGrid *grid, int index);
+// (Test 15) the selection's big picture - the hero's, its card's own until that is in - into (x, y, w, h) with
+// `tint` (its alpha fades it). 0 when there is no picture to draw yet.
+int  drawGridHeroPicture(VideoGrid *grid, int x, int y, int w, int h, uint32_t tint);
+// (Test 15) item i's card picture while it is decoded (the window round the selection), else NULL
+const GfxTexture *gridThumbnail(const VideoGrid *grid, int i);
+// (Test 15) the channels' pictures on the cards (before the meta line) and in the hero: avatarFor gives the texture
+// once it is in (NULL until then - asking for it), hasAvatar whether one can come at all. A card whose channel has
+// none keeps its meta line where it always was.
+void setGridAvatarSource(VideoGrid *grid, const GfxTexture *(*avatarFor)(const char *channelId),
+                         int (*hasAvatar)(const char *channelId));
 
 // switch presentation, keeping the results, the thumbnails already fetched and the selection. Re-lays out the
 // labels for the new column width, so it is not free - drive it from a button, not per frame.

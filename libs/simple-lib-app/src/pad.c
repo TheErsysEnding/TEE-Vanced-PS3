@@ -23,6 +23,79 @@ static volatile uint16_t rawDigital2;   // latest DIGITAL2 bits from pollPad (fa
 static uint16_t prev1 = 0;              // DIGITAL1 bits at the previous updatePadEdges, for edge detection
 static uint16_t prev2 = 0;
 
+// (TEE Vanced V3.0.0, GitHub issue #6) the PS3's BD Remote Control. libpad lists it as a device of its own
+// (CELL_PAD_DEV_TYPE_BD_REMOCON) on whichever port it got, and reports no bits but one key code at a time, held until
+// CELL_PAD_BTN_CODE_BD_RELEASE. Each key is read as the pad button it stands for and joins the controller's bits, so
+// every screen takes the remote without knowing of it. The ports are looked through every BD_SCAN_POLLS polls.
+#define BD_SCAN_POLLS 60
+static int      bdPort = -1;              // the remote's port, -1 while there is none
+static unsigned bdPolls;
+static uint16_t bdDigital1, bdDigital2;   // the key it holds down, as pad bits
+
+static void bdKeyToBits(int code, uint16_t *digital1, uint16_t *digital2)
+{
+   *digital1 = *digital2 = 0;
+   switch (code) {
+   case CELL_PAD_BTN_CODE_BD_UP:         *digital1 = CELL_PAD_CTRL_UP;    break;
+   case CELL_PAD_BTN_CODE_BD_DOWN:       *digital1 = CELL_PAD_CTRL_DOWN;  break;
+   case CELL_PAD_BTN_CODE_BD_LEFT:
+   case CELL_PAD_BTN_CODE_BD_SCAN_REV:   *digital1 = CELL_PAD_CTRL_LEFT;  break;   // back in a video, as LEFT does
+   case CELL_PAD_BTN_CODE_BD_RIGHT:
+   case CELL_PAD_BTN_CODE_BD_SCAN_FWD:   *digital1 = CELL_PAD_CTRL_RIGHT; break;
+   case CELL_PAD_BTN_CODE_BD_START:
+   case CELL_PAD_BTN_CODE_BD_POPUP_MENU:
+   case CELL_PAD_BTN_CODE_BD_TOPMENU:    *digital1 = CELL_PAD_CTRL_START; break;   // the menus: Settings / Quality
+   case CELL_PAD_BTN_CODE_BD_SELECT:     *digital1 = CELL_PAD_CTRL_SELECT; break;
+   case CELL_PAD_BTN_CODE_BD_L3:         *digital1 = CELL_PAD_CTRL_L3;    break;
+   case CELL_PAD_BTN_CODE_BD_R3:
+   case CELL_PAD_BTN_CODE_BD_DISPLAY:    *digital1 = CELL_PAD_CTRL_R3;    break;   // the stats panel in a video
+   case CELL_PAD_BTN_CODE_BD_ENTER:
+   case CELL_PAD_BTN_CODE_BD_CROSS:
+   case CELL_PAD_BTN_CODE_BD_PLAY:
+   case CELL_PAD_BTN_CODE_BD_PAUSE:      *digital2 = CELL_PAD_CTRL_CROSS; break;   // X: open, and play/pause in a video
+   case CELL_PAD_BTN_CODE_BD_RETURN:
+   case CELL_PAD_BTN_CODE_BD_CIRCLE:
+   case CELL_PAD_BTN_CODE_BD_STOP:       *digital2 = CELL_PAD_CTRL_CIRCLE; break;  // O: back, and out of a video
+   case CELL_PAD_BTN_CODE_BD_TRIANGLE:
+   case CELL_PAD_BTN_CODE_BD_SUBTITLE:   *digital2 = CELL_PAD_CTRL_TRIANGLE; break; // subtitles in a video
+   case CELL_PAD_BTN_CODE_BD_SQUARE:     *digital2 = CELL_PAD_CTRL_SQUARE; break;
+   case CELL_PAD_BTN_CODE_BD_L1:
+   case CELL_PAD_BTN_CODE_BD_PREV:       *digital2 = CELL_PAD_CTRL_L1;    break;
+   case CELL_PAD_BTN_CODE_BD_R1:
+   case CELL_PAD_BTN_CODE_BD_NEXT:       *digital2 = CELL_PAD_CTRL_R1;    break;
+   case CELL_PAD_BTN_CODE_BD_L2:         *digital2 = CELL_PAD_CTRL_L2;    break;
+   case CELL_PAD_BTN_CODE_BD_R2:         *digital2 = CELL_PAD_CTRL_R2;    break;
+   default: break;   // CELL_PAD_BTN_CODE_BD_RELEASE and the keys the app has no use for: nothing held
+   }
+}
+
+// the remote's port: from libpad's list of what is connected where
+static void findBdRemote(void)
+{
+   CellPadInfo2 info;
+   if (cellPadGetInfo2(&info) != CELL_OK) return;
+   int found = -1;
+   for (int port = 0; port < CELL_PAD_MAX_PORT_NUM && found < 0; port++)
+      if ((info.port_status[port] & CELL_PAD_STATUS_CONNECTED) && info.device_type[port] == CELL_PAD_DEV_TYPE_BD_REMOCON)
+         found = port;
+   if (found != bdPort) { bdPort = found; bdDigital1 = bdDigital2 = 0; }
+}
+
+// the key the remote holds now (its data is read on its port alone: a second read of the port would find it taken)
+static void pollBdRemote(void)
+{
+   if (bdPolls++ % BD_SCAN_POLLS == 0) findBdRemote();
+   if (bdPort < 0) return;
+   uint32_t type = 0;
+   CellPadData data;
+   if (cellPadGetDataExtra((uint32_t)bdPort, &type, &data) != CELL_OK || type != CELL_PAD_DEV_TYPE_BD_REMOCON) {
+      bdPort = -1;
+      bdDigital1 = bdDigital2 = 0;
+      return;
+   }
+   if (data.len > 0) bdKeyToBits(data.button[CELL_PAD_BTN_OFFSET_BD_CODE], &bdDigital1, &bdDigital2);
+}
+
 static PadButtonState getState(int held, int wasHeld)
 {
    if (held && !wasHeld) return PAD_BUTTON_STATE_PRESSED;
@@ -52,15 +125,19 @@ void initPad(void)
    rawDigital2 = 0;
    prev1 = 0;
    prev2 = 0;
+   bdPort = -1;
+   bdPolls = 0;
+   bdDigital1 = bdDigital2 = 0;
 }
 
 void pollPad(void)
 {
    CellPadData nextPadData;
-   if (cellPadGetData(0, &nextPadData) == CELL_OK && nextPadData.len > 0) current = nextPadData;
+   pollBdRemote();   // (V3.0.0) port 0 too, when the remote got it: then its data is the remote's, not a pad's
+   if (bdPort != 0 && cellPadGetData(0, &nextPadData) == CELL_OK && nextPadData.len > 0) current = nextPadData;
 
-   rawDigital1 = current.button[CELL_PAD_BTN_OFFSET_DIGITAL1];
-   rawDigital2 = current.button[CELL_PAD_BTN_OFFSET_DIGITAL2];
+   rawDigital1 = (uint16_t)(current.button[CELL_PAD_BTN_OFFSET_DIGITAL1] | bdDigital1);
+   rawDigital2 = (uint16_t)(current.button[CELL_PAD_BTN_OFFSET_DIGITAL2] | bdDigital2);
 
    // sticks carry no edges, so publish them straight from the poll. SDK reports unsigned 0..255,
    // centered at 128; shift to signed -128..127.

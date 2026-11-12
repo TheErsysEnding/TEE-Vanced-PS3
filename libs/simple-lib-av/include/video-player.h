@@ -23,6 +23,12 @@ VideoPlayer *createVideoPlayer(const char *path, VideoFrameAllocFn allocFrame, V
 // url plus an audio-only url). audioPath NULL means the audio is muxed into videoPath. A/V stay in
 // sync because both share one presentation timeline and the audio drives the clock.
 VideoPlayer *createVideoPlayerSplit(const char *videoPath, const char *audioPath, VideoFrameAllocFn allocFrame, VideoFrameFreeFn freeFrame);
+// (V3.0.0 Test 14) as createVideoPlayerSplit, for VP9 1440p with its 1080p VP9 stream beside it (YouTube's 303 for 308,
+// 248 for 271; lowVideoPath NULL = none): the player changes to the 1080p stream ahead of a stretch the decoder cannot
+// keep at 60 in 1440p - by the bitrate the 1440p stream's cues give for the next 10 s - and back after it. One decoder,
+// one sound: the sound runs on through a change. A 1080p stream that does not fit (another rate, no cues) is left out.
+VideoPlayer *createVideoPlayerVp9(const char *videoPath, const char *lowVideoPath, const char *audioPath,
+                                  VideoFrameAllocFn allocFrame, VideoFrameFreeFn freeFrame);
 void         destroyVideoPlayer(VideoPlayer *player);
 
 // returns the YUV 4:2:0 planar frame (Y then U then V, width*height*3/2 bytes) that should be shown
@@ -53,5 +59,27 @@ void  getAudioTrackInfo(const VideoPlayer *player, int *rate, int *channels);   
 // the decoder behind the picture, for a stats overlay: "TEE Decoder" or "cellVdec" (see decode-h264.h)
 const char *getVideoDecoderName(const VideoPlayer *player);
 
-// 1 when the picture comes from the TEE Decoder (0: cellVdec)
+// 1 when the picture comes from the TEE Decoder or the TEE VP9 building block (0: cellVdec)
 int isVideoOnTeeDecoder(const VideoPlayer *player);
+
+// (TEE Vanced V3.0.0) VP9 - YouTube's 1440p, in WebM - plays on the TEE VP9 building block (src/tee_vp9/, vendored
+// unchanged). 1440p60 needs all 6 SPEs (2 entropy + 4 pixel), so Sony's sound decoder (cellAdec, 1 SPE) has no
+// room: spes 6 (the default) plays the picture without sound; 5 gives the decoder 1 + 4 SPEs and keeps the sound
+// (slower: 50 - 63 pictures a second measured, so 1440p60 cannot hold 60). Process-wide; settings.txt vp9-spes=.
+void setVideoVp9Spes(int spes);
+int  isVideoVp9(const VideoPlayer *player);      // the picture comes from the TEE VP9 building block
+int  isVideoOnLowTrack(const VideoPlayer *player);   // (Test 14) the 1080p VP9 stream plays in place of the 1440p one
+int  isAudioOpus(const VideoPlayer *player);     // (V3.0.0) the sound is Opus, on TEE Opus (VP9's own track)
+
+// where the planes of the picture getVideoFrame last handed out lie, for drawing it in place. A packed frame (H.264:
+// Y, U, V back to back) fills it as one block without a border; a VP9 picture is the decoder's own buffer: three
+// planes with rows `pitch` apart and a border around the picture. 0 when nothing is on screen yet.
+typedef struct {
+   const uint8_t *y, *u, *v;         // each plane's first byte (border included), 128-byte aligned
+   int pitchY, pitchC;               // bytes from one row to the next
+   int planeW, planeH;               // the luma plane in samples (border included)
+   int planeWC, planeHC;             // the chroma planes
+   int left, top, width, height;     // the picture inside the luma plane
+   int leftC, topC;                  // its top left inside the chroma planes
+} VideoFrameLayout;
+int getVideoFrameLayout(VideoPlayer *player, VideoFrameLayout *layout);

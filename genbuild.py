@@ -64,37 +64,57 @@ def split_list(value):
     return [p.strip() for p in value.split(";") if p.strip()]
 
 
-# TEE's own H.264 decoder, vendored unchanged into the av library (see libs/simple-lib-av/tee_decoder.sha256).
-# Its folder must match the manifest file for file and byte for byte - sync-work.sh never deletes anything,
-# so a file a later module version dropped would otherwise stay behind and be compiled - and its PSL1GHT
-# platform layer is not for the Cell SDK (td_plat_cell.c is).
-TEE_DECODER_DIR = "src/tee_decoder"
-TEE_DECODER_MANIFEST = "tee_decoder.sha256"
-TEE_DECODER_SKIP = {"td_plat_ps3.c"}
+# TEE's own decoders, vendored unchanged into the av library: the H.264 TEE Decoder (src/tee_decoder, manifest
+# libs/simple-lib-av/tee_decoder.sha256) and the TEE VP9 building block (src/tee_vp9, its manifest inside the
+# folder as the VP9 project ships it). A folder must match its manifest file for file and byte for byte -
+# sync-work.sh never deletes anything, so a file a later module version dropped would otherwise stay behind and
+# be compiled - and each one's PSL1GHT platform layer is not for the Cell SDK (the *_plat_cell.c is).
+#   folder, manifest (project-relative), left out of the build, files allowed besides the manifest's, C flags
+VENDORED = [
+    ("src/tee_decoder", "tee_decoder.sha256", {"td_plat_ps3.c"}, set(), ""),
+    # 0.2.1: the RSX part (rsx_mc.c, vp9_rsxmc.c, vp9_tables.c, tv9_rsx_programs.c, -DTV9_RSX) stays out until the
+    # display code keeps the rules of tv9_rsx_host.h - the picture runs on the SPEs alone (rsx = 0) meanwhile
+    ("src/tee_vp9", "src/tee_vp9/tee_vp9.sha256",
+     {"tv9_plat_ps3.c", "rsx_mc.c", "vp9_rsxmc.c", "vp9_tables.c", "tv9_rsx_programs.c"},
+     {"tee_vp9.sha256", "tee_vp9.NOTICE", "libvpx.LICENSE", "libvpx.PATENTS", "PSL1GHT.LICENSE"}, "-std=gnu99"),
+]
 
+# TEE's Opus building block (libs/simple-lib-av/tee_opus, vendored unchanged): a library built with the SDK, linked
+# into the app as it is - its libopus sources lie beside it outside src/, so nothing of them is compiled here
+TEE_OPUS_LIB = WIN_REPO + "\\libs\\simple-lib-av\\tee_opus\\lib\\libtee_opus.a"
 
-def check_tee_decoder(project_dir):
-    """Stops the build unless the vendored TEE Decoder folder is exactly what its manifest lists."""
+def check_vendored(project_dir):
+    """Stops the build unless every vendored module folder is exactly what its manifest lists."""
     import hashlib
-    folder = project_dir / TEE_DECODER_DIR
-    manifest = project_dir / TEE_DECODER_MANIFEST
-    if not folder.is_dir():
-        return
-    if not manifest.is_file():
-        sys.exit(f"genbuild: {folder} has no manifest {manifest}")
-    want = {}
-    for line in manifest.read_text(encoding="utf-8").splitlines():
-        if line.strip() and not line.startswith("#"):
-            digest, name = line.split(None, 1)
-            want[name.strip()] = digest
-    have = {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in folder.iterdir() if p.is_file()}
-    extra = sorted(set(have) - set(want))
-    missing = sorted(set(want) - set(have))
-    changed = sorted(n for n in set(want) & set(have) if want[n] != have[n])
-    if extra or missing or changed:
-        sys.exit(f"genbuild: the TEE Decoder folder does not match {manifest.name}: "
-                 f"extra {extra}, missing {missing}, changed {changed} - never edit the module inside the app")
-    print(f"  TEE Decoder: {len(have)} files match {manifest.name}")
+    for rel, manifest_rel, _skip, allowed, _flags in VENDORED:
+        folder = project_dir / rel
+        manifest = project_dir / manifest_rel
+        if not folder.is_dir():
+            continue
+        if not manifest.is_file():
+            sys.exit(f"genbuild: {folder} has no manifest {manifest}")
+        want = {}
+        for line in manifest.read_text(encoding="utf-8").splitlines():
+            if line.strip() and not line.startswith("#"):
+                digest, name = line.split(None, 1)
+                want[name.strip().lstrip("*")] = digest
+        have = {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in folder.iterdir() if p.is_file()}
+        extra = sorted(set(have) - set(want) - set(allowed))
+        missing = sorted(set(want) - set(have))
+        changed = sorted(n for n in set(want) & set(have) if want[n] != have[n])
+        if extra or missing or changed:
+            sys.exit(f"genbuild: {rel} does not match {manifest.name}: "
+                     f"extra {extra}, missing {missing}, changed {changed} - never edit a module inside the app")
+        print(f"  {rel}: {len(want)} files match {manifest.name}")
+
+
+def vendored_of(rel):
+    """The VENDORED entry a project-relative source path belongs to, or None."""
+    rel = rel.replace("\\", "/")
+    for entry in VENDORED:
+        if rel.startswith(entry[0] + "/"):
+            return entry
+    return None
 
 
 def load(project_rel, name):
@@ -110,11 +130,12 @@ def load(project_rel, name):
     # exactly, so this changes nothing for an untouched checkout - it just means a source file added by this
     # fork builds without having to edit mohasi's .vcxproj (which we never commit to).
     listed = {s.replace("\\", "/").lower() for s in sources}
-    check_tee_decoder(REPO / project_rel)
+    check_vendored(REPO / project_rel)
     for found in sorted((REPO / project_rel / "src").rglob("*.c")):
         rel = found.relative_to(REPO / project_rel).as_posix()
-        if rel.startswith(TEE_DECODER_DIR + "/") and found.name in TEE_DECODER_SKIP:
-            print(f"  note: {name} leaves out {rel} (the TEE Decoder's PSL1GHT platform layer)")
+        vendored = vendored_of(rel)
+        if vendored and found.name in vendored[2]:
+            print(f"  note: {name} leaves out {rel} (a module's PSL1GHT platform layer)")
             continue
         if rel.lower() not in listed:
             print(f"  note: {name} picks up {rel} (not in the .vcxproj)")
@@ -198,7 +219,9 @@ def emit_project(out, p, is_app):
     for src in p["sources"]:
         o = rf'{objdir}\{obj_name(src)}'
         s = rf'{p["dir"]}\{src}'.replace("/", "\\")
-        out.append(f'"{CC}" -c {common} {inc} -o "{o}" "{s}"')
+        vendored = vendored_of(src)
+        flags = f" {vendored[4]}" if vendored and vendored[4] else ""
+        out.append(f'"{CC}" -c {common}{flags} {inc} -o "{o}" "{s}"')
         out.append('if errorlevel 1 goto :failed')
     for cg, profile, ext in p["shaders"]:
         base = cg.rsplit(".", 1)[0]
@@ -218,7 +241,7 @@ def emit_project(out, p, is_app):
         # (no --gc-sections: the SN linker rejects it as deprecated and dead-strips via the
         # --strip-unused-data already in the project's link options, so it is a no-op plus a warning)
         out.append(f'"{CC}" -o "{elf}" "{objdir}"\\*.o {p["link_opts"]} {libdirs} '
-                   f'{p["link_deps"]} -lm')
+                   f'{p["link_deps"]} "{TEE_OPUS_LIB}" -lm')
         out.append('if errorlevel 1 goto :failed')
         out.append(f'echo BUILT: {elf}')
     else:

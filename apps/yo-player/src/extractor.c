@@ -2,9 +2,12 @@
 #include "extractor.h"
 
 extern const Extractor youtubeExtractor;
+extern const Extractor localExtractor;   // (V3.0.0) "local:<id>": the app's own downloads
 
-// registration order = match priority. new sources are added here.
+// registration order = match priority. new sources are added here. The local source claims only "local:" inputs and
+// has none of the feeds, which the loops below skip.
 static const Extractor *const registry[] = {
+   &localExtractor,
    &youtubeExtractor,
 };
 

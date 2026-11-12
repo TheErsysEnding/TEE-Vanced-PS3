@@ -17,6 +17,7 @@
 #include "string-utilities.h"   // strCopy
 #include "dbg.h"                // logInfo (resolve diagnostics)
 #include "vfs.h"                // readFile/writeFile/deleteFile (persist the visitor session)
+#include "thread.h"             // (V3.0.0) the lock round the channels' pictures
 
 #include <stdlib.h>
 #include <stdio.h>
@@ -66,6 +67,16 @@ static const char *WEB_UA =
 // player body: the client + the minted visitorData, then the video id. two %s: visitorData, videoId.
 static const char *PLAYER_BODY_FMT =
    "{\"context\":{\"client\":{" PLAYER_CLIENT ",\"visitorData\":\"%s\"}},\"videoId\":\"%s\",\"contentCheckOk\":true,\"racyCheckOk\":true}";
+// (Test 18) the client asked when VISIONOS says UNPLAYABLE: YouTube plays content "made for kids" - Peppa Pig Deutsch,
+// PAW Patrol Deutschland, 24/7 streams the German Live search finds - for no client the app used ("This video is not
+// available" for VISIONOS, ANDROID_VR, TV, web and embedded alike), but for IOS, with direct urls that googlevideo
+// serves live segments for (X-Head-Seqnum, sq) as it does VISIONOS's (probed 2026-11-12). Asked only then.
+#define IOS_VERSION "20.10.4"
+static const char *IOS_UA = "com.google.ios.youtube/20.10.4 (iPhone16,2; U; CPU iOS 18_3_2 like Mac OS X;)";
+static const char *PLAYER_BODY_IOS_FMT =
+   "{\"context\":{\"client\":{\"clientName\":\"IOS\",\"clientVersion\":\"" IOS_VERSION "\",\"deviceMake\":\"Apple\","
+   "\"deviceModel\":\"iPhone16,2\",\"osName\":\"iPhone\",\"osVersion\":\"18.3.2.22D82\",\"hl\":\"en\",\"gl\":\"US\","
+   "\"visitorData\":\"%s\"}},\"videoId\":\"%s\",\"contentCheckOk\":true,\"racyCheckOk\":true}";
 // The visitor-session mint keeps its own fixed client, byte for byte what it always sent: the session it returns
 // records the IP's country whatever gl says, and it is minted once and then reused for months.
 static const char *VISITOR_BODY =
@@ -204,6 +215,8 @@ static int extractVideoId(const char *input, char *out, int cap)
 // a bounded strstr: the first needle that starts inside [from, end), or NULL. jsonString/jsonInt run on to the
 // end of the response when a key is missing; the audio-track fields below are optional, so each probe stays
 // inside its own format object instead of scanning a megabyte for every stream that lacks them.
+static int keepChannelAvatar(const char *channelId, const char *from, const char *end);   // (V3.0.0) below
+
 static const char *findIn(const char *from, const char *end, const char *needle)
 {
    int length = (int)strlen(needle);
@@ -369,23 +382,42 @@ static void parseFormatArray(const char *arrayStart, const char *regionEnd, int 
       strCopy(format->container, sizeof format->container, strstr(mimeType, "webm") ? "webm" : "mp4");
       int isAvc = strstr(mimeType, "avc1") != NULL || strstr(mimeType, "avc3") != NULL;
       int isAac = strstr(mimeType, "mp4a") != NULL;
+      // (V3.0.0) VP9 in WebM above 1080p, up to 2560 x 1440: YouTube's 1440p (itag 308 at 60 fps, 271 at 30), which
+      // the TEE VP9 building block decodes on the SPEs. Profile 0 only - codecs="vp9" or "vp09.00..." - the HDR
+      // ones (vp09.02, 10 bit) it refuses. Lower VP9 stays out: H.264 covers it, and every format kept takes an
+      // array slot the AAC audio (listed after all the video) needs.
+      int isVp9 = strstr(mimeType, "webm") && (strstr(mimeType, "\"vp9\"") || strstr(mimeType, "vp09.00.")) &&
+                  format->height > 1080 && format->height <= 1440 && format->width <= 2560;
+      // (Test 14) VP9 1080p - 303 at 60 fps, 248 at 30 - is kept after all, beside 1440p: the stream the player changes
+      // to where 1440p is too heavy for the decoder (the VP9 session's measurement: 86 - 97 pictures a second in 1080p)
+      int isVp9Low = strstr(mimeType, "webm") && (strstr(mimeType, "\"vp9\"") || strstr(mimeType, "vp09.00.")) &&
+                     (format->itag == 303 || format->itag == 248) && format->height <= 1080 && format->width <= 1920;
       if (progressive)                              format->hasVideo = format->hasAudio = 1;
-      else if (strncmp(mimeType, "audio/", 6) == 0) format->hasAudio = isAac;
-      else                                          format->hasVideo = isAvc;
+      // (V3.0.0) Opus in WebM, itag 251 only (the best of YouTube's three): VP9's sound, decoded on the PPU
+      else if (strncmp(mimeType, "audio/", 6) == 0) {
+         int isOpus = strstr(mimeType, "webm") && strstr(mimeType, "opus") && format->itag == 251;
+         format->hasAudio = isAac || isOpus;
+         format->isOpus = isOpus && !isAac;
+      }
+      else {
+         format->hasVideo = isAvc || isVp9;
+         format->isVp9 = isVp9 && !isAvc;
+         if (!format->hasVideo && isVp9Low) format->isVp9 = format->vp9Fallback = 1;   // (Test 14) beside, not offered
+      }
 
       // an audio stream of a video with several audio tracks (other languages, AI dubs) is filed by track
       // instead - see collectAudioTrack; the chosen track's stream joins formats[] once the array is read
       int tracked = 0;
-      if (format->hasAudio && !format->hasVideo) {
+      if (format->hasAudio && !format->hasVideo && !format->isOpus) {
          char drc[4];
          format->isDrc = findIn(object, objectEnd, "\"isDrc\":true") != NULL ||
                          (xtagValue(format->url, "drc", drc, sizeof drc) && drc[0] == '1');
          tracked = collectAudioTrack(object, objectEnd, format, out);
       }
 
-      // keep only formats we can decode (H.264 video / AAC audio). dropping VP9/AV1/Opus frees array slots
+      // keep only formats we can decode (H.264 video, VP9 1440p / AAC audio). dropping AV1/Opus frees array slots
       // so the AAC audio - which youtube lists AFTER all the video formats - isn't pushed past the cap.
-      if ((format->hasVideo || format->hasAudio) && !tracked) out->formatCount++;
+      if ((format->hasVideo || format->hasAudio || format->vp9Fallback) && !tracked) out->formatCount++;
       scan = objectEnd;
    }
 }
@@ -414,11 +446,34 @@ static void parseCaptionTracks(const char *resp, const char *end, StreamInfo *ou
          if (!jsonString(entry, entryEnd, "text", track->name, sizeof track->name) &&
              !jsonString(entry, entryEnd, "simpleText", track->name, sizeof track->name))
             strCopy(track->name, sizeof track->name, track->languageCode);
+         track->translatable  = findIn(entry, entryEnd, "\"isTranslatable\":true") != NULL;
+         track->autoGenerated = findIn(entry, entryEnd, "\"kind\":\"asr\"") != NULL;
          out->captionCount++;
       }
       scan = entryEnd;
    }
    if (out->captionCount) logInfo("[yt] %d caption track(s)\n", out->captionCount);
+
+   // (V3.0.0, issue #4) YouTube's translation: its list of languages, and the one set for subtitles in it. Each entry is
+   // {"languageCode":"cs","languageName":{"runs":[{"text":"Czech"}]}} (or simpleText).
+   const char *want = getSubtitleLanguage();
+   const char *languages = strstr(captions, "\"translationLanguages\"");
+   if (want[0] && languages && out->captionCount > 0) {
+      char needle[40];
+      snprintf(needle, sizeof needle, "\"languageCode\":\"%s\"", want);
+      const char *hit = findIn(languages, end, needle);
+      if (hit) {
+         const char *following = findIn(hit + 1, end, "\"languageCode\"");
+         const char *hitEnd = following ? following : end;
+         strCopy(out->translateCode, sizeof out->translateCode, want);
+         if (!jsonString(hit, hitEnd, "text", out->translateName, sizeof out->translateName) &&
+             !jsonString(hit, hitEnd, "simpleText", out->translateName, sizeof out->translateName))
+            strCopy(out->translateName, sizeof out->translateName, want);
+         logInfo("[yt] subtitles can be translated into %s (%s)\n", out->translateName, want);
+      } else {
+         logInfo("[yt] subtitles: no translation into %s offered\n", want);
+      }
+   }
 }
 
 // parse both stream arrays. iOS returns only adaptiveFormats (separate video and
@@ -642,17 +697,36 @@ static void parseLiveFromSeqnum(StreamInfo *out, const char *kind)
            edgeSq, rewritten, out->formatCount);
 }
 
+// (Test 15) the thread whose resolves log quietly (setExtractQuiet)
+static volatile sys_ppu_thread_t quietThread;
+static volatile int              quietSet;
+
+void setExtractQuiet(int quiet)
+{
+   sys_ppu_thread_t self;
+   sys_ppu_thread_get_id(&self);
+   if (quiet) { quietThread = self; __sync_synchronize(); quietSet = 1; }
+   else if (quietSet && quietThread == self) quietSet = 0;
+}
+
+static int isExtractQuiet(void)
+{
+   if (!quietSet) return 0;
+   sys_ppu_thread_t self;
+   sys_ppu_thread_get_id(&self);
+   return self == quietThread;
+}
+
 static int extract(const char *input, StreamInfo *out)
 {
    memset(out, 0, sizeof *out);
+   int quiet = isExtractQuiet();
 
    char videoId[16];
    if (!extractVideoId(input, videoId, sizeof videoId)) return -1;
    if (ensureVisitorData() != 0) return -1;
 
    char body[1024];
-   int bodyLen = snprintf(body, sizeof body, PLAYER_BODY_FMT, visitorData, videoId);
-
    HttpHeader headers[] = {
       { "Content-Type", "application/json" },
       { "User-Agent", PLAYER_UA },
@@ -667,10 +741,26 @@ static int extract(const char *input, StreamInfo *out)
    if (!resp) return -1;
 
    int respLen = 0, status = 0;
-   int rc = fetchHttp("POST", PLAYER_URL, headers, 7, body, bodyLen, resp, RESP_CAP, &respLen, &status);
-   if (rc < 0)        { logError("[yt] player POST failed rc=%d\n", rc); free(resp); return rc; }
-   if (status != 200) { logError("[yt] player POST status=%d respLen=%d\n", status, respLen); free(resp); return -status; }
-   const char *end = resp + respLen;
+   const char *end = resp;
+   // VISIONOS first; (Test 18) IOS once more when VISIONOS calls the video UNPLAYABLE and gives no streams
+   for (int asIos = 0; asIos < 2; asIos++) {
+      int bodyLen = snprintf(body, sizeof body, asIos ? PLAYER_BODY_IOS_FMT : PLAYER_BODY_FMT, visitorData, videoId);
+      if (asIos) {
+         headers[1].value = IOS_UA;
+         headers[2].value = "5";
+         headers[3].value = IOS_VERSION;
+      }
+      int rc = fetchHttp("POST", PLAYER_URL, headers, 7, body, bodyLen, resp, RESP_CAP, &respLen, &status);
+      if (rc < 0)        { logError("[yt] player POST failed rc=%d\n", rc); free(resp); return rc; }
+      if (status != 200) { logError("[yt] player POST status=%d respLen=%d\n", status, respLen); free(resp); return -status; }
+      end = resp + respLen;
+      if (asIos) break;
+      const char *play = strstr(resp, "\"playabilityStatus\"");
+      char playStatus[32] = "";
+      jsonString(play ? play : resp, end, "status", playStatus, sizeof playStatus);
+      if (strcmp(playStatus, "UNPLAYABLE") != 0 || strstr(resp, "\"streamingData\"")) break;
+      logInfo("[yt] %s: UNPLAYABLE for VISIONOS (made for kids?) - asking as IOS\n", videoId);
+   }
 
    // metadata
    const char *details = strstr(resp, "\"videoDetails\"");
@@ -686,14 +776,14 @@ static int extract(const char *input, StreamInfo *out)
    // Diagnostic: the whole ladder this client was offered. stream-select only ever reports the
    // one format it picked, which cannot tell you WHY - e.g. whether a 1080p30 rendition existed
    // at all, or whether the 1080p60 was simply the only 1080p on offer.
-   for (int i = 0; i < out->formatCount; i++) {
+   for (int i = 0; i < out->formatCount && !quiet; i++) {
       const StreamFormat *f = &out->formats[i];
       logInfo("[yt] fmt itag=%d %dx%d %dfps %s vid=%d aud=%d cipher=%d url=%d drc=%d\n",
               f->itag, f->width, f->height, f->fps, f->container,
               f->hasVideo, f->hasAudio, f->needsCipher, f->url[0] ? 1 : 0, f->isDrc);
    }
    // and every audio track, best first: the first one is what plays
-   for (int i = 0; i < out->audioTrackCount; i++) {
+   for (int i = 0; i < out->audioTrackCount && !quiet; i++) {
       const AudioTrack *t = &out->audioTracks[i];
       logInfo("[yt] audio track %d: %s [%s] rank=%d itag=%d%s\n", i, t->name, t->id, t->rank, t->itag, t->isDrc ? " drc" : "");
    }
@@ -738,7 +828,7 @@ static int extract(const char *input, StreamInfo *out)
       logError("[yt] no formats, respLen=%d playability=%s\n", respLen, statusText);
       if (visitorFromDisk && strcmp(statusText, "LOGIN_REQUIRED") == 0) dropVisitorData();   // stale session
    } else {
-      logInfo("[yt] resolved %d formats\n", out->formatCount);
+      if (!quiet) logInfo("[yt] resolved %d formats\n", out->formatCount);
       if (!visitorFromDisk) { saveVisitorData(); visitorFromDisk = 1; }   // persist a session that works
    }
 
@@ -864,6 +954,9 @@ static int parseRendererItem(const char *block, const char *end, SearchResult *i
 {
    if (!jsonString(block, end, "videoId", item->videoId, sizeof item->videoId) || !item->videoId[0]) return 0;
    readChannelId(block, end, item->channelId, sizeof item->channelId);
+   // (Test 15) the channel's picture, where the item carries one (search, Live): for the cards, the hero and the list
+   const char *avatar = findIn(block, end, "\"channelThumbnailSupportedRenderers\":{");
+   if (avatar) keepChannelAvatar(item->channelId, avatar, end);
    readField(block, end, "\"title\"", "text", item->title, sizeof item->title);
    if (!item->title[0])   // gridVideoRenderer (trending) uses a plain simpleText title
       readField(block, end, "\"title\"", "simpleText", item->title, sizeof item->title);
@@ -902,6 +995,8 @@ static int parseLockupItem(const char *block, const char *end, SearchResult *ite
    if (!jsonString(block, end, "contentId", item->videoId, sizeof item->videoId) || !item->videoId[0]) return 0;
 
    readChannelId(block, end, item->channelId, sizeof item->channelId);
+   const char *avatar = findIn(block, end, "\"avatarViewModel\":{");   // (Test 15) its channel's picture
+   if (avatar) keepChannelAvatar(item->channelId, avatar, end);
    readField(block, end, "\"lockupMetadataViewModel\"", "content", item->title, sizeof item->title);
    readField(block, end, "\"metadataParts\"",           "content", item->author, sizeof item->author);
    // on a channel's own page the first metadata part is the view count, not the channel name - drop it so
@@ -950,7 +1045,16 @@ static void parseVideoResults(const char *resp, int respLen, SearchResults *out)
    // the OBJECT ("...":{) - the bare name appears first in youtube's schema list, and the title after it is a
    // tab ("Home"), not the channel name.
    const char *channelMeta = strstr(resp, "\"channelMetadataRenderer\":{");
-   if (channelMeta && channelMeta < end) jsonString(channelMeta, end, "title", out->channelName, sizeof out->channelName);
+   if (channelMeta && channelMeta < end) {
+      jsonString(channelMeta, end, "title", out->channelName, sizeof out->channelName);
+      // (V3.0.0) and its picture, for the channel's tile on Subscriptions: the renderer's "avatar", by its "externalId"
+      char channelId[32];
+      const char *metaEnd = objectEnd(channelMeta + sizeof "\"channelMetadataRenderer\":{" - 2, end);
+      if (metaEnd && jsonString(channelMeta, metaEnd, "externalId", channelId, sizeof channelId)) {
+         const char *avatar = findIn(channelMeta, metaEnd, "\"avatar\":{");
+         if (avatar) keepChannelAvatar(channelId, avatar, metaEnd);
+      }
+   }
 
    // channel Videos feeds sort by Latest, Popular or Oldest, each with a continuation token the screen re-browses
    // with. YouTube used to send them as three chips (chipViewModel with the text, the token after it); it now sends
@@ -1260,6 +1364,71 @@ static int parseTileItem(const char *tile, const char *end, SearchResult *item)
 
 // A channel tile (the account's channel list): its id and name, its handle ("@217ae") in author and its subscriber
 // count ("4.6M subscribers") in views - the tile's two lines.
+// ---- the channels' pictures (V3.0.0) ----
+// Subscriptions draws each channel as its picture (TEE: "All, profile pictures"). YouTube gives it on the account's
+// channel list and on a channel's own page; it is kept here by channel id, without its size part
+// ("=s88-c-k-c0x00ffffff-no-rj"), so a tile asks for the size it draws. The list workers write, the grid's
+// thumbnail workers read: under a lock, created by whichever comes first.
+#define AVATAR_SLOTS   512
+#define AVATAR_URL_CAP 176
+static struct { char id[32]; char url[AVATAR_URL_CAP]; } avatars[AVATAR_SLOTS];
+static int avatarCount, avatarNext;
+static sys_lwmutex_t avatarLock;
+static volatile int avatarLockState;   // 0 none, 1 being created, 2 ready
+
+static void ensureAvatarLock(void)
+{
+   if (avatarLockState == 2) return;
+   if (__sync_bool_compare_and_swap(&avatarLockState, 0, 1)) { createLock(&avatarLock); __sync_synchronize(); avatarLockState = 2; }
+   else while (avatarLockState != 2) yieldThread();
+}
+
+// the first channel picture in [from, end) - a "url" on one of YouTube's picture hosts - for channelId
+static int keepChannelAvatar(const char *channelId, const char *from, const char *end)
+{
+   if (!channelId || strncmp(channelId, "UC", 2) != 0) return 0;
+   static const char KEY[] = "\"url\":\"";
+   for (const char *at = from; (at = findIn(at, end, KEY)) != NULL; at += sizeof KEY - 1) {
+      const char *u = at + sizeof KEY - 1;
+      const char *scheme = "";
+      if (strncmp(u, "//yt3.", 6) == 0) scheme = "https:";
+      else if (strncmp(u, "https://yt3.", 12) != 0) continue;
+      const char *quote = u, *equals = NULL, *slash = NULL;
+      while (quote < end && *quote != '"') { if (*quote == '=') equals = quote; if (*quote == '/') slash = quote; quote++; }
+      const char *stop = equals && equals > slash ? equals : quote;
+      char base[AVATAR_URL_CAP];
+      int length = snprintf(base, sizeof base, "%s%.*s", scheme, (int)(stop - u), u);
+      if (length <= 0 || length >= (int)sizeof base || memchr(base, '\\', (size_t)length)) return 0;
+      ensureAvatarLock();
+      lock(&avatarLock);
+      int slot = -1;
+      for (int i = 0; i < avatarCount && slot < 0; i++) if (strcmp(avatars[i].id, channelId) == 0) slot = i;
+      if (slot < 0) {
+         if (avatarCount < AVATAR_SLOTS) slot = avatarCount++;
+         else { slot = avatarNext; avatarNext = (avatarNext + 1) % AVATAR_SLOTS; }   // full: the oldest goes
+         strCopy(avatars[slot].id, sizeof avatars[slot].id, channelId);
+      }
+      strCopy(avatars[slot].url, sizeof avatars[slot].url, base);
+      unlock(&avatarLock);
+      return 1;
+   }
+   return 0;
+}
+
+int getChannelAvatarUrl(const char *channelId, int size, char *url, int cap)
+{
+   if (!channelId || !channelId[0] || avatarLockState != 2) return 0;
+   int found = 0;
+   lock(&avatarLock);
+   for (int i = 0; i < avatarCount && !found; i++)
+      if (strcmp(avatars[i].id, channelId) == 0) {
+         int length = snprintf(url, cap, "%s=s%d-c-k-c0x00ffffff-no-rj", avatars[i].url, size);   // a JPEG
+         found = length > 0 && length < cap;
+      }
+   unlock(&avatarLock);
+   return found;
+}
+
 static int parseChannelTile(const char *tile, const char *end, SearchResult *item)
 {
    if (!jsonString(tile, end, "contentId", item->channelId, sizeof item->channelId) ||
@@ -1283,13 +1452,14 @@ static int parseChannelTile(const char *tile, const char *end, SearchResult *ite
       }
       at = lineEnd;
    }
-   return 1;
+   return keepChannelAvatar(item->channelId, tile, end) ? 2 : 1;   // (V3.0.0) 2: with its picture
 }
 
 // channels: keep the channel tiles (ACCOUNT_FEED_CHANNELS) instead of the videos
 static void parseTileResults(const char *resp, int respLen, int channels, SearchResults *out)
 {
    const char *end = resp + respLen;
+   int pictures = 0;   // (V3.0.0) channel tiles that came with their picture
    static const char TILE[] = "\"tileRenderer\":{";
    for (const char *at = resp; out->count < MAX_SEARCH_RESULTS && (at = findIn(at, end, TILE)) != NULL; ) {
       const char *open = at + sizeof TILE - 2, *close = objectEnd(open, end);
@@ -1297,8 +1467,8 @@ static void parseTileResults(const char *resp, int respLen, int channels, Search
       if (channels) {
          SearchResult *item = &out->items[out->count];
          memset(item, 0, sizeof *item);
-         if (findIn(open, close, "\"contentType\":\"TILE_CONTENT_TYPE_CHANNEL\"") && parseChannelTile(open, close, item))
-            out->count++;
+         int got = findIn(open, close, "\"contentType\":\"TILE_CONTENT_TYPE_CHANNEL\"") ? parseChannelTile(open, close, item) : 0;
+         if (got) { out->count++; if (got == 2) pictures++; }
          continue;
       }
       if (!findIn(open, close, "\"contentType\":\"TILE_CONTENT_TYPE_VIDEO\"")) continue;   // Shorts, channels, the ad
@@ -1313,6 +1483,7 @@ static void parseTileResults(const char *resp, int respLen, int channels, Search
    const char *last = NULL;
    for (const char *at = resp; (at = findIn(at, end, NEXT)) != NULL; at += sizeof NEXT - 1) last = at;
    if (last) jsonString(last, end, "continuation", out->continuation, sizeof out->continuation);
+   if (channels) logInfo("[yt] channel tiles: %d of %d with a picture\n", pictures, out->count);
 }
 
 // POST a signed-in TV browse and parse its tiles. A 401 - the access token refused before its time - is answered
@@ -1604,6 +1775,23 @@ static const struct { const char *codes, *word; } NEWS_WORDS[] = {
    { "KR",       "\xeb\x89\xb4\xec\x8a\xa4" },                                           // 뉴스
 };
 
+// (Test 16) Popular in a German-speaking region: a live search for "live deutsch" in place of the Live destination's
+// shelf, which lists the same world-wide mix for every region and language (probed 2026-11-12, gl=DE with hl=en and
+// hl=de alike: German, Turkish, US and Telugu streams side by side). The search gave WELT, euronews deutsch, Vatican
+// News Deutsch and German 24/7 channels; plain "live" was as mixed as the shelf. Only the regions probed are listed:
+// any other keeps the shelf.
+static const struct { const char *codes, *query; } LIVE_LOCAL_QUERIES[] = {
+   { "DE AT CH", "live deutsch" },
+};
+
+static const char *liveLocalQuery(const char *gl)
+{
+   for (unsigned i = 0; i < sizeof LIVE_LOCAL_QUERIES / sizeof LIVE_LOCAL_QUERIES[0]; i++)
+      for (const char *code = LIVE_LOCAL_QUERIES[i].codes; code[0] && code[1]; code += code[2] ? 3 : 2)
+         if (code[0] == gl[0] && code[1] == gl[1]) return LIVE_LOCAL_QUERIES[i].query;
+   return NULL;
+}
+
 static const char *newsWord(const char *gl)
 {
    for (unsigned i = 0; i < sizeof NEWS_WORDS / sizeof NEWS_WORDS[0]; i++)
@@ -1679,9 +1867,12 @@ static int fetchLive(LiveCategory category, const char *continuation, SearchResu
    WebRequest request = { NULL, NULL, NULL, 0, 0 };
 
    if (!continuation) {
-      jsonEscape(LIVE_FEEDS[category].idOrQuery, escaped, sizeof escaped);
-      if (browse) bodyLen = snprintf(body, sizeof body, TRENDING_BODY_FMT, gl, escaped, LIVE_FEEDS[category].params);
-      else        bodyLen = snprintf(body, sizeof body, SEARCH_BODY_FMT, gl, escaped, LIVE_FEEDS[category].params);
+      const char *idOrQuery = LIVE_FEEDS[category].idOrQuery, *params = LIVE_FEEDS[category].params;
+      const char *local = category == LIVE_POPULAR ? liveLocalQuery(gl) : NULL;   // (Test 16) the region's own
+      if (local) { browse = 0; idOrQuery = local; params = LIVE_SEARCH_PARAMS; }
+      jsonEscape(idOrQuery, escaped, sizeof escaped);
+      if (browse) bodyLen = snprintf(body, sizeof body, TRENDING_BODY_FMT, gl, escaped, params);
+      else        bodyLen = snprintf(body, sizeof body, SEARCH_BODY_FMT, gl, escaped, params);
       request.pageOneGl = gl;
    } else {
       const char *token = splitLiveToken(continuation, &browse, sent, sizeof sent);

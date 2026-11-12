@@ -1,0 +1,9 @@
+TEE Opus building block
+
+libopus/ holds the decoder part of libopus 1.5.2 (https://opus-codec.org), unchanged: Copyright 2001-2023 Xiph.Org,
+Skype Limited, Octasic, Jean-Marc Valin, Timothy B. Terriberry, CSIRO, Gregory Maxwell, Mark Borgerding, Erik de
+Castro Lopo, Mozilla, Amazon - under the three-clause BSD licence in libopus/COPYING, which also names the patent
+licences that come with Opus. A program that ships the library built from it has to reproduce that copyright
+notice, the conditions and the disclaimer in its documentation or other materials.
+
+tee_opus.h and tee_opus.c are the TEE VP9 project's own. They have no licence file of their own yet.

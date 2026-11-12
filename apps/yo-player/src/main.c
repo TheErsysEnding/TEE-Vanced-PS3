@@ -22,6 +22,7 @@
 #include "settings.h"
 #include "account.h"
 #include "downloads.h"
+#include "update-check.h"   // (V3.0.0 Test 12) a newer release on GitHub?
 #include "video-export.h"
 #include "ui/console-glyphs.h"
 #include "ui/icon-font.h"
@@ -72,6 +73,7 @@ int main(int argc, char **argv)
                            // upload breaks
    initVideoExport();      // resolves the download staging folder, so it runs before initDownloads
    initDownloads();        // background download queue + its progress overlay
+   startUpdateCheck();     // (V3.0.0 Test 12) once a start, on a worker: is a newer release out? (update-check.h)
 
    logInfo("[yt] net rc=%d\n", netRc);
    uiLogVram("startup");   // the baseline the later [vram] lines compare against
@@ -91,6 +93,7 @@ int main(int argc, char **argv)
 
    changeScreen(NULL);
    shutdownDownloads();   // cancel + join any in-flight download before the http/vfs layers go away
+   stopUpdateCheck();     // (V3.0.0 Test 12) its one request, likewise
    shutdownVideoExport();
    freeConsoleGlyphs();
    termUiDraw();          // waits for the RSX, then frees the helper textures - while gfx is still up

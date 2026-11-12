@@ -109,7 +109,8 @@ struct H264Decoder {
 
 static H264Policy policy = H264_POLICY_AUTO;
 static int teeSpes = 4;          // 4 = 1 CABAC + 3 pixel, 5 = 1 CABAC + 4 pixel
-static int teeOff;               // the TEE Decoder failed while playing: cellVdec until the app restarts
+static int teeOff;               // the TEE Decoder could not be closed or hung: cellVdec until the app restarts
+static int teeOffVideo;          // (Test 15) this video's stream kept stalling it: cellVdec until the next video
 static int teeOpen;              // one TEE Decoder at a time
 static int spuInitialized;
 
@@ -117,9 +118,20 @@ void setH264DecoderPolicy(H264Policy newPolicy, int spes)
 {
    policy = newPolicy == H264_POLICY_SONY ? H264_POLICY_SONY : H264_POLICY_AUTO;
    teeSpes = spes == 5 ? 5 : 4;
+   // (Test 15) called once for every new video (play.c, before its players are built): a stream that stalled the
+   // TEE Decoder held it off for that video only
+   if (teeOffVideo && !teeOff) logInfo("[decode-h264] TEE Decoder on again: the video that stalled it is done\n");
+   teeOffVideo = 0;
 }
 
-int isH264TeeUsable(void) { return policy == H264_POLICY_AUTO && !teeOff; }
+int isH264TeeUsable(void) { return policy == H264_POLICY_AUTO && !teeOff && !teeOffVideo; }
+
+void disableH264TeeForVideo(const char *why)
+{
+   if (!teeOff && !teeOffVideo)
+      logWarn("[decode-h264] TEE Decoder off for this video: %s - the next video tries it again\n", why ? why : "?");
+   teeOffVideo = 1;
+}
 
 void disableH264TeeForSession(const char *why)
 {
@@ -556,10 +568,16 @@ static void logUserMemory(const char *when, unsigned needMb)
 {
    sys_memory_info_t info;
    if (sys_memory_get_user_memory_size(&info) != CELL_OK) return;
-   if (needMb) logInfo("[decode-h264] user memory %s: %u MB free of %u MB, the TEE Decoder needs about %u MB\n", when,
-                       (unsigned)(info.available_user_memory >> 20), (unsigned)(info.total_user_memory >> 20), needMb);
-   else        logInfo("[decode-h264] user memory %s: %u MB free of %u MB\n", when,
-                       (unsigned)(info.available_user_memory >> 20), (unsigned)(info.total_user_memory >> 20));
+   // (Test 16) and the malloc heap: what it holds of the kernel's memory, and how much of that is in use - the rest
+   // is free for malloc (a closed decoder's memory) but not for the kernel (SPE groups, cellVdec)
+   struct malloc_managed_size heap;
+   unsigned heapMb = 0, usedMb = 0;
+   if (malloc_stats_fast(&heap) == 0) { heapMb = (unsigned)(heap.current_system_size >> 20); usedMb = (unsigned)(heap.current_inuse_size >> 20); }
+   if (needMb) logInfo("[decode-h264] user memory %s: %u MB free of %u MB (heap %u MB, %u MB of it in use), the TEE Decoder "
+                       "needs about %u MB\n", when, (unsigned)(info.available_user_memory >> 20),
+                       (unsigned)(info.total_user_memory >> 20), heapMb, usedMb, needMb);
+   else        logInfo("[decode-h264] user memory %s: %u MB free of %u MB (heap %u MB, %u MB of it in use)\n", when,
+                       (unsigned)(info.available_user_memory >> 20), (unsigned)(info.total_user_memory >> 20), heapMb, usedMb);
 }
 
 static H264Decoder *createTee(const H264StreamParams *params, char *why, int cap)
@@ -590,10 +608,7 @@ static H264Decoder *createTee(const H264StreamParams *params, char *why, int cap
    // turned the TEE Decoder down and left 1080p60 to cellVdec. Whether the memory is there is what malloc says:
    // tdec_open fails cleanly when it is not, and the caller falls back to cellVdec then.
    size_t need = tdec_picture_memory_size(&config) + config.records_bytes + config.input_bytes + TEE_FIXED_BYTES;
-   sys_memory_info_t info;
-   if (sys_memory_get_user_memory_size(&info) == CELL_OK)
-      logInfo("[decode-h264] user memory before the TEE Decoder: %u MB free of %u MB (heap not counted), it needs about %u MB\n",
-              (unsigned)(info.available_user_memory >> 20), (unsigned)(info.total_user_memory >> 20), (unsigned)(need >> 20));
+   logUserMemory("before the TEE Decoder", (unsigned)(need >> 20));   // (Test 16) with the heap's share
 
    H264Decoder *decoder = (H264Decoder *)calloc(1, sizeof *decoder);
    if (!decoder) { snprintf(why, cap, "out of memory"); return 0; }

@@ -32,14 +32,31 @@ static const char *DEFAULT_SETTINGS =
    "tee-decoder-spes=4\n"
    "# 4 = 1 CABAC + 3 pixel SPEs, 5 = 1 CABAC + 4 pixel (more headroom; with the sound all 6 SPEs are busy)\n"
    "\n"
+   "vp9-spes=6\n"
+   "# 1440p (VP9, picked in START > Quality): 6 = 2 entropy + 4 pixel SPEs, 60 fps but no sound (Sony's sound\n"
+   "# decoder needs an SPE of its own); 5 = 1 entropy + 4 pixel with sound, slower (50 - 63 fps measured)\n"
+   "\n"
    "quality=auto\n"
    "# the highest video quality to play: auto = the best the console plays smoothly, or a height such as 1080,\n"
-   "# 720, 480, 360 or 144 - lower saves bandwidth on a slow connection. The player sets it too: START > Quality.\n";
+   "# 720, 480, 360 or 144 - lower saves bandwidth on a slow connection. The player sets it too: START > Quality.\n"
+   "\n"
+   "update-check=on\n"
+   "# on = at every start, read the newest release's version from the app's GitHub page and say when a newer\n"
+   "# one is out (nothing is downloaded); off = never ask GitHub.\n"
+   "\n"
+   "subtitle-language=off\n"
+   "# the language YouTube translates subtitles into when a video has none in it (Triangle offers it first):\n"
+   "# off, auto = the region's (Czechia: Czech), or a code such as cs, pl, sk, hu, de, en. YouTube refuses\n"
+   "# translations to this player at the moment (HTTP 429); the player says so when it does.\n";
 
 static SponsorblockMode sponsorblockMode = SPONSORBLOCK_ADS;
 static VideoDecoderSetting videoDecoder = VIDEO_DECODER_AUTO;
 static int teeDecoderSpes = 4;
+static int vp9Spes = 6;
+static int downloadQuality = 0;   // download-quality=: the R3 page's last choice (downloads.h DownloadQuality)
 static int qualityCap = 0;   // quality=: the highest video height to play, 0 = auto
+static char subtitleLanguage[12] = "off";    // (V3.0.0) subtitle-language=: off, auto or a code
+static int updateCheck = 1;                  // (V3.0.0 Test 12) update-check=: on / off
 
 // ---- content region ----
 
@@ -51,39 +68,39 @@ static int qualityCap = 0;   // quality=: the highest video height to play, 0 = 
 // Korea stays only while its Hangul titles prove legible on the console; deleting its line is the whole change -
 // nothing else refers to a position in this table.
 static const ContentRegion REGIONS[] = {
-   { "DE", "Germany" },
-   { "AT", "Austria" },
-   { "CH", "Switzerland" },
-   { "AU", "Australia" },
-   { "BE", "Belgium" },
-   { "BR", "Brazil" },
-   { "BG", "Bulgaria" },
-   { "CA", "Canada" },
-   { "HR", "Croatia" },
-   { "CZ", "Czechia" },
-   { "DK", "Denmark" },
-   { "FI", "Finland" },
-   { "FR", "France" },
-   { "GR", "Greece" },
-   { "HU", "Hungary" },
-   { "IE", "Ireland" },
-   { "IT", "Italy" },
-   { "JP", "Japan" },
-   { "MX", "Mexico" },
-   { "NL", "Netherlands" },
-   { "NO", "Norway" },
-   { "PL", "Poland" },
-   { "PT", "Portugal" },
-   { "RO", "Romania" },
-   { "RU", "Russia" },
-   { "RS", "Serbia" },
-   { "KR", "South Korea" },
-   { "ES", "Spain" },
-   { "SE", "Sweden" },
-   { "TR", "Turkey" },
-   { "UA", "Ukraine" },
-   { "GB", "United Kingdom" },
-   { "US", "United States" },   // the default: what every earlier build sent
+   { "DE", "Germany", "de" },
+   { "AT", "Austria", "de" },
+   { "CH", "Switzerland", "de" },
+   { "AU", "Australia", "en" },
+   { "BE", "Belgium", "nl" },
+   { "BR", "Brazil", "pt" },
+   { "BG", "Bulgaria", "bg" },
+   { "CA", "Canada", "en" },
+   { "HR", "Croatia", "hr" },
+   { "CZ", "Czechia", "cs" },
+   { "DK", "Denmark", "da" },
+   { "FI", "Finland", "fi" },
+   { "FR", "France", "fr" },
+   { "GR", "Greece", "el" },
+   { "HU", "Hungary", "hu" },
+   { "IE", "Ireland", "en" },
+   { "IT", "Italy", "it" },
+   { "JP", "Japan", "ja" },
+   { "MX", "Mexico", "es" },
+   { "NL", "Netherlands", "nl" },
+   { "NO", "Norway", "no" },
+   { "PL", "Poland", "pl" },
+   { "PT", "Portugal", "pt" },
+   { "RO", "Romania", "ro" },
+   { "RU", "Russia", "ru" },
+   { "RS", "Serbia", "sr" },
+   { "KR", "South Korea", "ko" },
+   { "ES", "Spain", "es" },
+   { "SE", "Sweden", "sv" },
+   { "TR", "Turkey", "tr" },
+   { "UA", "Ukraine", "uk" },
+   { "GB", "United Kingdom", "en" },
+   { "US", "United States", "en" },   // the default: what every earlier build sent
 };
 #define REGION_COUNT ((int)(sizeof REGIONS / sizeof REGIONS[0]))
 
@@ -186,8 +203,40 @@ void loadSettings(void)
       else if (settingValueEquals(spes, "5")) teeDecoderSpes = 5;
       else logWarn("[settings] tee-decoder-spes takes 4 or 5, using 4\n");
    }
-   logInfo("[settings] video-decoder %s, tee-decoder-spes %d\n", videoDecoder == VIDEO_DECODER_SONY ? "sony" : "auto",
-           teeDecoderSpes);
+   const char *dlq = findSettingValue(text, "download-quality");
+   if (dlq) {
+      if      (settingValueEquals(dlq, "1440")) downloadQuality = 0;
+      else if (settingValueEquals(dlq, "1080")) downloadQuality = 1;
+      else if (settingValueEquals(dlq, "xmb"))  downloadQuality = 2;
+   }
+   // (V3.0.0) subtitle-language=: a code is letters and dashes ("cs", "pt-BR"), anything else is left at auto
+   const char *subtitles = findSettingValue(text, "subtitle-language");
+   if (subtitles) {
+      char value[sizeof subtitleLanguage];
+      int length = 0;
+      while (length < (int)sizeof value - 1 && ((subtitles[length] >= 'a' && subtitles[length] <= 'z') ||
+             (subtitles[length] >= 'A' && subtitles[length] <= 'Z') || subtitles[length] == '-')) {
+         value[length] = subtitles[length];
+         length++;
+      }
+      value[length] = 0;
+      if (length >= 2) strCopy(subtitleLanguage, sizeof subtitleLanguage, value);
+      else logWarn("[settings] subtitle-language takes off, auto or a code such as cs, using off\n");
+   }
+   const char *update = findSettingValue(text, "update-check");
+   if (update) {
+      if      (settingValueEquals(update, "on"))  updateCheck = 1;
+      else if (settingValueEquals(update, "off")) updateCheck = 0;
+      else logWarn("[settings] update-check takes on or off, using on\n");
+   }
+   const char *vp9 = findSettingValue(text, "vp9-spes");
+   if (vp9) {
+      if      (settingValueEquals(vp9, "6")) vp9Spes = 6;
+      else if (settingValueEquals(vp9, "5")) vp9Spes = 5;
+      else logWarn("[settings] vp9-spes takes 5 or 6, using 6\n");
+   }
+   logInfo("[settings] video-decoder %s, tee-decoder-spes %d, vp9-spes %d\n", videoDecoder == VIDEO_DECODER_SONY ? "sony" : "auto",
+           teeDecoderSpes, vp9Spes);
    const char *quality = findSettingValue(text, "quality");
    if (quality && !settingValueEquals(quality, "auto")) {
       int height = 0;
@@ -264,6 +313,7 @@ static int saveSetting(const char *key, const char *value)
 static int saveRegion(const char *code) { return saveSetting("region", code); }
 
 int getQualityCap(void) { return qualityCap; }
+int getUpdateCheck(void) { return updateCheck; }
 
 int setQualityCap(int height)
 {
@@ -299,3 +349,23 @@ int setContentRegionIndex(int index)
 SponsorblockMode getSponsorblockMode(void) { return sponsorblockMode; }
 VideoDecoderSetting getVideoDecoderSetting(void) { return videoDecoder; }
 int getTeeDecoderSpes(void) { return teeDecoderSpes; }
+int getVp9Spes(void) { return vp9Spes; }
+
+int getDownloadQuality(void) { return downloadQuality; }
+
+const char *getSubtitleLanguage(void)
+{
+   if (strcmp(subtitleLanguage, "off") == 0) return "";
+   if (strcmp(subtitleLanguage, "auto") != 0) return subtitleLanguage;
+   const ContentRegion *region = getContentRegionAt(getContentRegionIndex());
+   return region && region->language ? region->language : "en";
+}
+
+int setDownloadQuality(int quality)
+{
+   static const char *values[3] = { "1440", "1080", "xmb" };
+   if (quality < 0 || quality > 2) return -1;
+   if (quality == downloadQuality) return 0;
+   downloadQuality = quality;
+   return saveSetting("download-quality", values[quality]);
+}

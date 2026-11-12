@@ -14,6 +14,12 @@
 #include "screens/account-screen.h"   // Login in the rail while signed out: the sign-in
 #include "screens/account-page.h"     // Account in the rail while signed in: the account's page
 #include "downloads.h"
+#include "update-check.h"   // (V3.0.0 Test 12) a newer release is out: said once a start
+#include "screens/welcome-screen.h"   // (Test 15) a new version's changes, once
+#include "screens/home-list.h"        // (Test 15) DOWN: the list view, with the selection's details
+#include "channel-avatars.h"          // (Test 15) the channels' pictures on the cards, the hero and the list
+#include "app-paths.h"      // APP_VERSION, in that notice
+#include "screens/download-choice.h"   // R3: in which form to download
 #include "ps-button.h"
 #include "ui/console-glyphs.h"
 #include "ui-fonts.h"           // the shared fonts, label helpers, text metrics
@@ -31,6 +37,7 @@
 #include "string-utilities.h"   // strCopy
 #include "dbg.h"                // logWarn
 #include <sys/sys_time.h>       // sys_time_get_system_time: how old a Live page is
+#include <sys/memory.h>         // (Test 15) sys_memory_get_user_memory_size: the list view's log lines
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -61,6 +68,8 @@
 #define STATUS_SIZE   24        // "Loading..." / "No results": 24/700 in textSecondary, where the cards start
 #define STATUS_WEIGHT UI_WEIGHT_BOLD
 #define GRID_TOP      160
+// (V3.0.0) the Home preview (setGridHero): the selected video big above one row of cards, as TEE's mockup has it
+#define CARDS_TOP     630
 #define STATUS_BASELINE (GRID_TOP + 30)
 // The grid's rectangle ends above the bottom hint row. The grid lays out as many whole rows of cards as fit
 // it - two, the second ending at y 864 at the most - so the rectangle, not luck, keeps the cards off the hints.
@@ -69,6 +78,8 @@
 #define CROSS_HINT    0         // X's slot in the TOP hint row (see initHome): retitled per category
 #define TRIANGLE_HINT 2         // Triangle's slot in the top row: "Channel" everywhere, "Unsubscribe" in Subscriptions
 #define R3_HINT       0         // R3's slot in the BOTTOM row: hidden on Live, where nothing can be downloaded
+#define LIST_HINT     9         // (Test 15) DOWN, List view: on the cards of a page of videos
+#define BACK_HINT     10        // (Test 15) O, Back: in the list view
 // A Live page lists what is on air NOW. Coming back to one older than this, it is fetched again (resumeHome).
 #define LIVE_MAX_AGE_US (10ull * 60ull * 1000000ull)
 // The chip labels are rendered in white and tinted when drawn, so the chip on screen and the others share one
@@ -113,6 +124,15 @@ static int isLiveCategory(int category)
    return category >= HOME_LIVE_FIRST && category < HOME_LIVE_FIRST + LIVE_COUNT;
 }
 
+// (V3.0.0) the app's own downloads (downloads.h): read from disk every time, so never cached, and outside the
+// L1/R1 ring - the rail leads there
+#define HOME_DOWNLOADS   (HOME_LIVE_FIRST + LIVE_COUNT)
+static unsigned downloadsRevisionSeen;
+static char     pendingDeleteId[16];   // the download the notice asks about ...
+static char     pendingMoveId[16];     // ... or the one it asks to move into the XMB
+static char     pendingCancelId[16];   // ... or the one on its way it asks to stop (V3.0.0)
+#define SQUARE_HINT 1                  // Square's slot in the top hint row: "To XMB" on the Downloads page
+
 // each category's fully-loaded results, so returning to a tab skips the feed fetch (thumbnails still refetch).
 static SearchResults categoryCache[HOME_CAT_COUNT];
 static int           categoryCached[HOME_CAT_COUNT];
@@ -133,6 +153,8 @@ static struct {
    int       screenW, screenH;
    int       noticeVisible;                    // a modal box is up and owns the pad
    int       noticeIsConfirm;                  // X carries out the pending unsubscribe (else it just closes)
+   int       noticeInterrupted;                // (V3.0.0) the box asks about downloads that did not finish
+   int       interruptedChecked;               // ... asked (or found none) once this run
    int       noticePanelW;
    int       pendingReload;                    // a stale feed to reload on the next update, not on resume
    int       forYouAfterSignIn;                // For you was picked signed out: go there once the sign-in is done
@@ -145,11 +167,17 @@ static struct {
 
 static Label    titleLabel, statusLabel;
 static Label    pageWordLabel, pagePlusLabel;   // "Page" and the "+" of a feed that can still grow ...
+static Label    videoWordLabel;                 // (Test 15) the list view counts videos: "Video 5 / 80+"
+static int      listHintsMode = -1;             // (Test 15) what the hints were last set for (updateListHints)
+static char     currentHeading[128];            // (Test 15) the title's text, to render it again after a refit
+static int      listWanted;                     // (Test 15) the list view is on: L1/R1 through Subscriptions keep it
+static HomeList homeList;                       // (Test 15) the list view's state (home-list.h)
 static UiDigits pageDigits;                     // ... round the numbers, which step in equal cells
 static Label    chipLabels[TREND_COUNT];        // Trending's categories, rendered white and tinted per state
 static Label    liveChipLabels[LIVE_COUNT];     // Live's, likewise
 static Label    noticeLabel;
 static UiHints  closeHints, confirmHints;       // the notice's answers: X Close, or X Unsubscribe / O Cancel
+static UiHints  interruptedHints;               // (V3.0.0) X Restart, Triangle Delete, O Later
 // Two hint rows, as on the Cinema start (Bild 1): X / Square / Triangle - what acts on the selected tile - at
 // the top right, everything else at the bottom right. At the Ember sizes the twelve no longer fit one line
 // inside the safe area.
@@ -185,10 +213,8 @@ static int fetchSubscriptionChannels(SearchResults *out)
 
       if (!page || getChannelVideos(channels[c].id, NULL, page) != 0) continue;   // keep the stored name
       if (page->channelName[0]) strCopy(item->title, sizeof item->title, page->channelName);
-      if (page->count > 0) {
-         strCopy(item->videoId, sizeof item->videoId, page->items[0].videoId);   // tile art: latest upload
+      if (page->count > 0)   // (V3.0.0) the tile is the channel's picture (its page gave it); the latest upload in words
          snprintf(item->author, sizeof item->author, "Latest: %s", page->items[0].title);
-      }
    }
    free(page);
    free(channels);
@@ -216,8 +242,28 @@ static int tileWatched(const char *videoId)
 #define SUBS_FEED_PAGES 4
 static char subsShown[MAX_SEARCH_RESULTS][CHANNEL_ID_LEN];   // the grid worker's: one fetch runs at a time
 static int  subsShownCount;
+static int  subsFromFeed;   // (V3.0.0) page 1 came from the feed (the channel list failed): its next pages do too
 
+static int fetchSubscriptionsFromFeed(const char *token, SearchResults *out);   // below: the way before V3.0.0
+
+// (V3.0.0) Signed in, Subscriptions is the account's own list of the channels it follows (FEchannels): every one of
+// them - 339 on TEE's account - in one request, each tile the channel's name and picture, "@handle . subscribers"
+// under it (TEE: "wirklich nur die channels ... mit den jeweiligen namen", then "All, profile pictures"). Built from
+// the feed below, the page had asked for 30 pages of uploads and still showed only the channels that had uploaded
+// lately. Should the list not come, the feed's channels stand in.
 static int fetchAccountSubscriptionChannels(const char *token, SearchResults *out)
+{
+   if (!token) subsFromFeed = 0;
+   if (!subsFromFeed) {
+      if (getAccountFeed(ACCOUNT_FEED_CHANNELS, token, out) == 0 && (out->count > 0 || token)) return 0;
+      if (token) return -1;
+      logWarn("[home] the account's channel list did not come: the channels of its subscription feed instead\n");
+      subsFromFeed = 1;
+   }
+   return fetchSubscriptionsFromFeed(token, out);
+}
+
+static int fetchSubscriptionsFromFeed(const char *token, SearchResults *out)
 {
    memset(out, 0, sizeof *out);
    if (!token) subsShownCount = 0;   // page 1: nothing is on screen yet
@@ -244,7 +290,7 @@ static int fetchAccountSubscriptionChannels(const char *token, SearchResults *ou
          memset(tile, 0, sizeof *tile);
          strCopy(tile->channelId, sizeof tile->channelId, video->channelId);
          strCopy(tile->title, sizeof tile->title, video->author[0] ? video->author : video->channelId);
-         strCopy(tile->videoId, sizeof tile->videoId, video->videoId);   // tile art: the latest upload
+         strCopy(tile->videoId, sizeof tile->videoId, video->videoId);   // tile art: the latest upload (no picture here)
          snprintf(tile->author, sizeof tile->author, "Latest: %s", video->title);
       }
       strCopy(next, MAX_CONTINUATION, page->continuation);
@@ -279,6 +325,7 @@ static int homeFetch(const char *token, SearchResults *out, void *user)
    if (category == HOME_SUBS)
       return signedIn ? fetchAccountSubscriptionChannels(token, out) : fetchSubscriptionChannels(out);
    if (category == HOME_CONTINUE)   return getContinueWatching(out) > 0 ? 0 : -1;
+   if (category == HOME_DOWNLOADS)  return listDownloads(out) > 0 ? 0 : -1;
    if (category == HOME_WATCHLATER)
       return signedIn ? getAccountFeed(ACCOUNT_FEED_WATCH_LATER, token, out) : getWatchLater(out) > 0 ? 0 : -1;
    if (category == HOME_HISTORY)
@@ -317,7 +364,11 @@ static int measurePageMaxW(void)
    char digits[12], sample[32];
    snprintf(digits, sizeof digits, "%d", pages);
    snprintf(sample, sizeof sample, " %s / %s", digits, digits);
-   return pageWordLabel.tt.tex.w + uiGetDigitsWidth(&pageDigits, sample) + pagePlusLabel.tt.tex.w;
+   int pagesW = pageWordLabel.tt.tex.w + uiGetDigitsWidth(&pageDigits, sample) + pagePlusLabel.tt.tex.w;
+   snprintf(digits, sizeof digits, "%d", MAX_SEARCH_RESULTS);   // (Test 15) the list's counter
+   snprintf(sample, sizeof sample, " %s / %s", digits, digits);
+   int videosW = videoWordLabel.tt.tex.w + uiGetDigitsWidth(&pageDigits, sample) + pagePlusLabel.tt.tex.w;
+   return pagesW > videosW ? pagesW : videosW;
 }
 
 // Narrows a hint row's gaps, two px at a time down to HINT_MIN_GAP, until it is no wider than maxWidth. How
@@ -415,19 +466,28 @@ static void setHeading(void)
    else if (home.category == HOME_CONTINUE)   snprintf(heading, sizeof heading, "Continue watching");
    else if (home.category == HOME_WATCHLATER) snprintf(heading, sizeof heading, "Watch Later");
    else if (home.category == HOME_HISTORY)    snprintf(heading, sizeof heading, "History");
+   else if (home.category == HOME_DOWNLOADS)  snprintf(heading, sizeof heading, "Downloads");
    else if (home.category == HOME_PLAYLIST)
       snprintf(heading, sizeof heading, "%s", playlistIsAccount ? accountPlaylistTitle : getPlaylistName(openPlaylist));
    else if (isLiveCategory(home.category))    snprintf(heading, sizeof heading, "Live");       // the category: a chip
    else                                       snprintf(heading, sizeof heading, "Trending");   // the category: a chip
    uiSetHintCaption(&hintsTop, CROSS_HINT,    subsAreChannels() ? "Open channel" : "Play");
-   uiSetHintCaption(&hintsTop, TRIANGLE_HINT, subsAreChannels() ? "Unsubscribe"  : "Channel");
+   uiSetHintCaption(&hintsTop, TRIANGLE_HINT, subsAreChannels() ? "Unsubscribe"  :
+                                              home.category == HOME_DOWNLOADS ? "Delete" : "Channel");
    // YouTube's For you tiles name no channel (no id anywhere in them), so Triangle has nothing to open there
    uiSetHintShown(&hintsTop, TRIANGLE_HINT, home.category != HOME_FORYOU);
    // A live stream cannot be downloaded, and a Live page holds nothing else: R3 does nothing there (updateHome),
    // so it has no hint either. The bottom row only gets narrower for it.
-   uiSetHintShown(&hintsBottom, R3_HINT, !isLiveCategory(home.category));
+   uiSetHintShown(&hintsBottom, R3_HINT, !isLiveCategory(home.category) && home.category != HOME_DOWNLOADS &&
+                  !subsAreChannels());
+   // (V3.0.0) a Subscriptions tile is a channel's picture, no video: nothing to download, file or watch later
+   uiSetHintShown(&hintsBottom, 1, !subsAreChannels());   // L3, Add to playlist
+   uiSetHintShown(&hintsTop, SQUARE_HINT, !subsAreChannels());
+   uiSetHintCaption(&hintsTop, SQUARE_HINT, home.category == HOME_DOWNLOADS ? "To XMB" : "Watch Later");
+   listHintsMode = -1;   // (Test 15) the list's hints are set again for the new page (updateListHints)
    fitTitleWidth();   // after the captions: the row's new width decides how far the title may run
    // on the playlist tab the heading is the playlist's name - the user's text, so raw and checked for Manrope
+   strCopy(currentHeading, sizeof currentHeading, heading);
    uiSetTextLabel(&titleLabel, UI_PAGE_TITLE_WEIGHT, heading);
    if (isLiveCategory(home.category)) fitLiveChips();   // after the title: the chips start where it ends
 }
@@ -437,6 +497,11 @@ static void loadCategory(void)
    setHeading();
    if (isLiveCategory(home.category)) {   // never cached: what is on air changes by the minute
       home.liveLoadedUs = sys_time_get_system_time();
+      setGridSource(&home.grid, homeFetch, NULL);
+      return;
+   }
+   if (home.category == HOME_DOWNLOADS) {   // never cached: it is on disk, and changes as downloads land
+      downloadsRevisionSeen = getDownloadsRevision();
       setGridSource(&home.grid, homeFetch, NULL);
       return;
    }
@@ -456,6 +521,7 @@ static SidebarItem itemForCategory(int category)
    if (category == HOME_WATCHLATER) return SIDE_LATER;
    if (category == HOME_HISTORY)    return SIDE_HISTORY;
    if (category == HOME_PLAYLIST)   return SIDE_PLAYLISTS;
+   if (category == HOME_DOWNLOADS)  return SIDE_DOWNLOADS;
    return SIDE_TRENDING;
 }
 
@@ -470,6 +536,7 @@ static int categoryForItem(SidebarItem item)
    case SIDE_CONTINUE: return HOME_CONTINUE;
    case SIDE_LATER:    return HOME_WATCHLATER;
    case SIDE_HISTORY:  return HOME_HISTORY;
+   case SIDE_DOWNLOADS: return HOME_DOWNLOADS;
    default:            return -1;
    }
 }
@@ -481,7 +548,7 @@ static int categoryForItem(SidebarItem item)
 // Trending list came back on the next visit.
 static void cacheCurrent(void)
 {
-   if (isLiveCategory(home.category) || home.pendingReload) return;
+   if (isLiveCategory(home.category) || home.category == HOME_DOWNLOADS || home.pendingReload) return;
    if (gridStage(&home.grid) != GRID_READY || gridBusy(&home.grid)) return;   // don't copy mid-append
    categoryCache[home.category] = *gridResults(&home.grid);
    categoryCached[home.category] = 1;
@@ -523,6 +590,7 @@ static void askUnsubscribe(const SearchResult *item)
    char name[CHANNEL_NAME_LEN], message[256];
    snprintf(message, sizeof message, "Unsubscribe from %s?", pendingChannelName(name, (int)sizeof name));
    uiSetTextLabel(&noticeLabel, UI_BODY_WEIGHT, message);
+   uiSetHintCaption(&confirmHints, 0, "Unsubscribe");   // (the same box asks about a download: "Delete")
    home.noticeIsConfirm = 1;   // answered by confirmHints
    home.noticeVisible   = 1;
 }
@@ -545,7 +613,9 @@ static void unsubscribeConfirmed(void)
          if (strcmp(kept->items[i].channelId, home.pendingUnsubId) != 0) kept->items[out++] = kept->items[i];
       kept->count = out;
       categoryCached[HOME_SUBS] = out > 0;   // an empty page is fetched again rather than shown empty
+      int at = gridSelectedIndex(&home.grid);
       loadCategory();
+      keepGridSelection(&home.grid, at);   // (Test 15) on to the next channel, not back to the first
       return;
    }
 
@@ -587,7 +657,9 @@ static void unsubscribeConfirmed(void)
    // "No results", no selection. Let the normal load path report the empty list instead.
    if (kept->count == 0) { categoryCached[HOME_SUBS] = 0; loadCategory(); return; }
    categoryCached[HOME_SUBS] = 1;
+   int at = gridSelectedIndex(&home.grid);
    loadCategory();
+   keepGridSelection(&home.grid, at);   // (Test 15)
 }
 
 // A video Square just took out of the account's Watch Later leaves the page at once: YouTube is told on a worker,
@@ -601,7 +673,9 @@ static void dropFromPage(const char *videoId)
       if (strcmp(kept->items[i].videoId, videoId) != 0) kept->items[out++] = kept->items[i];
    kept->count = out;
    categoryCached[home.category] = out > 0;   // an empty page is fetched again rather than shown empty (see above)
+   int at = gridSelectedIndex(&home.grid);
    loadCategory();
+   keepGridSelection(&home.grid, at);   // (Test 15) on to the next video, not back to the first
 }
 
 // X on a subscription tile opens the channel. openChannelFor reads the channel's NAME from author, which on
@@ -624,9 +698,11 @@ static void switchCategory(int delta)
    cacheCurrent();
    if (isLiveCategory(home.category))
       home.category = HOME_LIVE_FIRST + (home.category - HOME_LIVE_FIRST + delta + LIVE_COUNT) % LIVE_COUNT;
-   else
+   else {
+      if (home.category >= HOME_CAT_COUNT) home.category = delta > 0 ? HOME_CAT_COUNT - 1 : 0;   // Downloads
       do home.category = (home.category + delta + HOME_CAT_COUNT) % HOME_CAT_COUNT;
       while (home.category == HOME_FORYOU && !isAccountSignedIn());   // nothing to show there signed out
+   }
    loadCategory();
 }
 
@@ -665,6 +741,56 @@ static void onQueryEntered(const char *text)
    openSearchQuery(text);
 }
 
+// (Test 15) VRAM and user memory where the list view opens and closes: both must come back to the same level
+static void logListMemory(const char *where)
+{
+   uiLogVram(where);
+   sys_memory_info_t memory;
+   if (sys_memory_get_user_memory_size(&memory) == CELL_OK)
+      logInfo("[mem] %s: user memory %u MB free of %u MB\n", where, (unsigned)(memory.available_user_memory >> 20),
+              (unsigned)(memory.total_user_memory >> 20));
+}
+
+// (Test 15) the list view lists videos: not on Subscriptions (channels) or Downloads (what is on the console)
+static int listAllowed(void) { return !subsAreChannels() && home.category != HOME_DOWNLOADS; }
+
+static int followsChannel(const char *channelId)
+{
+   return isAccountSignedIn() ? isAccountFollowing(channelId) : isSubscribed(channelId);
+}
+
+// (Test 15) the hints follow the list: DOWN List view on the cards, O Back in the list, and X's word on the details'
+// buttons. Set again only when what they are for changes.
+static void updateListHints(void)
+{
+   int mode = 0;
+   if (isHomeListOpen(&homeList)) {
+      mode = 1;
+      const SearchResult *item = gridSelected(&home.grid);
+      if (homeListButtonsFocused(&homeList)) mode = !homeListSubscribeFocused(&homeList) ? 2 : item && followsChannel(item->channelId) ? 4 : 3;
+   }
+   if (mode == listHintsMode) return;
+   listHintsMode = mode;
+   uiSetHintShown(&hintsBottom, LIST_HINT, mode == 0 && listAllowed());
+   uiSetHintShown(&hintsBottom, BACK_HINT, mode != 0);
+   uiSetHintCaption(&hintsTop, CROSS_HINT, mode == 2 ? "Open channel" : mode == 3 ? "Subscribe" : mode == 4 ? "Unsubscribe"
+                                           : subsAreChannels() ? "Open channel" : "Play");
+   fitTitleWidth();   // a new width drops the title's texture: rendered again here, as setHeading does
+   uiSetTextLabel(&titleLabel, UI_PAGE_TITLE_WEIGHT, currentHeading);
+   if (isLiveCategory(home.category)) fitLiveChips();
+}
+
+// (Test 15) X on the details' Subscribe button: the channel of the selected video, followed or not - as Triangle does
+// on a channel page. The Subscriptions page is fetched afresh the next time it is shown.
+static void toggleListSubscription(const SearchResult *item)
+{
+   if (!item->channelId[0]) return;
+   categoryCached[HOME_SUBS] = 0;
+   char message[256];
+   if (toggleHomeListSubscription(item, message, sizeof message)) showNotice(message);
+   if (isAccountSignedIn()) accountChangesSeen = getAccountChangesRevision();   // handled here, not by a reload
+}
+
 static void initHome(void)
 {
    home.screenW = getGfxScreenWidth();
@@ -685,6 +811,8 @@ static void initHome(void)
    uiAddHint(&hintsBottom, GLYPH_R2,        "Page");
    uiAddHint(&hintsBottom, GLYPH_SELECT,    "PS button");
    uiAddHint(&hintsBottom, GLYPH_DPAD_LEFT, "Menu");
+   uiAddHint(&hintsBottom, GLYPH_DPAD_DOWN, "List view");   // LIST_HINT (Test 15)
+   uiAddHint(&hintsBottom, GLYPH_CIRCLE,    "Back");        // BACK_HINT (Test 15)
    // The bottom row has the whole width right of the rail to itself. Its captions never change, and the
    // glyphs are loaded before any screen, so its width is final here.
    fitHintRow(&hintsBottom, UI_SAFE_RIGHT - CONTENT_X);
@@ -699,6 +827,7 @@ static void initHome(void)
    uiInitLabel(&statusLabel,   STATUS_WEIGHT, 0, 0, AUTO, STATUS_SIZE, activeTheme->textSecondary, TEXT_NOWRAP, "Loading...");
    uiInitLabel(&pageWordLabel, PAGE_WEIGHT,   0, 0, AUTO, PAGE_SIZE,   activeTheme->textSecondary, TEXT_NOWRAP, "Page");
    uiInitLabel(&pagePlusLabel, PAGE_WEIGHT,   0, 0, AUTO, PAGE_SIZE,   activeTheme->textSecondary, TEXT_NOWRAP, "+");
+   uiInitLabel(&videoWordLabel, PAGE_WEIGHT,  0, 0, AUTO, PAGE_SIZE,   activeTheme->textSecondary, TEXT_NOWRAP, "Video");
    uiInitDigits(&pageDigits, PAGE_WEIGHT, PAGE_SIZE);
    for (int c = 0; c < TREND_COUNT; c++)
       uiInitLabel(&chipLabels[c], CHIP_WEIGHT, 0, 0, AUTO, CHIP_SIZE, TEXT_TINTABLE, TEXT_NOWRAP, TrendingNames[c]);
@@ -719,17 +848,24 @@ static void initHome(void)
    uiInitHints(&confirmHints);
    uiAddHint(&confirmHints, GLYPH_CROSS,  "Unsubscribe");
    uiAddHint(&confirmHints, GLYPH_CIRCLE, "Cancel");
+   uiInitHints(&interruptedHints);
+   uiAddHint(&interruptedHints, GLYPH_CROSS,    "Restart");
+   uiAddHint(&interruptedHints, GLYPH_TRIANGLE, "Delete");
+   uiAddHint(&interruptedHints, GLYPH_CIRCLE,   "Later");
 
    home.pendingReload = 0;
 
    // Bild 4's cards (GRID_VIEW_GRID, the grid's own default): four columns between the rail and the safe edge
-   initVideoGrid(&home.grid, uiGetFont(UI_CARD_TITLE_WEIGHT), CONTENT_X, GRID_TOP,
-                 UI_SAFE_RIGHT - CONTENT_X, GRID_BOTTOM - GRID_TOP);
+   initVideoGrid(&home.grid, uiGetFont(UI_CARD_TITLE_WEIGHT), CONTENT_X, CARDS_TOP,
+                 UI_SAFE_RIGHT - CONTENT_X, GRID_BOTTOM - CARDS_TOP);
+   setGridHero(&home.grid, 1);
    pageMaxW = measurePageMaxW();   // needs the grid's page size
    initSidebar();
    setGridWatchedPredicate(&home.grid, tileWatched);
    setGridWatchLaterPredicate(&home.grid, tileInWatchLater);
    setGridProgressSource(&home.grid, getWatchedPosition);
+   setGridAvatarSource(&home.grid, getChannelAvatarTexture, hasChannelAvatar);   // (Test 15)
+   initHomeList(&homeList, 0, 0);
 
    subsRevisionSeen = getSubscriptionsRevision();
    watchLaterRevisionSeen = getWatchLaterRevision();
@@ -748,8 +884,10 @@ static void initHome(void)
 // screen (loading, nothing found) there is nothing for LEFT to move, and it opens the rail as it always did.
 static int leftOpensRail(void)
 {
+   if (isHomeListOpen(&homeList)) return !homeListButtonsFocused(&homeList);   // (Test 15) the list: LEFT is the rail's, the buttons' own
    if (gridStage(&home.grid) != GRID_READY || !gridSelected(&home.grid) || home.grid.cols <= 1) return 1;
-   return gridSelectedIndex(&home.grid) % home.grid.cols == 0;
+   // (Test 15) on a later page LEFT off the first card goes back a page (video-grid.c); the rail is page 1's, and O's
+   return gridSelectedIndex(&home.grid) % home.grid.cols == 0 && gridPageIndex(&home.grid) == 0;
 }
 
 // What a pick in the rail does - from Home's own rail, or handed over by a screen that was over Home
@@ -832,6 +970,15 @@ static int actOnSection(int section)
 
 static void updateHome(void)
 {
+   // (Test 15) once a run, first thing: a version not welcomed yet shows its changes and the support page
+   static int welcomeChecked;
+   if (!welcomeChecked) {
+      welcomeChecked = 1;
+      if (isWelcomeDue()) { openWelcome(); return; }
+   }
+   updateChannelAvatars();   // (Test 15) every frame: the pictures the cards, the hero and the list asked for
+   reapHomeList(&homeList);
+   updateListHints();
    if (pendingSection >= 0) {   // a pick from the account page (showHomeSection)
       int section = pendingSection;
       pendingSection = -1;
@@ -852,18 +999,72 @@ static void updateHome(void)
       char failure[160];
       if (takeAccountFailure(failure, sizeof failure)) showNotice(failure);
    }
+   // (V3.0.0 Test 12) a newer release on GitHub: said once a start, when no other notice is up
+   static int updateTold;
+   char newer[16];
+   if (!updateTold && !home.noticeVisible && getNewerRelease(newer, sizeof newer)) {
+      updateTold = 1;
+      char message[256];
+      snprintf(message, sizeof message, "TEE Vanced v%s is out - this is %s. It is on GitHub: TheErsysEnding/TEE-Vanced-PS3, "
+               "Releases.", newer, APP_VERSION);
+      showNotice(message);
+   }
 
    updateDownloadOverlay();
    if (oskInputActive()) return;
+
+   // (V3.0.0) once a run, at the first chance: downloads the last run did not finish - restart, delete, or ask later
+   if (!home.interruptedChecked && !home.noticeVisible) {
+      home.interruptedChecked = 1;
+      char title[160];
+      int count = findInterruptedDownloads(title, sizeof title);
+      if (count > 0) {
+         char message[320];
+         if (count == 1) snprintf(message, sizeof message, "The download of \"%s\" did not finish. Start it again "
+                                  "from the beginning, or delete it?", title);
+         else snprintf(message, sizeof message, "%d downloads did not finish (\"%s\" and %d more). Start them again from "
+                       "the beginning, or delete them?", count, title, count - 1);
+         showNotice(message);
+         home.noticeInterrupted = 1;
+      }
+   }
+
+   if (home.noticeVisible && home.noticeInterrupted) {   // its own answers (interruptedHints)
+      if (isPadButtonPressed(PAD_BTN_CROSS))         { home.noticeVisible = home.noticeInterrupted = 0; restartInterruptedDownloads(); }
+      else if (isPadButtonPressed(PAD_BTN_TRIANGLE)) { home.noticeVisible = home.noticeInterrupted = 0; deleteInterruptedDownloads(); }
+      else if (isPadButtonPressed(PAD_BTN_CIRCLE))   { home.noticeVisible = home.noticeInterrupted = 0; }   // asked again next start
+      return;
+   }
 
    if (home.noticeVisible) {   // modal: nothing underneath sees the pad until it is dismissed
       if (isPadButtonPressed(PAD_BTN_CROSS)) {
          home.noticeVisible = 0;
          // clear the flag BEFORE acting - the unsubscribe may put an error box up in its place
-         if (home.noticeIsConfirm) { home.noticeIsConfirm = 0; unsubscribeConfirmed(); }
+         if (home.noticeIsConfirm) {
+            home.noticeIsConfirm = 0;
+            if (pendingDeleteId[0]) {   // (V3.0.0) a download, not a channel
+               deleteDownload(pendingDeleteId);
+               pendingDeleteId[0] = 0;
+               downloadsRevisionSeen = getDownloadsRevision();
+               if (home.category == HOME_DOWNLOADS) {
+                  int at = gridSelectedIndex(&home.grid);
+                  loadCategory();
+                  keepGridSelection(&home.grid, at);   // (Test 15)
+               }
+            } else if (pendingMoveId[0]) {   // into the XMB: the page loses it once the XMB has it (revision)
+               moveDownloadToXmb(pendingMoveId);
+               pendingMoveId[0] = 0;
+            } else if (pendingCancelId[0]) {   // (V3.0.0) stopped: the page re-reads the list (revision)
+               cancelDownload(pendingCancelId);
+               pendingCancelId[0] = 0;
+            } else {
+               unsubscribeConfirmed();
+            }
+         }
          return;
       }
-      if (isPadButtonPressed(PAD_BTN_CIRCLE)) { home.noticeVisible = 0; home.noticeIsConfirm = 0; }
+      if (isPadButtonPressed(PAD_BTN_CIRCLE)) { home.noticeVisible = 0; home.noticeIsConfirm = 0; pendingDeleteId[0] = 0; pendingMoveId[0] = 0;
+                                                pendingCancelId[0] = 0; }
       return;
    }
 
@@ -881,7 +1082,15 @@ static void updateHome(void)
          setSidebarFocused(0);
          actOnRailPick(picked);
       }
-      if (!isSidebarFocused()) setGridInputSuppressed(&home.grid, 0);
+      if (!isSidebarFocused()) setGridInputSuppressed(&home.grid, isHomeListOpen(&homeList));   // the list keeps it muted
+      return;
+   }
+   // (Test 15) O in the list view takes it back to the cards (on the cards it opens the rail, as ever)
+   if (isHomeListOpen(&homeList) && isPadButtonPressed(PAD_BTN_CIRCLE)) {
+      closeHomeList(&homeList, 1);
+      listWanted = 0;
+      logListMemory("list view closed");   // the same level after every visit, however far the list went
+      setGridInputSuppressed(&home.grid, 0);
       return;
    }
    // O opens it from anywhere. LEFT opens it only from the leftmost column of cards - or when there are no
@@ -906,6 +1115,17 @@ static void updateHome(void)
    if      (isPadButtonPressed(PAD_BTN_R1)) { switchCategory(1);  return; }
    else if (isPadButtonPressed(PAD_BTN_L1)) { switchCategory(-1); return; }
 
+   // (Test 15) DOWN on the cards of a page of videos opens the list view; a page without videos closes it
+   // - a view kept across L1/R1: a page without videos shows its cards, the next page of videos the list again
+   if (isHomeListOpen(&homeList) && !listAllowed()) closeHomeList(&homeList, 0);
+   if (!isHomeListOpen(&homeList) && listAllowed() && gridStage(&home.grid) == GRID_READY && gridSelected(&home.grid) &&
+       (listWanted || isPadButtonPressed(PAD_BTN_DOWN))) {
+      openHomeList(&homeList, &home.grid);
+      listWanted = 1;
+      logListMemory("list view open");
+   }
+   setGridInputSuppressed(&home.grid, isHomeListOpen(&homeList));
+
    int pageBefore = gridPageIndex(&home.grid);
    updateVideoGrid(&home.grid);
    // one line per page turn in dbg.txt: VRAM has to come back to the same level page after page
@@ -921,9 +1141,89 @@ static void updateHome(void)
       if (home.category == HOME_PLAYLIST)   playlistRevisionSeen = getPlaylistsRevision();
    }
 
+   if (home.category == HOME_DOWNLOADS && getDownloadsRevision() != downloadsRevisionSeen && !gridBusy(&home.grid)) {
+      loadCategory();   // a download landed (or went) while the page was up
+      return;
+   }
+
    const SearchResult *selected = gridSelected(&home.grid);
+   // (V3.0.0) on the Downloads page the hints follow the selection: a download on its way can only be stopped
+   static int pendingHints = -1;
+   int wantPending = home.category == HOME_DOWNLOADS ? (selected && selected->downloadState) : -1;
+   if (wantPending != pendingHints) {
+      pendingHints = wantPending;
+      if (wantPending >= 0) {
+         uiSetHintShown(&hintsTop, CROSS_HINT, !wantPending);
+         uiSetHintShown(&hintsTop, SQUARE_HINT, !wantPending);
+         uiSetHintCaption(&hintsTop, TRIANGLE_HINT, wantPending ? "Stop download" : "Delete");
+      } else {
+         uiSetHintShown(&hintsTop, CROSS_HINT, 1);
+         uiSetHintShown(&hintsTop, SQUARE_HINT, !subsAreChannels());
+      }
+      fitTitleWidth();
+   }
    if (!selected) return;
+   if (isHomeListOpen(&homeList)) {   // (Test 15) the list's moves and its buttons; the rest below, as on a card
+      HomeListAction action = updateHomeList(&homeList, &home.grid);
+      if (!isHomeListOpen(&homeList)) listWanted = 0;   // UP off the first video closed it
+      if (action == HOME_LIST_HANDLED) return;
+      selected = gridSelected(&home.grid);
+      if (!selected) return;
+      if (action == HOME_LIST_CHANNEL)   { openSelectedChannel(selected); return; }
+      if (action == HOME_LIST_SUBSCRIBE) { toggleListSubscription(selected); return; }
+   }
+   if (home.category == HOME_DOWNLOADS && selected->downloadState) {   // (V3.0.0) on its way: Triangle stops it
+      if (isPadButtonPressed(PAD_BTN_TRIANGLE)) {
+         char message[256];
+         snprintf(message, sizeof message, "Stop downloading \"%s\"? What is in so far is thrown away.", selected->title);
+         strCopy(pendingCancelId, sizeof pendingCancelId, selected->videoId);
+         showNotice(message);
+         uiSetHintCaption(&confirmHints, 0, "Stop download");
+         home.noticeIsConfirm = 1;
+         return;
+      }
+      if (isPadButtonPressed(PAD_BTN_CROSS)) {
+         char message[256];
+         snprintf(message, sizeof message, selected->downloadState == 1
+                  ? "\"%s\" is still downloading. It plays here once it is in."
+                  : "\"%s\" waits for the downloads before it. It plays here once it is in.", selected->title);
+         showNotice(message);
+         return;
+      }
+      if (isPadButtonPressed(PAD_BTN_SQUARE) || isPadButtonPressed(PAD_BTN_R3)) return;
+   }
+   if (home.category == HOME_DOWNLOADS) {   // (V3.0.0) X plays it from disk, Triangle deletes it
+      if (isPadButtonPressed(PAD_BTN_TRIANGLE)) {
+         char message[256];
+         snprintf(message, sizeof message, "Delete the download \"%s\" from the console?", selected->title);
+         strCopy(pendingDeleteId, sizeof pendingDeleteId, selected->videoId);
+         showNotice(message);
+         uiSetHintCaption(&confirmHints, 0, "Delete");
+         home.noticeIsConfirm = 1;
+         return;
+      }
+      if (isPadButtonPressed(PAD_BTN_CROSS)) {
+         char input[48];
+         snprintf(input, sizeof input, "%s%s", LOCAL_INPUT_PREFIX, selected->videoId);
+         stopVideoGrid(&home.grid);
+         playVideo(input);
+         return;
+      }
+      if (isPadButtonPressed(PAD_BTN_R3)) return;   // already downloaded
+      if (isPadButtonPressed(PAD_BTN_SQUARE)) {     // into the XMB's Video column, after the warning
+         char message[320];
+         snprintf(message, sizeof message, "Move \"%s\" into the XMB's Video column? The system takes the file: TEE "
+                  "Vanced will not list or play it afterwards. The XMB plays it at 720p60 or 1080p30 (a 1440p or "
+                  "1080p60 download is fetched again in that form).", selected->title);
+         strCopy(pendingMoveId, sizeof pendingMoveId, selected->videoId);
+         showNotice(message);
+         uiSetHintCaption(&confirmHints, 0, "Move to the XMB");
+         home.noticeIsConfirm = 1;
+         return;
+      }
+   }
    if (isPadButtonPressed(PAD_BTN_SQUARE)) {
+      if (subsAreChannels()) return;   // (V3.0.0) a channel's tile has no video to keep for later
       if (isAccountSignedIn()) {   // the account's Watch Later: the tag flips at once, YouTube is told on a worker
          int inList = isInAccountWatchLater(selected->videoId);
          char videoId[sizeof selected->videoId];
@@ -937,12 +1237,16 @@ static void updateHome(void)
       toggleWatchLater(selected);
       watchLaterRevisionSeen = getWatchLaterRevision();
       categoryCached[HOME_WATCHLATER] = 0;
-      if (home.category == HOME_WATCHLATER) loadCategory();   // reflect the add/remove immediately
+      if (home.category == HOME_WATCHLATER) {   // reflect the add/remove immediately, where the selection was
+         int at = gridSelectedIndex(&home.grid);
+         loadCategory();
+         keepGridSelection(&home.grid, at);   // (Test 15)
+      }
       return;
    }
    // live can't be downloaded: on a Live page R3 does nothing at all (its hint is hidden there, setHeading)
    if (isPadButtonPressed(PAD_BTN_R3)) {
-      if (!isLiveCategory(home.category) && !selected->isLive) enqueueDownload(selected);
+      if (!isLiveCategory(home.category) && !selected->isLive) openDownloadChoice(selected);
       return;
    }
    // L3 came free when the grid layout did. Filing a video is the thing you want a direct button for -
@@ -972,7 +1276,7 @@ static void updateHome(void)
 static void drawNotice(void)
 {
    UiTextMetrics text = uiGetTextMetrics(noticeLabel.font, noticeLabel.size);
-   const UiHints *answers = home.noticeIsConfirm ? &confirmHints : &closeHints;
+   const UiHints *answers = home.noticeInterrupted ? &interruptedHints : home.noticeIsConfirm ? &confirmHints : &closeHints;
    int textTop      = NOTICE_PAD_TOP - text.capTop;                                     // panel-relative
    int lastBaseline = textTop + noticeLabel.tt.tex.h - text.texH + text.baseline;      // one pitch a line
    int answersTop   = lastBaseline + NOTICE_ANSWERS_DY;
@@ -1033,14 +1337,20 @@ static void drawLiveChips(int x)
 static void drawPageCounter(int right)
 {
    char numbers[32];
-   snprintf(numbers, sizeof numbers, " %d / %d", gridPageIndex(&home.grid) + 1, gridPageCount(&home.grid));
+   const Label *word = &pageWordLabel;
+   if (isHomeListOpen(&homeList)) {   // (Test 15) the list counts videos
+      word = &videoWordLabel;
+      snprintf(numbers, sizeof numbers, " %d / %d", gridSelectedIndex(&home.grid) + 1, gridResults(&home.grid)->count);
+   } else {
+      snprintf(numbers, sizeof numbers, " %d / %d", gridPageIndex(&home.grid) + 1, gridPageCount(&home.grid));
+   }
    int more     = gridHasMorePages(&home.grid);
    int numbersW = uiGetDigitsWidth(&pageDigits, numbers);
-   int x = right - (more ? pagePlusLabel.tt.tex.w : 0) - numbersW - pageWordLabel.tt.tex.w;
+   int x = right - (more ? pagePlusLabel.tt.tex.w : 0) - numbersW - word->tt.tex.w;
    int digitsY  = uiTextYForCenter(pageDigits.font, pageDigits.size, HEADER_Y, HEADER_H);
    int baseline = digitsY + uiGetTextMetrics(pageDigits.font, pageDigits.size).baseline;
-   uiDrawLabelAt(&pageWordLabel, x, uiLabelYForBaseline(&pageWordLabel, baseline));
-   x += pageWordLabel.tt.tex.w;
+   uiDrawLabelAt(word, x, uiLabelYForBaseline(word, baseline));
+   x += word->tt.tex.w;
    uiDrawDigits(&pageDigits, x, digitsY, numbers, activeTheme->textSecondary);
    if (more) uiDrawLabelAt(&pagePlusLabel, x + numbersW, uiLabelYForBaseline(&pagePlusLabel, baseline));
 }
@@ -1071,24 +1381,31 @@ static void drawHome(void)
    // so drawn after the rail the 46-px title ran straight across the open menu. The hints and the pill are the
    // page's too: while the rail has the pad none of those buttons does what its hint says, and drawn over the
    // scrim they looked as live as the menu. Only a notice goes on top of everything.
-   if (gridStage(&home.grid) == GRID_READY) {
+   int ready = gridStage(&home.grid) == GRID_READY;
+   if (ready && !isHomeListCovering(&homeList)) {
+      drawGridHero(&home.grid);
       drawVideoGrid(&home.grid);
-   } else {
+   }
+   if (isHomeListShown(&homeList)) drawHomeList(&homeList, &home.grid);   // (Test 15) over the cards, eased in and out
+   if (!ready) {
       // where the cards will be, clear of the collapsed rail; under the panel while the menu is open
-      setLabelText(&statusLabel, gridStage(&home.grid) == GRID_EMPTY ? "No results" : "Loading...");
+      setLabelText(&statusLabel, gridStage(&home.grid) != GRID_EMPTY ? "Loading..." : home.category == HOME_DOWNLOADS
+                                 ? "No downloads yet - R3 on any video downloads it." : "No results");
       uiDrawLabelAt(&statusLabel, CONTENT_X, uiLabelYForBaseline(&statusLabel, STATUS_BASELINE));
    }
    drawHeader();
    uiDrawHints(&hintsTop,    hintsTopRight(), HEADER_HINTS_Y,    UI_ALIGN_RIGHT);
    uiDrawHints(&hintsBottom, UI_SAFE_RIGHT,   UI_HINTS_BOTTOM_Y, UI_ALIGN_RIGHT);
-   drawDownloadOverlay(home.screenW);
+   // (V3.0.0) a download is in, or failed: a few seconds under the top hints, right, clear of the hero's title
+   drawDownloadResultAt(UI_SAFE_RIGHT, HEADER_HINTS_Y + UI_HINT_GLYPH_H + 12, UI_ALIGN_RIGHT);
+   // (V3.0.0) the download shows in the rail now (sidebar.c): the old chip bottom right would lie over the cards
 
    drawSidebar(home.screenH);
 
    if (home.noticeVisible) drawNotice();
 }
 
-static void suspendHome(void) { stopVideoGrid(&home.grid); }   // free the http pools for the pushed screen
+static void suspendHome(void) { stopHomeList(); stopVideoGrid(&home.grid); }   // free the http pools for the pushed screen
 
 // returning from search/play: if the load was interrupted mid-flight (worker stopped), restart it; an
 // already-loaded grid is kept as-is (instant, thumbnails intact).
@@ -1099,6 +1416,7 @@ static void resumeHome(void)
    // before the push - long overdue, so the selection moved on the first frame back and then raced through
    // the pages. Fresh timers make a held button wait the normal hold delay; a new press still acts at once.
    resetGridRepeat(&home.grid);
+   resumeHomeList(&homeList);   // (Test 15) the list's own timers likewise
 
    // a subscribe/unsubscribe or watch-later change while we were away makes that cached feed stale.
    //
@@ -1197,7 +1515,9 @@ static void resumeHome(void)
 
 static void termHome(void)
 {
+   termHomeList(&homeList);
    termVideoGrid(&home.grid);
+   termChannelAvatars();
    termSidebar();
    uiTermHints(&hintsTop);
    uiTermHints(&hintsBottom);
@@ -1205,12 +1525,14 @@ static void termHome(void)
    freeLabel(&statusLabel);
    freeLabel(&pageWordLabel);
    freeLabel(&pagePlusLabel);
+   freeLabel(&videoWordLabel);
    uiFreeDigits(&pageDigits);
    for (int c = 0; c < TREND_COUNT; c++) freeLabel(&chipLabels[c]);
    for (int c = 0; c < LIVE_COUNT; c++) freeLabel(&liveChipLabels[c]);
    freeLabel(&noticeLabel);
    uiTermHints(&closeHints);
    uiTermHints(&confirmHints);
+   uiTermHints(&interruptedHints);
    // no closeFont: the fonts are shared (ui-fonts.h), and closing one would blank every label that uses it
 }
 

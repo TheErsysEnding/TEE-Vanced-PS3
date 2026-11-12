@@ -1,8 +1,9 @@
 #pragma once
 
-// ui-hints - the button-hint row in the Ember look: "[glyph] caption" for each button a screen offers,
-// with the console's own PS3 button art (console-glyphs.h, drawn untinted - it is full-colour art and a
-// tint could only spoil it) and Manrope captions, 20/600 in textSecondary.
+// ui-hints - the button-hint row: "[button] caption" for each button a screen offers, with Manrope captions,
+// 20/600 in textSecondary. (V3.0.0) The buttons are the app's own, as TEE's mockups draw them: the face buttons
+// and the d-pad a round chip with a white symbol, L1 ... START / SELECT a key cap with its name - no longer the
+// console's full-colour art, which sat oddly in the flat blue look.
 //
 // It takes the place of the library's ButtonHints in the app because that row can only be centred or start
 // at an x - not end at one, as the Ember rows do at the right edge - and keeps its spacing private (8 px
@@ -49,7 +50,16 @@ typedef struct {
    int      captionSize;
    uint32_t captionColor;
    int      gap;           // between hints; UI_HINT_GAP unless uiSetHintsGap changed it
+   uint32_t fill;          // the buttons' chips: activeTheme->hintFill unless uiSetHintsFill changed it
 } UiHints;
+
+// (V3.0.0) one button as the hint rows draw it, `height` tall at (x, y): a round chip with the symbol for the
+// face buttons and the d-pad, a key cap with the button's name for the others; fill is the chip's colour.
+// Returns the width it took. Main thread (it rasterises the symbols and names once per height).
+int  uiDrawButtonGlyph(ConsoleGlyph glyph, int x, int y, int height, uint32_t fill);
+int  uiGetButtonGlyphWidth(ConsoleGlyph glyph, int height);
+// the chips' colour for a row (e.g. hintFillOnVideo over the video)
+void uiSetHintsFill(UiHints *row, uint32_t fill);
 
 // an empty row in the standard look: glyphs UI_HINT_GLYPH_H, captions UI_HINT_SIZE / UI_HINT_WEIGHT in
 // activeTheme->textSecondary, UI_HINT_GAP between hints

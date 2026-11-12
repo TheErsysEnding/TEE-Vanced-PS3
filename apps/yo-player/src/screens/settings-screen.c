@@ -14,6 +14,7 @@
 #include "storage.h"
 #include "settings.h"            // the content region: its name for the Region row
 #include "app-paths.h"      // APP_VERSION
+#include "update-check.h"        // (V3.0.0 Test 12) a newer release, under the version
 #include "sponsorblock.h"        // SponsorCategory + getSponsorCategoryName/Color
 #include "sidebar.h"             // the rail: collapsed, or open over the screen while it has the focus
 #include "screens/home.h"        // updateRailOverScreen: LEFT opens the rail here as on Home
@@ -267,8 +268,13 @@ static void initSettings(void)
    // All of this screen's text is written in the code, so it is Manrope throughout.
    uiInitLabel(&titleLabel, UI_PAGE_TITLE_WEIGHT, CONTENT_X, 0, AUTO, UI_PAGE_TITLE_SIZE, activeTheme->textPrimary,
                TEXT_NOWRAP, "Settings");
+   // (V3.0.0 Test 12) with a newer release out, the line says so (update-check.h)
+   char version[96], newer[16];
+   if (getNewerRelease(newer, sizeof newer)) snprintf(version, sizeof version, "TEE Vanced %s  \xC2\xB7  v%s is out on GitHub",
+                                                       APP_VERSION, newer);
+   else snprintf(version, sizeof version, "TEE Vanced %s", APP_VERSION);
    uiInitLabel(&versionLabel, UI_META_WEIGHT, CONTENT_X, 0, AUTO, UI_META_SIZE, activeTheme->textTertiary,
-               TEXT_NOWRAP, "TEE Vanced " APP_VERSION);
+               TEXT_NOWRAP, version);
 
    uiInitLabel(&aboutLabel,    HEADING_WEIGHT, 0, 0, AUTO, HEADING_SIZE, activeTheme->textPrimary, TEXT_NOWRAP, "About");
    uiInitLabel(&playbackLabel, HEADING_WEIGHT, 0, 0, AUTO, HEADING_SIZE, activeTheme->textPrimary, TEXT_NOWRAP, "Playback");

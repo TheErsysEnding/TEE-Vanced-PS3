@@ -10,11 +10,14 @@
 
 #include "screens/search.h"
 #include "screens/search-input.h"
+#include "screens/download-choice.h"   // R3: in which form to download
 #include "screens/playlist-screen.h"
 #include "screens/play.h"
 #include "screens/home.h"       // the rail over this screen (updateRailOverScreen)
 #include "account.h"            // signed in: Square and Triangle act on the YouTube account
 #include "video-grid.h"
+#include "screens/home-list.h"   // (Test 16) a search's results in Home's list view
+#include "channel-avatars.h"     // (Test 16) the channels' pictures in it
 #include "storage.h"
 #include "downloads.h"
 #include "sidebar.h"            // the rail: collapsed, or open over the screen while it has the focus
@@ -139,6 +142,8 @@ static struct {
 } search;
 
 static Label    fieldLabel, statusLabel, pageWordLabel, pagePlusLabel;
+static Label    videoWordLabel;      // (Test 16) the list counts videos: "Video 5 / 60+"
+static HomeList searchList;          // (Test 16) a search's results as Home's list view (home-list.h)
 static Label    sortLabels[SORT_OPTIONS_MAX];
 static Label    noticeLabel;
 static UiDigits pageDigits;
@@ -152,7 +157,15 @@ static int searchFetch(const char *token, SearchResults *out, void *user)
    (void)user;
    if (search.channelId[0]) {
       const char *first = search.channelSortToken[0] ? search.channelSortToken : NULL;
-      return getChannelVideos(search.channelId, token ? token : first, out);
+      int rc = getChannelVideos(search.channelId, token ? token : first, out);
+      // (Test 17) a channel's own videos come without the channel - the page is it: the list's details and its
+      // Subscribe button name the page's channel (it is also the channel a download or Watch Later keeps)
+      const char *name = out->channelName[0] ? out->channelName : search.channelName;
+      for (int i = 0; rc == 0 && i < out->count; i++) {
+         if (!out->items[i].channelId[0]) strCopy(out->items[i].channelId, sizeof out->items[i].channelId, search.channelId);
+         if (!out->items[i].author[0])    strCopy(out->items[i].author, sizeof out->items[i].author, name);
+      }
+      return rc;
    }
    return searchVideos(search.query, search.sort, token, out);
 }
@@ -314,9 +327,19 @@ static void toggleSubscription(void)
    showNotice(message);
 }
 
+// (Test 16) a search's results are Home's list view - the rows on the left, the selection's details on the right -
+// and (Test 17, TEE: "in der neuen version ... außer das dann dort channel steht") a channel page's videos too, its
+// details without the Channel button: the page is that channel
+static int usesList(void) { return 1; }
+
 static void reload(void)
 {
    setHeading();
+   // the list draws its own rows: the grid lays out cards it never draws, whose pages are wide enough to keep the
+   // pictures of the list's rows decoded (a page of 8 and two rows either side)
+   setGridView(&search.grid, usesList() ? GRID_VIEW_GRID : GRID_VIEW_LIST);
+   setHomeListChannelButton(&searchList, !search.channelId[0]);
+   setGridInputSuppressed(&search.grid, usesList() || search.fieldFocused || search.buttonFocused || isSidebarFocused());
    setGridSource(&search.grid, searchFetch, NULL);
 }
 
@@ -353,8 +376,9 @@ static void setHeaderFocus(int field, int button)
    search.fieldFocused  = field;
    search.buttonFocused = button;
    int focused = field || button;
-   setGridInputSuppressed(&search.grid, focused || isSidebarFocused());
+   setGridInputSuppressed(&search.grid, focused || isSidebarFocused() || usesList());
    setGridFocusHidden(&search.grid, focused);
+   setHomeListFocusHidden(&searchList, focused);   // (Test 16)
    uiSetHintCaption(&hints, CROSS_HINT, field ? "Type" : button ? (followsChannel(search.channelId) ? "Unsubscribe" : "Subscribe") : "Play");
    uiSetHintShown(&hints, SQUARE_HINT, !focused);
    uiSetHintShown(&hints, TRIANGLE_HINT, !focused);
@@ -393,7 +417,8 @@ static void onFieldTyped(const char *text)
 // every three-digit number is as wide as "888".
 static int pageCountReserve(void)
 {
-   return pageWordLabel.tt.tex.w + uiGetDigitsWidth(&pageDigits, " 888 / 888") + pagePlusLabel.tt.tex.w;
+   int word = videoWordLabel.tt.tex.w > pageWordLabel.tt.tex.w ? videoWordLabel.tt.tex.w : pageWordLabel.tt.tex.w;
+   return word + uiGetDigitsWidth(&pageDigits, " 888 / 888") + pagePlusLabel.tt.tex.w;
 }
 
 static void initSearch(void)
@@ -419,6 +444,7 @@ static void initSearch(void)
    // pages arrive would otherwise shift the whole readout sideways with every digit that changes width.
    uiInitLabel(&pageWordLabel, PAGE_WEIGHT, 0, 0, AUTO, PAGE_SIZE, activeTheme->textTertiary, TEXT_NOWRAP, "Page");
    uiInitLabel(&pagePlusLabel, PAGE_WEIGHT, 0, 0, AUTO, PAGE_SIZE, activeTheme->textTertiary, TEXT_NOWRAP, "+");
+   uiInitLabel(&videoWordLabel, PAGE_WEIGHT, 0, 0, AUTO, PAGE_SIZE, activeTheme->textTertiary, TEXT_NOWRAP, "Video");
    uiInitDigits(&pageDigits, PAGE_WEIGHT, PAGE_SIZE);
    int fieldTextW = CONTENT_RIGHT - FIELD_PAD - pageCountReserve() - FIELD_TEXT_GAP - FIELD_TEXT_X;
    uiInitTextLabel(&fieldLabel, FIELD_WEIGHT, 0, 0, fieldTextW, FIELD_TEXT, activeTheme->textPrimary, TEXT_NOWRAP_ELLIPSIS, "");
@@ -454,7 +480,9 @@ static void initSearch(void)
 
    initVideoGrid(&search.grid, uiGetFont(UI_CARD_TITLE_WEIGHT), CONTENT_X, GRID_TOP,
                  CONTENT_W, GRID_BOTTOM - GRID_TOP);
-   setGridView(&search.grid, GRID_VIEW_LIST);   // results are rows (Bild 5), three to a page
+   setGridView(&search.grid, GRID_VIEW_LIST);   // a channel page's videos are rows (Bild 5), three to a page; reload
+   setGridAvatarSource(&search.grid, getChannelAvatarTexture, hasChannelAvatar);
+   initHomeList(&searchList, GRID_TOP, 1);       // (Test 16) a search's results: the list view, always open
    setGridWatchedPredicate(&search.grid, isWatched);
    setGridWatchLaterPredicate(&search.grid, tileInWatchLater);
    setGridProgressSource(&search.grid, getWatchedPosition);
@@ -470,11 +498,31 @@ static void initSearch(void)
 static void resumeSearch(void)
 {
    resetGridRepeat(&search.grid);
+   resumeHomeList(&searchList);
+}
+
+// (Test 16) another screen on top (the player, the R3 choice, the playlists): the list's resolve and picture fetch stop
+static void suspendSearch(void) { stopHomeList(); }
+
+// (Test 16) X's word follows the list's focus: its Channel and Subscribe buttons, or the result
+static void updateListHint(void)
+{
+   static int shown = -1;
+   int mode = 0;
+   if (usesList() && homeListButtonsFocused(&searchList) && !search.fieldFocused) {
+      const SearchResult *item = gridSelected(&search.grid);
+      mode = !homeListSubscribeFocused(&searchList) ? 1 : item && followsChannel(item->channelId) ? 3 : 2;
+   }
+   if (mode == shown || search.fieldFocused || search.buttonFocused) return;
+   shown = mode;
+   uiSetHintCaption(&hints, CROSS_HINT, mode == 1 ? "Open channel" : mode == 2 ? "Subscribe" : mode == 3 ? "Unsubscribe" : "Play");
+   fitHintRow(&hints);
 }
 
 static void updateSearch(void)
 {
    updateDownloadOverlay();
+   updateChannelAvatars();   // (Test 16) the pictures the list asked for (Home's update does it while Home is on top)
    if (oskInputActive()) return;
 
    // The account's lists may arrive while a channel page is up (the first load after a sign-in): the Triangle hint
@@ -495,12 +543,13 @@ static void updateSearch(void)
    // The rail: LEFT opens it here as on Home (home.h), and while it is open the list only keeps loading and
    // decoding. X on Search in it means a new search, as START does here; O or RIGHT only close the rail, back to
    // the result or the field you were on.
-   int rail = updateRailOverScreen(SIDE_SEARCH);
+   int rail = usesList() && homeListButtonsFocused(&searchList) && !search.fieldFocused
+            ? RAIL_NOT_OPEN : updateRailOverScreen(SIDE_SEARCH);
    if (rail == RAIL_GONE) return;   // Home is back on top: this screen is gone, touch nothing of it
    if (rail != RAIL_NOT_OPEN) {
       setGridInputSuppressed(&search.grid, 1);
       updateVideoGrid(&search.grid);
-      if (!isSidebarFocused()) setGridInputSuppressed(&search.grid, search.fieldFocused || search.buttonFocused);
+      if (!isSidebarFocused()) setGridInputSuppressed(&search.grid, search.fieldFocused || search.buttonFocused || usesList());
       if (rail == RAIL_PICKED_OWN) openSearchInput(search.query, onQueryEntered);
       return;
    }
@@ -563,12 +612,26 @@ static void updateSearch(void)
 
    const SearchResult *selected = gridSelected(&search.grid);
    if (!selected) return;
+   if (usesList()) {   // (Test 16) the list's moves and its buttons; the rest below, as on a row
+      HomeListAction action = updateHomeList(&searchList, &search.grid);
+      updateListHint();
+      if (action == HOME_LIST_HANDLED) return;
+      if (action == HOME_LIST_TOP) { setFieldFocused(1); return; }
+      selected = gridSelected(&search.grid);
+      if (!selected) return;
+      if (action == HOME_LIST_CHANNEL) { enterChannel(selected); return; }
+      if (action == HOME_LIST_SUBSCRIBE) {
+         char message[256];
+         if (toggleHomeListSubscription(selected, message, sizeof message)) showNotice(message);
+         return;
+      }
+   }
    if (isPadButtonPressed(PAD_BTN_SQUARE)) {
       if (isAccountSignedIn()) setAccountWatchLater(selected->videoId, !isInAccountWatchLater(selected->videoId));
       else toggleWatchLater(selected);
       return;
    }
-   if (isPadButtonPressed(PAD_BTN_R3)) { if (!selected->isLive) enqueueDownload(selected); return; }
+   if (isPadButtonPressed(PAD_BTN_R3)) { if (!selected->isLive) openDownloadChoice(selected); return; }
    if (isPadButtonPressed(PAD_BTN_L3)) { openPlaylistChooser(selected); return; }   // L3 came free with the grid layout   // live can't be downloaded
    if (isPadButtonPressed(PAD_BTN_TRIANGLE)) { enterChannel(selected); return; }   // channel mode handled above
    if (isPadButtonPressed(PAD_BTN_CROSS)) {
@@ -603,12 +666,18 @@ static void drawIconInBox(Icon *icon, int boxX, int boxY, int boxW, int boxH, ui
 static void drawPageCount(void)
 {
    char numbers[32];
-   snprintf(numbers, sizeof numbers, " %d / %d", gridPageIndex(&search.grid) + 1, gridPageCount(&search.grid));
+   const Label *word = &pageWordLabel;
+   if (usesList()) {   // (Test 16) the list counts videos
+      word = &videoWordLabel;
+      snprintf(numbers, sizeof numbers, " %d / %d", gridSelectedIndex(&search.grid) + 1, gridResults(&search.grid)->count);
+   } else {
+      snprintf(numbers, sizeof numbers, " %d / %d", gridPageIndex(&search.grid) + 1, gridPageCount(&search.grid));
+   }
    int more    = gridHasMorePages(&search.grid);
    int digitsW = uiGetDigitsWidth(&pageDigits, numbers);
-   int x = CONTENT_RIGHT - FIELD_PAD - pageWordLabel.tt.tex.w - digitsW - (more ? pagePlusLabel.tt.tex.w : 0);
-   uiDrawLabelAt(&pageWordLabel, x, uiLabelYForCenter(&pageWordLabel, FIELD_Y, FIELD_H));
-   x += pageWordLabel.tt.tex.w;
+   int x = CONTENT_RIGHT - FIELD_PAD - word->tt.tex.w - digitsW - (more ? pagePlusLabel.tt.tex.w : 0);
+   uiDrawLabelAt(word, x, uiLabelYForCenter(word, FIELD_Y, FIELD_H));
+   x += word->tt.tex.w;
    uiDrawDigits(&pageDigits, x, uiTextYForCenter(pageDigits.font, pageDigits.size, FIELD_Y, FIELD_H), numbers,
                 activeTheme->textTertiary);
    x += digitsW;
@@ -706,7 +775,8 @@ static void drawSearch(void)
    // The list goes down first and the header over it: the focused row's glow reaches 81 px out from its
    // plate, up into the header, and text drawn before it would come out tinted orange.
    if (gridStage(&search.grid) == GRID_READY) {
-      drawVideoGrid(&search.grid);
+      if (usesList()) drawHomeList(&searchList, &search.grid);   // (Test 16)
+      else            drawVideoGrid(&search.grid);
    } else {
       setLabelText(&statusLabel, gridStage(&search.grid) == GRID_EMPTY ? "No results" : "Loading...");
       uiDrawLabelAt(&statusLabel, CONTENT_X, uiLabelYForBaseline(&statusLabel, STATUS_BASELINE));
@@ -724,6 +794,7 @@ static void drawSearch(void)
 
 static void termSearch(void)
 {
+   termHomeList(&searchList);
    termVideoGrid(&search.grid);
    uiTermHints(&hints);
    uiTermHints(&noticeHints);
@@ -731,6 +802,7 @@ static void termSearch(void)
    freeLabel(&statusLabel);
    freeLabel(&pageWordLabel);
    freeLabel(&pagePlusLabel);
+   freeLabel(&videoWordLabel);
    for (int i = 0; i < SORT_OPTIONS_MAX; i++) freeLabel(&sortLabels[i]);
    freeLabel(&noticeLabel);
    freeLabel(&subscribeLabels[0]);
@@ -758,4 +830,4 @@ void openChannelFor(const SearchResult *item)
    pushScreen(&searchScreen);
 }
 
-Screen searchScreen = { initSearch, resumeSearch, updateSearch, drawSearch, NULL, termSearch, SCREEN_TERMINATED };
+Screen searchScreen = { initSearch, resumeSearch, updateSearch, drawSearch, suspendSearch, termSearch, SCREEN_TERMINATED };

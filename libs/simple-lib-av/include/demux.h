@@ -1,0 +1,70 @@
+#pragma once
+
+// demux - the container-independent demuxer the player talks to. Opens MKV or MP4 by sniffing the
+// file's magic bytes, mirrors the track metadata into one place, and dispatches reads and seeks to
+// the container's demuxer. Both containers produce the same Annex-B video access units and queued
+// AAC audio frames.
+
+#include "demux-mkv.h"
+#include "demux-mp4.h"
+
+typedef struct {
+   int isMp4;
+   union { MkvDemuxer mkv; Mp4Demuxer mp4; } container;
+
+   // track metadata mirrored from the container at open
+   int        isVp9;            // the video is VP9 (WebM): its AUs are raw blocks for the TEE VP9 building block
+   int        isOpus;           // (V3.0.0) the audio is Opus (an audio-only WebM): for the TEE Opus building block
+   uint8_t    opusHead[64];     // ... its OpusHead
+   int        opusHeadSize;
+   uint64_t   codecDelayNs;     // ... a block's first sample plays at its time stamp minus this
+   H264Config h264;             // SPS/PPS header + NAL length size + ref-frame count
+   int        level;            // AVC level, passed to cellVdec as profileLevel
+   int        width, height;
+   int        hasAudio;         // an AAC track was found (anything else plays silent)
+   int        audioRate;        // output sampling frequency in Hz
+   int        audioAdtsRate;    // rate to write in the ADTS header (core rate; = audioRate except HE-AAC)
+   int        audioChannels;
+   uint64_t   frameDurationNs;  // nanoseconds per video frame (0 if the file doesn't say)
+   uint64_t   durationNs;       // total stream duration in nanoseconds (0 if unknown)
+} VideoDemuxer;
+
+int openVideoDemuxer(VideoDemuxer *demuxer, const char *path);   // 0 on success (decodable video track found), -1 otherwise
+int openAudioDemuxer(VideoDemuxer *demuxer, const char *path);   // 0 on success (mp4a audio-only track found), -1 otherwise
+
+static inline int readVideoAu(VideoDemuxer *demuxer, VideoAu *au)   // 1 = got AU, 0 = end of stream, -1 = error
+{
+   return demuxer->isMp4 ? readMp4VideoAu(&demuxer->container.mp4, au) : readMkvVideoAu(&demuxer->container.mkv, au);
+}
+
+static inline int readAudioAu(VideoDemuxer *demuxer, AudioAu *au)   // audio-only demuxer: 1 = got AU, 0 = end of stream
+{
+   return demuxer->isMp4 ? readMp4AudioAu(&demuxer->container.mp4, au) : readMkvAudioAu(&demuxer->container.mkv, au);
+}
+
+static inline int takeAudioAu(VideoDemuxer *demuxer, AudioAu *au)   // pops a queued audio AU: 1 = got one, 0 = queue empty
+{
+   return takeQueuedAudioAu(demuxer->isMp4 ? &demuxer->container.mp4.audioQueue : &demuxer->container.mkv.audioQueue, au);
+}
+
+// jumps to a keyframe and clears the audio queue (only call with the audio consumer parked). landAfter=0
+// lands on the keyframe at/before targetNs; landAfter=1 lands on the next keyframe at/after it (skip past a
+// segment, mp4/DASH only). Returns the time actually landed on.
+static inline uint64_t seekVideoDemuxer(VideoDemuxer *demuxer, uint64_t targetNs, int landAfter)
+{
+   return demuxer->isMp4 ? seekMp4Demuxer(&demuxer->container.mp4, targetNs, landAfter) : seekMkvDemuxer(&demuxer->container.mkv, targetNs, landAfter);
+}
+
+static inline void closeVideoDemuxer(VideoDemuxer *demuxer)
+{
+   if (demuxer->isMp4) closeMp4Demuxer(&demuxer->container.mp4);
+   else closeMkvDemuxer(&demuxer->container.mkv);
+}
+
+// unblock a read waiting on the network (a live segment source at the edge, a streamed url), so teardown's thread
+// join can't hang. (V3.0.0: an MKV/WebM too - the VP9 feeder thread reads it.)
+static inline void cancelVideoDemuxer(VideoDemuxer *demuxer)
+{
+   if (demuxer->isMp4) cancelVideoSource(&demuxer->container.mp4.source);
+   else                cancelVideoSource(&demuxer->container.mkv.source);
+}

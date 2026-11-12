@@ -239,14 +239,10 @@ static void drawIconInBox(Icon *icon, int boxX, int boxY, int boxW, int boxH, ui
    drawIcon(icon, boxX + (boxW - icon->tex->w) / 2 - icon->offsetX, boxY + (boxH - icon->tex->h) / 2 - icon->offsetY, color);
 }
 
-// A console button glyph scaled to `height` with its own aspect, as the hint row draws it (untinted: it is
-// full-colour art). Returns the width it took; a glyph the console did not have keeps a square slot.
+// A button as the hint row draws it (V3.0.0: a round chip or a key cap, see ui-hints.h). Returns its width.
 static int drawGlyph(ConsoleGlyph glyph, int x, int y, int height)
 {
-   GfxTexture tex = getConsoleGlyph(glyph);
-   int width = tex.h > 0 ? (tex.w * height + tex.h / 2) / tex.h : height;
-   if (tex.offset) drawGfxTexture(x, y, width, height, tex, 0.0f, 0.0f, 1.0f, 1.0f, 0xFFFFFFFF, GFX_FILTER_LINEAR);
-   return width;
+   return uiDrawButtonGlyph(glyph, x, y, height, activeTheme->hintFill);
 }
 
 // "Press [X] to type" in the empty field, dimmed to text-3 like any placeholder, with the console's own

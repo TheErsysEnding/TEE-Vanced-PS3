@@ -11,10 +11,14 @@
 #include "ui-fonts.h"         // uiInitLabel / uiLabelYForCenter: the entry names are Manrope like all UI text
 #include "ui-draw.h"          // rounded fills, uiWithAlpha, UI_SCREEN_W
 #include "account.h"          // signed in or not: the account entry's name and icon
+#include "downloads.h"        // getDownloadStatus: the download indicator
+#include "button-repeat.h"    // (Test 16) UP/DOWN held walk on through the entries
+#include <sys/sys_time.h>
+#include <stdio.h>             // snprintf
 #include <string.h>
 
 // Ember's rail at 1920x1080. Collapsed (Bild 1 and 3) it is a 112-px column with no surface of its own: the
-// orange logo tile, then one 64x64 slot per entry, 14 apart, and Settings alone at the foot.
+// accent logo tile, then one 64x64 slot per entry, 14 apart, and Settings alone at the foot.
 #define LOGO_X         26
 #define LOGO_Y         48         // the top of the safe area
 #define LOGO_SIZE      60
@@ -48,6 +52,18 @@
 // used to do in the draw path on every move of the highlight.
 #define TEXT_TINTABLE 0xFFFFFFFFu
 
+// (V3.0.0) while a download runs, the Downloads entry shows it in its own slot: the arrow moved up, "1/10" (the
+// running download's place in the batch) under it and its progress - a white bar that fills green - at the foot
+#define DL_ICON_DY     2          // the arrow's top, from the slot's
+#define DL_ICON_SIZE   24
+#define DL_COUNT_DY    40         // the count's capitals centred this far down the slot
+#define DL_COUNT_SIZE  17         // 17/800
+#define DL_BAR_DY      56
+#define DL_BAR_H       6
+#define DL_BAR_TRACK   0xFFF0F7FBu
+#define DL_BAR_FILL    0xFF22C55Eu
+#define DL_TEXT_SIZE   20         // expanded: "1/10 · 45%" after the name
+
 // Four of the eleven have an exact glyph in the embedded set (search, clock, history, cog). The other seven
 // have none - there is no home, play, trending, broadcast, subscription, playlist or person symbol in it - so they
 // borrow the nearest honest reading rather than a made-up one: a pointing hand for what was picked out for you, an
@@ -64,13 +80,14 @@ static const IconId ITEM_ICONS[SIDE_COUNT] = {
    ICON_DOCS,        // Playlists
    ICON_CLOCK,       // Watch Later
    ICON_HISTORY,     // History
+   ICON_DOWNLOAD,    // Downloads
    ICON_LOCK,        // Login (signed in: accountIcon, the open lock)
    ICON_COG,         // Settings
 };
 
 static const char *ITEM_NAMES[SIDE_COUNT] = {
    "Search", "For you", "Trending", "Live", "Subscriptions", "Continue watching",
-   "Playlists", "Watch Later", "History", "Login", "Settings",
+   "Playlists", "Watch Later", "History", "Downloads", "Login", "Settings",
 };
 
 static Icon  icons[SIDE_COUNT];
@@ -78,6 +95,9 @@ static Label labels[SIDE_COUNT];
 static Icon  accountIcon;      // SIDE_ACCOUNT while signed in: the open lock ...
 static Label accountLabel;     // ... and "Account"
 static Label logoLabel, wordmarkLabel;
+static Icon  dlIcon;
+static Label dlCountLabel, dlTextLabel;
+static char  dlCountText[32];   // what dlCountLabel shows
 static int   current = SIDE_SUBS;   // what the content is showing
 static int   picked  = SIDE_SUBS;   // where the highlight sits while focused
 static int   focused;
@@ -111,6 +131,9 @@ void initSidebar(void)
       if (needed > panelWidth) panelWidth = needed;
    }
    initIcon(&accountIcon, ICON_LOCK_OPEN, ICON_SIZE);
+   initIcon(&dlIcon, ICON_DOWNLOAD, DL_ICON_SIZE);
+   uiInitLabel(&dlCountLabel, UI_WEIGHT_EXTRABOLD, 0, 0, AUTO, DL_COUNT_SIZE, TEXT_TINTABLE, TEXT_NOWRAP, "");
+   uiInitLabel(&dlTextLabel, LABEL_WEIGHT, 0, 0, AUTO, DL_TEXT_SIZE, TEXT_TINTABLE, TEXT_NOWRAP, "");
    uiInitLabel(&accountLabel, LABEL_WEIGHT, 0, 0, AUTO, LABEL_SIZE, TEXT_TINTABLE, TEXT_NOWRAP, "Account");
 }
 
@@ -132,17 +155,24 @@ void setSidebarCurrent(SidebarItem item)
 
 int isSidebarFocused(void) { return focused; }
 
+static ButtonRepeat railRepeat;   // (Test 16) a held UP/DOWN repeats, as in the lists
+
 void setSidebarFocused(int focus)
 {
    focused = focus ? 1 : 0;
-   if (focused) picked = current;   // always open on the entry you are actually looking at
+   if (focused) {
+      picked = current;   // always open on the entry you are actually looking at
+      railRepeat.timer = sys_time_get_system_time();   // a direction held from the page waits the hold delay
+      railRepeat.repeats = 0;
+   }
 }
 
-static int step(int from, int delta)
+// one entry on; a fresh press wraps round at either end, a held one stops there (it would spin round for ever)
+static int step(int from, int delta, int wrap)
 {
    int next = from + delta;
-   if (next < 0) next = SIDE_COUNT - 1;
-   if (next >= SIDE_COUNT) next = 0;
+   if (next < 0) next = wrap ? SIDE_COUNT - 1 : 0;
+   if (next >= SIDE_COUNT) next = wrap ? 0 : SIDE_COUNT - 1;
    return next;
 }
 
@@ -150,8 +180,9 @@ int updateSidebar(void)
 {
    if (!focused) return -1;
 
-   if (isPadButtonPressed(PAD_BTN_DOWN)) picked = step(picked, 1);
-   if (isPadButtonPressed(PAD_BTN_UP))   picked = step(picked, -1);
+   PadButtonState down = getPadButtonState(PAD_BTN_DOWN), up = getPadButtonState(PAD_BTN_UP);
+   if      (isRepeatDue(&railRepeat, down)) picked = step(picked, 1, down == PAD_BUTTON_STATE_PRESSED);
+   else if (isRepeatDue(&railRepeat, up))   picked = step(picked, -1, up == PAD_BUTTON_STATE_PRESSED);
 
    // O and RIGHT leave the rail without changing anything: RIGHT points back at the page, and you land where you
    // were on it. Only X commits the highlighted entry - RIGHT used to as well, so a RIGHT meant as "back" opened
@@ -199,18 +230,37 @@ static void drawLogo(int expanded)
 
 // The collapsed rail: no surface of its own, just the logo and the icons on the page background, with
 // `active` on its accent-soft square in the accent colour and the others at 62 % of text-1.
+// The Downloads entry's icon while a download runs or waits (both states): the arrow, the count and the bar in
+// its slot. 0 when nothing downloads (the entry then draws its icon as any other).
+static int drawDownloadStatus(int slotTop, uint32_t color, int *percentOut)
+{
+   int index, total, percent;
+   if (!getDownloadStatus(&index, &total, &percent)) return 0;
+   snprintf(dlCountText, sizeof dlCountText, "%d/%d", index, total);
+   setLabelText(&dlCountLabel, dlCountText);   // rasterises only when the text changes
+   if (dlIcon.tex && dlIcon.tex->h > 0) drawIconCentered(&dlIcon, ICON_CENTER_X, slotTop + DL_ICON_DY - dlIcon.offsetY, color);
+   drawTinted(&dlCountLabel, ICON_CENTER_X - dlCountLabel.tt.tex.w / 2,
+              uiLabelYForCenter(&dlCountLabel, slotTop + DL_COUNT_DY - 10, 20), activeTheme->textPrimary);
+   uiDrawProgressBar(SLOT_X + 8, slotTop + DL_BAR_DY, SLOT_SIZE - 16, DL_BAR_H, (float)percent / 100.0f, DL_BAR_TRACK,
+                     DL_BAR_FILL, DL_BAR_H / 2);
+   if (percentOut) *percentOut = percent;
+   return 1;
+}
+
 static void drawCollapsed(int screenH, int active)
 {
    drawLogo(0);
    for (int i = 0; i < SIDE_COUNT; i++) {
       int y = slotY(i, screenH);
       if (i == active) uiFillRounded(SLOT_X, y, SLOT_SIZE, SLOT_SIZE, SLOT_RADIUS, activeTheme->accentSoft);
-      drawEntryIcon(i, y, i == active ? activeTheme->accent : uiWithAlpha(activeTheme->textPrimary, ICON_REST_ALPHA));
+      uint32_t color = i == active ? activeTheme->accent : uiWithAlpha(activeTheme->textPrimary, ICON_REST_ALPHA);
+      if (i == SIDE_DOWNLOADS && drawDownloadStatus(y, activeTheme->accent, NULL)) continue;
+      drawEntryIcon(i, y, color);
    }
 }
 
-// The expanded panel. The highlight (where X would go) is the accent-soft row with an orange icon and its
-// name in accent-text; the entry the content belongs to keeps its orange icon and reads in text-1 while the
+// The expanded panel. The highlight (where X would go) is the accent-soft row with an accent icon and its
+// name in accent-text; the entry the content belongs to keeps its accent icon and reads in text-1 while the
 // highlight is elsewhere, so both stay visible at once; the rest are text-2.
 static void drawExpanded(int screenH)
 {
@@ -227,9 +277,18 @@ static void drawExpanded(int screenH)
       uint32_t iconColor = (isPicked || isCurrent) ? activeTheme->accent : activeTheme->textSecondary;
       uint32_t nameColor = isPicked ? activeTheme->accentText : isCurrent ? activeTheme->textPrimary : activeTheme->textSecondary;
       if (!isSidebarItemEnabled((SidebarItem)i)) nameColor = uiWithAlpha(nameColor, DISABLED_ALPHA);
-      drawEntryIcon(i, y, iconColor);
+      int percent = 0;
+      int downloading = i == SIDE_DOWNLOADS && drawDownloadStatus(y, activeTheme->accent, &percent);
+      if (!downloading) drawEntryIcon(i, y, iconColor);
       const Label *name = entryLabel(i);
       drawTinted(name, LABEL_X, uiLabelYForCenter(name, y, SLOT_SIZE), nameColor);
+      if (downloading) {   // "Downloads  1/10 · 45%"
+         char text[40];
+         snprintf(text, sizeof text, "%s \xC2\xB7 %d%%", dlCountText, percent);
+         setLabelText(&dlTextLabel, text);
+         drawTinted(&dlTextLabel, LABEL_X + name->tt.tex.w + 14, uiLabelYForCenter(&dlTextLabel, y, SLOT_SIZE),
+                    activeTheme->textSecondary);
+      }
    }
 }
 

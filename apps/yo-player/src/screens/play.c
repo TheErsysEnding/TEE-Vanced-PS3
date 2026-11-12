@@ -12,6 +12,7 @@
 #include "screens/play.h"
 #include "extractor.h"
 #include "stream-select.h"   // pickBestVideo / pickBestAudio (shared with download)
+#include "downloads.h"       // LOCAL_INPUT_PREFIX: a download plays from disk
 
 #include "gfx.h"
 #include "theme.h"              // every colour, the letterbox's included
@@ -192,9 +193,11 @@
 
 // subtitles: triangle cycles off -> track 1 -> track 2 -> ... -> off; the active cue draws low on the
 // picture, above the bottom block while the HUD is up (and above the skip offer while that stands too), and
-// the chip at the top right names the chosen track. The cue stays in FONT_POP (uiGetFallbackFont): the
-// caption languages offered are the ones that font was checked to render.
+// the chip at the top right names the chosen track. (V3.0.0, GitHub issue #1) The cue is in Manrope Bold where
+// Manrope has its letters - Czech, Polish, Hungarian, Romanian, Turkish, Greek, Cyrillic, Vietnamese - and in
+// FONT_POP otherwise (Japanese): FONT_POP's Latin is Latin-1 only, and left the gaps the issue showed (" e icha").
 #define SUBTITLE_TEXT_SIZE 30
+#define SUBTITLE_WEIGHT    UI_WEIGHT_BOLD
 #define SUBTITLE_MAX_W     1480   // wraps short of the volume plate on the left (and its mirror on the right)
 #define SUBTITLE_BOTTOM    975    // the cue's bottom while the HUD is hidden
 #define SUBTITLE_HUD_GAP   20     // clear of the HUD block (or the skip offer) above which it moves
@@ -286,7 +289,7 @@ typedef enum { STAGE_LOADING, STAGE_FAILED, STAGE_PLAYING } Stage;
 #define OPTION_ROWS         3
 #define OPTION_TEXT_MAX_W   720
 enum { OPTION_QUALITY, OPTION_CHAPTERS, OPTION_AUTOPLAY };
-typedef struct { int itag, width, height, fps; char url[MAX_STREAM_URL]; } QualityChoice;
+typedef struct { int itag, width, height, fps, isVp9; char url[MAX_STREAM_URL]; } QualityChoice;
 
 static struct {
    volatile Stage   stage;
@@ -363,6 +366,13 @@ static struct {
    int              audioTrackPick;    // index of the track playing now
    char             videoUrl[MAX_STREAM_URL];   // the video stream (every track pairs with it); kept for a reopen too
    char             audioUrl[MAX_STREAM_URL];   // the separate audio stream it opened with ("" = muxed)
+   char             aacUrl[MAX_STREAM_URL];     // (V3.0.0) the AAC stream (H.264's sound) ...
+   char             opusUrl[MAX_STREAM_URL];    // ... and the Opus one (VP9's): a quality switch takes the right one
+   // (Test 14) the 1080p VP9 stream beside each 1440p one of the video (303 beside 308, 248 beside 271): a player on
+   // the 1440p one gets it beside, and changes over to it where 1440p is too heavy (createVideoPlayerVp9)
+   struct { char mainUrl[MAX_STREAM_URL], lowUrl[MAX_STREAM_URL]; int lowItag, lowW, lowH; } vp9Pairs[2];
+   int              vp9PairCount;
+   int              vp9LowItag, vp9LowW, vp9LowH;   // the pair of the player built last (the stats panel's 1080p line)
    int              reopenPending;     // the player is being rebuilt after the end (reopenAt)
    float            reopenAtSec;       // where the rebuilt player starts
    int              switchTarget;      // switchWorker input: the track it is building
@@ -403,6 +413,7 @@ static struct {
    int              subtitleFetched;     // track index the fetch (in flight or done) belongs to, -1 = none
    int              subtitlesReady;      // fetched track is safe to read
    int              subtitleScanFrom;    // cue lookup cache (getSubtitleCueText)
+   int              subtitleFetchRc;     // (V3.0.0) what fetchSubtitles answered: -429 when YouTube refused it
    SubtitleTrack   *subtitleTrack;       // heap; ~800 KB, allocated on first enable, freed on exit
    volatile int     subWorkerDone;
    int              subThreadActive;
@@ -431,7 +442,7 @@ static struct {
 #define STATS_TEXT_SIZE    UI_BODY_SIZE
 #define STATS_TEXT_WEIGHT  UI_BODY_WEIGHT
 #define STATS_Y            (TITLE_PLATE_BOTTOM + CHIP_GAP)   // 201
-#define STATS_PANEL_W      500
+#define STATS_PANEL_W      660    // (Test 14) room for "VP9 (1440p too heavy)" on the video line
 #define STATS_PAD_X        24
 #define STATS_PAD_Y        20
 #define STATS_LINE_H       32
@@ -481,13 +492,14 @@ static void fail(const char *reason)
    state.stage = STAGE_FAILED;
 }
 
-// only languages FONT_POP renders reliably (hardware-checked: western/central europe + japanese fine,
-// vietnamese diacritics broken). prefix match, so "en-GB" passes as "en". extend after testing a new
-// language on the console.
+// only languages the fonts render: Manrope's Latin (Extended-A and Vietnamese), Greek and Cyrillic (V3.0.0, see
+// SUBTITLE_TEXT_SIZE), and Japanese in FONT_POP. prefix match, so "en-GB" passes as "en".
 static int isRenderableSubtitleLanguage(const char *code)
 {
-   static const char *supported[] = { "en", "es", "pt", "fr", "de", "it", "nl", "sv", "da", "no", "fi",
-                                      "pl", "cs", "sk", "hu", "ro", "tr", "id", "ms", "ja" };
+   static const char *supported[] = { "en", "es", "pt", "fr", "de", "it", "nl", "sv", "da", "no", "nb", "fi",
+                                      "pl", "cs", "sk", "hu", "ro", "tr", "id", "ms", "ja",
+                                      "el", "ru", "uk", "bg", "sr", "mk", "be", "hr", "sl", "bs", "lt", "lv",
+                                      "et", "sq", "ca", "gl", "eu", "is", "af", "az", "vi", "fil", "sw", "mt" };
    for (int i = 0; i < (int)(sizeof supported / sizeof *supported); i++)
       if (strncmp(code, supported[i], strlen(supported[i])) == 0) return 1;
    return 0;
@@ -495,8 +507,77 @@ static int isRenderableSubtitleLanguage(const char *code)
 
 static void writeLiveDescriptor(char *out, int cap, const char *descriptor, long edgeSq, long playSq);   // below
 
+// (V3.0.0, GitHub issue #4) YouTube translates most videos' subtitles - its "auto-translated" tracks, which other
+// players offer and this one did not. When the video has no track in the language set for subtitles
+// (getSubtitleLanguage: the region's by default), one is made from a translatable track - one a person wrote before
+// speech recognition - with &tlang=, and put first, so one press of Triangle shows it.
+static void addTranslatedSubtitles(const StreamInfo *info)
+{
+   const char *code = info->translateCode;
+   if (!code[0] || !isRenderableSubtitleLanguage(code)) return;
+   size_t codeLength = strlen(code);
+   const CaptionTrack *source = NULL;
+   for (int i = 0; i < info->captionCount; i++) {
+      const CaptionTrack *track = &info->captions[i];
+      if (strncmp(track->languageCode, code, codeLength) == 0 &&
+          (track->languageCode[codeLength] == 0 || track->languageCode[codeLength] == '-')) return;   // it has one
+      if (track->translatable && (!source || (source->autoGenerated && !track->autoGenerated))) source = track;
+   }
+   if (!source) return;
+   CaptionTrack translated = *source;
+   size_t urlLength = strlen(source->url);
+   if (urlLength + 7 + codeLength >= sizeof translated.url) return;
+   snprintf(translated.url + urlLength, sizeof translated.url - urlLength, "&tlang=%s", code);
+   strCopy(translated.languageCode, sizeof translated.languageCode, code);
+   snprintf(translated.name, sizeof translated.name, "%s (auto-translated)", info->translateName);
+   translated.translatable = translated.autoGenerated = 0;
+   translated.translated = 1;
+   int keep = state.captionCount < MAX_CAPTION_TRACKS ? state.captionCount : MAX_CAPTION_TRACKS - 1;
+   for (int i = keep; i > 0; i--) state.captionTracks[i] = state.captionTracks[i - 1];
+   state.captionTracks[0] = translated;
+   state.captionCount = keep + 1;
+   logInfo("[yt] subtitles: %s, from the %s track\n", translated.name, source->languageCode);
+}
+
 // builds the player for a video and its audio; for an ended live stream picked up where it was left (playSq >= 0)
 // both descriptors begin at that segment
+// (Test 14) the 1440p VP9 streams of the video with the 1080p VP9 stream of the same frame rate beside each
+static void pairVp9Streams(const StreamInfo *info)
+{
+   state.vp9PairCount = 0;
+   for (int i = 0; i < info->formatCount && state.vp9PairCount < 2; i++) {
+      const StreamFormat *high = &info->formats[i];
+      if (!high->hasVideo || !high->isVp9 || high->height <= 1080 || !high->url[0]) continue;
+      for (int j = 0; j < info->formatCount; j++) {
+         const StreamFormat *low = &info->formats[j];
+         if (!low->vp9Fallback || !low->url[0] || low->needsCipher || (low->fps >= 50) != (high->fps >= 50)) continue;
+         strCopy(state.vp9Pairs[state.vp9PairCount].mainUrl, MAX_STREAM_URL, high->url);
+         strCopy(state.vp9Pairs[state.vp9PairCount].lowUrl, MAX_STREAM_URL, low->url);
+         state.vp9Pairs[state.vp9PairCount].lowItag = low->itag;
+         state.vp9Pairs[state.vp9PairCount].lowW = low->width;
+         state.vp9Pairs[state.vp9PairCount].lowH = low->height;
+         logInfo("[yt] VP9 itag %d has itag %d %dx%d beside it for the busy stretches\n", high->itag, low->itag, low->width,
+                 low->height);
+         state.vp9PairCount++;
+         break;
+      }
+   }
+}
+
+// (Test 14) a player for these streams: with the 1080p VP9 stream beside a 1440p one that has it
+static VideoPlayer *openPlayer(const char *videoUrl, const char *audioUrl)
+{
+   const char *low = NULL;
+   for (int i = 0; i < state.vp9PairCount && !low; i++)
+      if (strcmp(state.vp9Pairs[i].mainUrl, videoUrl) == 0) {
+         low = state.vp9Pairs[i].lowUrl;
+         state.vp9LowItag = state.vp9Pairs[i].lowItag;
+         state.vp9LowW = state.vp9Pairs[i].lowW;
+         state.vp9LowH = state.vp9Pairs[i].lowH;
+      }
+   return createVideoPlayerVp9(videoUrl, low, audioUrl, allocGfxVideoBuffer, freeGfxVideoBuffer);
+}
+
 static VideoPlayer *createPlayerFor(const StreamFormat *video, const StreamFormat *audio, long playSq)
 {
    char videoPath[MAX_STREAM_URL + 48], audioPath[MAX_STREAM_URL + 48];
@@ -509,7 +590,7 @@ static VideoPlayer *createPlayerFor(const StreamFormat *video, const StreamForma
          if (audioPath[0]) openAudio = audioPath;
       }
    }
-   return createVideoPlayerSplit(openVideo, openAudio, allocGfxVideoBuffer, freeGfxVideoBuffer);
+   return openPlayer(openVideo, openAudio);   // (Test 14) a live descriptor pairs with nothing
 }
 
 static void worker(uint64_t arg)
@@ -530,6 +611,8 @@ static void worker(uint64_t arg)
    for (int i = 0; i < info->captionCount; i++)   // keep only tracks the system font can render
       if (isRenderableSubtitleLanguage(info->captions[i].languageCode))
          state.captionTracks[state.captionCount++] = info->captions[i];
+   addTranslatedSubtitles(info);   // (V3.0.0, issue #4)
+   pairVp9Streams(info);           // (Test 14) 1440p's 1080p stream, for the busy stretches
 
    // which H.264 decoder this video may use: the TEE Decoder (TEE's own, on the SPEs) unless settings.txt says
    // video-decoder=sony or it failed earlier in this run; it also opens 1080p60, which cellVdec cannot keep up
@@ -537,9 +620,17 @@ static void worker(uint64_t arg)
    // audio-track switch) follows the same choice.
    setH264DecoderPolicy(getVideoDecoderSetting() == VIDEO_DECODER_SONY ? H264_POLICY_SONY : H264_POLICY_AUTO,
                         getTeeDecoderSpes());
+   setVideoVp9Spes(getVp9Spes());
    int teeUsable = isH264TeeUsable();
    // the best playable format, up to the viewer's quality cap (settings quality=, START > Quality)
-   const StreamFormat *video = pickVideoForPlayback(info, teeUsable, getQualityCap());
+   // (V3.0.0) a download (extractors/local.c) holds exactly the stream it was downloaded as - VP9 too, whatever
+   // the quality cap says
+   const StreamFormat *video = NULL;
+   if (strncmp(requestedInput, LOCAL_INPUT_PREFIX, strlen(LOCAL_INPUT_PREFIX)) == 0) {
+      for (int i = 0; i < info->formatCount && !video; i++) if (info->formats[i].hasVideo) video = &info->formats[i];
+   } else {
+      video = pickVideoForPlayback(info, teeUsable, getQualityCap());
+   }
    if (!video) { fail("no playable mp4 video"); goto done; }
 
    // a live stream's segment line: the edge the resolve just saw (every format has the same numbers), the
@@ -576,13 +667,23 @@ static void worker(uint64_t arg)
       for (int i = 0; i < count; i++) {
          QualityChoice *choice = &state.qualities[state.qualityCount++];
          choice->itag = choices[i]->itag; choice->width = choices[i]->width;
-         choice->height = choices[i]->height; choice->fps = choices[i]->fps;
+         choice->height = choices[i]->height; choice->fps = choices[i]->fps; choice->isVp9 = choices[i]->isVp9;
          strCopy(choice->url, sizeof choice->url, choices[i]->url);
          if (choices[i] == video) state.qualityPick = i;
       }
    }
-   // a muxed pick (itag 18) already carries audio; a video-only pick needs a separate audio track
-   const StreamFormat *audio = video->hasAudio ? NULL : pickBestAudio(info);
+   // a muxed pick (itag 18) already carries audio; a video-only pick needs a separate audio track. (V3.0.0) VP9 takes
+   // the Opus stream - decoded on the PPU, as every SPE is on the picture - and H.264 the AAC one; a download has the
+   // one it was saved with.
+   const StreamFormat *aacAudio = video->hasAudio ? NULL : pickBestAudio(info);
+   const StreamFormat *opusAudio = video->hasAudio ? NULL : pickOpusAudio(info);
+   const StreamFormat *audio = video->isVp9 && opusAudio ? opusAudio : aacAudio;
+   if (strncmp(requestedInput, LOCAL_INPUT_PREFIX, strlen(LOCAL_INPUT_PREFIX)) == 0) {
+      audio = NULL;
+      for (int i = 0; i < info->formatCount && !audio; i++) if (info->formats[i].hasAudio && !info->formats[i].hasVideo) audio = &info->formats[i];
+   }
+   strCopy(state.aacUrl, sizeof state.aacUrl, aacAudio ? aacAudio->url : "");
+   strCopy(state.opusUrl, sizeof state.opusUrl, opusAudio ? opusAudio->url : "");
    logInfo("[yt] play video itag %d %dx%d %s, audio itag %d\n", video->itag, video->width, video->height,
            video->hasAudio ? "muxed" : "video-only", audio ? audio->itag : (video->hasAudio ? video->itag : 0));
 
@@ -612,6 +713,24 @@ static void worker(uint64_t arg)
    // open the decoder: both streams ride the http module by range request. an audio open
    // failure inside the player just means silent playback. NULL if it can't be demuxed/decoded.
    state.pendingPlayer = createPlayerFor(video, audio, liveResumeSq);
+
+   // (V3.0.0) 1440p VP9 the TEE VP9 building block did not open (memory, an SPE): the best H.264 instead
+   if (!state.pendingPlayer && video->isVp9) {
+      const StreamFormat *fallback = pickVideoForPlayback(info, teeUsable, 1080);
+      if (fallback) {
+         logWarn("[yt] TEE VP9 did not take itag %d: playing itag %d %dx%d instead\n", video->itag, fallback->itag,
+                 fallback->width, fallback->height);
+         video = fallback;
+         audio = video->hasAudio ? NULL : aacAudio;   // H.264's sound
+         state.vidItag = video->itag; state.vidW = video->width; state.vidH = video->height; state.vidFps = video->fps;
+         state.audItag = audio ? audio->itag : (video->hasAudio ? video->itag : 0);
+         strCopy(state.videoUrl, sizeof state.videoUrl, video->url);
+         strCopy(state.audioUrl, sizeof state.audioUrl, audio ? audio->url : "");
+         state.qualityPick = -1;
+         for (int i = 0; i < state.qualityCount; i++) if (state.qualities[i].itag == video->itag) state.qualityPick = i;
+         state.pendingPlayer = createPlayerFor(video, audio, liveResumeSq);
+      }
+   }
 
    // a format only the TEE Decoder keeps up with (1080p60) that ended up on cellVdec - the TEE Decoder did not
    // open, for want of memory or because of the stream's own SPS - plays what cellVdec can instead, as before
@@ -738,6 +857,7 @@ static int maxInt(int a, int b) { return a > b ? a : b; }
 static void initHints(void)
 {
    uiInitHints(&hudHints);
+   uiSetHintsFill(&hudHints, activeTheme->hintFillOnVideo);   // its chips lie on the video
    uiAddHint(&hudHints, GLYPH_CROSS,    "Pause");         // HINT_CROSS: Play while paused, Replay once ended
    uiAddHint(&hudHints, GLYPH_L1,       "");              // HINT_L1, paired with
    uiAddHint(&hudHints, GLYPH_R1,       "Chapter");       // HINT_R1
@@ -839,8 +959,8 @@ static void initPlay(void)
    for (int i = 0; i < MAX_CHAPTERS; i++)
       uiInitTextLabel(&chapterLabels[i], CHAPTER_TITLE_WEIGHT, 0, 0, CHAPTER_TITLE_MAX_W, CHAPTER_TEXT_SIZE,
                       activeTheme->textPrimary, TEXT_NOWRAP_ELLIPSIS, "");
-   initLabelRaw(&subtitleLabel, uiGetFallbackFont(), 0, 0, SUBTITLE_MAX_W, AUTO, SUBTITLE_TEXT_SIZE,
-                activeTheme->textPrimary, TEXT_WRAP, "");
+   uiInitTextLabel(&subtitleLabel, SUBTITLE_WEIGHT, 0, 0, SUBTITLE_MAX_W, SUBTITLE_TEXT_SIZE, activeTheme->textPrimary,
+                   TEXT_WRAP, "");
    state.subtitlePick = state.subtitleFetched = -1;   // default off (memset left them 0)
 
    initVolumeMeter(&volumeMeter, uiGetFont(VOLUME_NUMBER_WEIGHT), activeTheme->accent, volumeLevel);
@@ -881,7 +1001,7 @@ static void showToast(const char *text)
 static void subtitleWorker(uint64_t arg)
 {
    (void)arg;
-   fetchSubtitles(state.captionTracks[state.subtitleFetched].url, state.subtitleTrack);   // a failure leaves count 0
+   state.subtitleFetchRc = fetchSubtitles(state.captionTracks[state.subtitleFetched].url, state.subtitleTrack);   // a failure leaves count 0
    __sync_synchronize();
    state.subWorkerDone = 1;
    exitThread();
@@ -895,7 +1015,7 @@ static void cycleSubtitles(void)
    if (state.captionCount == 0 || state.isLive) { showToast("No subtitles"); return; }
    state.subtitlePick = state.subtitlePick + 1 < state.captionCount ? state.subtitlePick + 1 : -1;
 
-   setLabelText(&subtitleLabel, "");   // clear the old track's cue; the new one repopulates once fetched
+   uiSetTextLabel(&subtitleLabel, SUBTITLE_WEIGHT, "");   // clear the old track's cue; the new one repopulates once fetched
 
    char hud[64];
    if (state.subtitlePick < 0) strCopy(hud, sizeof hud, "Subtitles off");
@@ -910,8 +1030,7 @@ static void cycleSubtitles(void)
 static void switchWorker(uint64_t arg)
 {
    (void)arg;
-   VideoPlayer *player = createVideoPlayerSplit(state.videoUrl, state.audioTracks[state.switchTarget].url,
-                                                allocGfxVideoBuffer, freeGfxVideoBuffer);
+   VideoPlayer *player = openPlayer(state.videoUrl, state.audioTracks[state.switchTarget].url);
    if (player && state.switchStartSec > 1.0f) seekVideoPlayer(player, state.switchStartSec);
    state.pendingPlayer = player;
    __sync_synchronize();
@@ -968,7 +1087,7 @@ static void reopenWorker(uint64_t arg)
       video = state.liveVideoOpen;
       audio = state.liveAudioOpen[0] ? state.liveAudioOpen : NULL;
    }
-   VideoPlayer *player = createVideoPlayerSplit(video, audio, allocGfxVideoBuffer, freeGfxVideoBuffer);
+   VideoPlayer *player = openPlayer(video, audio);
    if (player && state.reopenAtSec > 1.0f) seekVideoPlayer(player, state.reopenAtSec);
    state.pendingPlayer = player;
    __sync_synchronize();
@@ -1476,6 +1595,14 @@ static void qualityName(char *out, int cap, int height, int fps)
    else          snprintf(out, cap, "%dp", height);
 }
 
+// (V3.0.0) the row Auto plays: the best quality that is not VP9 - 1440p VP9 plays only when picked (no sound with
+// all 6 SPEs on the picture)
+static int autoQualityIndex(void)
+{
+   for (int i = 0; i < state.qualityCount; i++) if (!state.qualities[i].isVp9) return i;
+   return 0;
+}
+
 static void setOptionLabels(void)
 {
    char text[96], name[24];
@@ -1493,12 +1620,14 @@ static void setOptionLabels(void)
 static void setQualityLabels(void)
 {
    char text[64], name[24];
-   qualityName(name, sizeof name, state.qualities[0].height, state.qualities[0].fps);
+   int autoIndex = autoQualityIndex();
+   qualityName(name, sizeof name, state.qualities[autoIndex].height, state.qualities[autoIndex].fps);
    snprintf(text, sizeof text, "Auto (%s)%s", name, getQualityCap() ? "" : "  - on");
    setLabelText(&qualityLabels[0], text);
    for (int i = 0; i < state.qualityCount; i++) {
       qualityName(name, sizeof name, state.qualities[i].height, state.qualities[i].fps);
-      snprintf(text, sizeof text, "%s%s", name, getQualityCap() && i == state.qualityPick ? "  - on" : "");
+      snprintf(text, sizeof text, "%s%s%s", name, state.qualities[i].isVp9 ? (state.opusUrl[0] || getVp9Spes() != 6 ? " VP9" : " VP9 (no sound)") : "",
+               getQualityCap() && i == state.qualityPick ? "  - on" : "");
       setLabelText(&qualityLabels[i + 1], text);
    }
 }
@@ -1508,7 +1637,7 @@ static void setQualityLabels(void)
 static void chooseQuality(int choice)
 {
    if (state.qualityCount == 0) return;
-   int index = choice < 0 ? 0 : choice;   // Auto plays the best one (the list is sorted best first)
+   int index = choice < 0 ? autoQualityIndex() : choice;   // Auto plays the best one that is not VP9 (sorted best first)
    setQualityCap(choice < 0 ? 0 : state.qualities[index].height);
    if (index == state.qualityPick) { showControls(); return; }
    if (state.threadActive || !state.player || state.stage != STAGE_PLAYING) { showToast("Busy - try again"); return; }
@@ -1525,6 +1654,9 @@ static void chooseQuality(int choice)
    float at = state.seeking ? state.seekTarget : getVideoPositionSeconds(state.player);
    if (state.firstFrameSeen && !state.isLive) setWatchedPosition(requestedInput, (int)at);
    strCopy(state.videoUrl, sizeof state.videoUrl, quality->url);
+   // (V3.0.0) the sound that goes with it: Opus for VP9 (on the PPU), AAC for H.264
+   if (state.audioTrackCount <= 1 && (state.aacUrl[0] || state.opusUrl[0]))
+      strCopy(state.audioUrl, sizeof state.audioUrl, quality->isVp9 && state.opusUrl[0] ? state.opusUrl : state.aacUrl);
    state.vidItag = quality->itag; state.vidW = quality->width; state.vidH = quality->height; state.vidFps = quality->fps;
    state.qualityPick = index;
    setQualityChip();
@@ -1920,10 +2052,19 @@ static void updatePlay(void)
       state.subtitlesReady = (state.subtitleFetched == state.subtitlePick);
       if (!state.subtitlesReady) state.subtitleFetched = -1;   // pick moved mid-fetch: re-picking must refetch
       else if (state.subtitleTrack->count == 0) {   // fetch failed or empty track: drop to Off, visibly
+         int failed = state.subtitleFetched;
          state.subtitlePick = state.subtitleFetched = -1;
          state.subtitlesReady = 0;
          uiSetTextLabel(&subsHudLabel, CHIP_TEXT_WEIGHT, "Subtitles off");
-         showToast("Subtitles unavailable");
+         // (V3.0.0) a translation YouTube refused is taken off the list: Triangle would only ask for it again
+         if (failed >= 0 && failed < state.captionCount && state.captionTracks[failed].translated) {
+            for (int i = failed + 1; i < state.captionCount; i++) state.captionTracks[i - 1] = state.captionTracks[i];
+            state.captionCount--;
+            showToast(state.subtitleFetchRc == -429 ? "YouTube refused the translated subtitles"
+                                                    : "Translated subtitles unavailable");
+         } else {
+            showToast("Subtitles unavailable");
+         }
       }
    }
    if (state.subtitlePick >= 0 && state.subtitlePick != state.subtitleFetched && !state.subThreadActive) {
@@ -1941,7 +2082,8 @@ static void updatePlay(void)
 
    // feed the cue covering the current position into the label; setLabelText only rasterises on change
    if (state.subtitlesReady && state.subtitlePick >= 0 && state.stage == STAGE_PLAYING && state.player)
-      setLabelText(&subtitleLabel, getSubtitleCueText(state.subtitleTrack, getVideoPositionSeconds(state.player), &state.subtitleScanFrom));
+      uiSetTextLabel(&subtitleLabel, SUBTITLE_WEIGHT,   // Manrope, or FONT_POP for a cue Manrope cannot draw
+                     getSubtitleCueText(state.subtitleTrack, getVideoPositionSeconds(state.player), &state.subtitleScanFrom));
 
    // The manual offer is recomputed BEFORE input is read, not after. Computing it afterwards left Triangle
    // judged against the previous frame's answer: on the first frame after the playhead left an "ask"
@@ -1993,13 +2135,19 @@ static void updateStatLabels(void)
    getAudioTrackInfo(state.player, &rate, &channels);
    float pos = getVideoPositionSeconds(state.player), duration = getVideoDurationSeconds(state.player);
 
-   snprintf(line, sizeof line, "Video  itag %d   %dx%d   H.264", state.vidItag, state.vidW, state.vidH);
+   if (isVideoOnLowTrack(state.player))   // (Test 14) the 1080p stream plays where 1440p is too heavy
+      snprintf(line, sizeof line, "Video  itag %d   %dx%d   VP9 (1440p too heavy)", state.vp9LowItag, state.vp9LowW,
+               state.vp9LowH);
+   else
+      snprintf(line, sizeof line, "Video  itag %d   %dx%d   %s", state.vidItag, state.vidW, state.vidH,
+               isVideoVp9(state.player) ? "VP9" : "H.264");
    setLabelText(&statLabels[0], line);
    // the decoder on the frame-rate line: the video line is already as wide as the panel
    snprintf(line, sizeof line, "FPS  %d   (target %d)   %s", state.measuredFps, state.vidFps,
             getVideoDecoderName(state.player));
    setLabelText(&statLabels[1], line);
-   if (state.audItag) snprintf(line, sizeof line, "Audio  itag %d   AAC %d Hz   %d ch", state.audItag, rate, channels);
+   if (state.audItag) snprintf(line, sizeof line, "Audio  itag %d   %s %d Hz   %d ch", state.audItag,
+                               isAudioOpus(state.player) ? "Opus" : "AAC", rate, channels);
    else               strCopy(line, sizeof line, "Audio  none");
    setLabelText(&statLabels[2], line);
    // the times as row A writes them (formatTime: h:mm:ss past an hour), so the panel and the HUD under it
@@ -2460,15 +2608,9 @@ static void drawSkipPrompt(void)
    uiFillRounded(x, y, panelW, SKIP_H, SKIP_RADIUS, activeTheme->panelOnVideo);
    uiDrawNineSlice(UI_TEX_RING_R20_W3, x, y, panelW, SKIP_H, SKIP_RING_SCALE, activeTheme->hintFillOnVideo);
 
-   // the glyph is the console's own art, untinted
+   // (V3.0.0) the triangle as the hint rows draw it: a round chip with a white symbol
    int discX = x + SKIP_PAD_L, discY = y + (SKIP_H - SKIP_DISC_D) / 2;
-   uiFillCircle(discX, discY, SKIP_DISC_D, activeTheme->hintFillOnVideo);
-   GfxTexture glyph = getConsoleGlyph(GLYPH_TRIANGLE);
-   if (glyph.offset) {
-      int glyphW = glyph.h > 0 ? (glyph.w * SKIP_GLYPH_H + glyph.h / 2) / glyph.h : SKIP_GLYPH_H;
-      drawGfxTexture(discX + (SKIP_DISC_D - glyphW) / 2, discY + (SKIP_DISC_D - SKIP_GLYPH_H) / 2, glyphW, SKIP_GLYPH_H,
-                     glyph, 0, 0, 1, 1, 0xFFFFFFFF, GFX_FILTER_LINEAR);
-   }
+   uiDrawButtonGlyph(GLYPH_TRIANGLE, discX, discY, SKIP_DISC_D, activeTheme->hintFillOnVideo);
 
    int textX = x + SKIP_TEXT_DX;
    uiDrawLabelAt(&skipPromptLabel, textX, uiLabelYForBaseline(&skipPromptLabel, y + SKIP_TITLE_BASELINE));
@@ -2543,7 +2685,14 @@ static void drawPlay(void)
          }
          int dx, dy, dw, dh;
          getGfxLetterboxRect(w, h, &dx, &dy, &dw, &dh);
-         drawGfxYuvFrame(dx, dy, dw, dh, frame, w, h);
+         // drawn where the decoder put it: a packed H.264 frame, or a VP9 picture in the decoder's own buffer
+         VideoFrameLayout layout;
+         if (getVideoFrameLayout(state.player, &layout)) {
+            GfxYuvPlanes planes = { layout.y, layout.u, layout.v, layout.pitchY, layout.pitchC, layout.planeW, layout.planeH,
+                                    layout.planeWC, layout.planeHC, layout.left, layout.top, layout.width, layout.height,
+                                    layout.leftC, layout.topC };
+            drawGfxYuvPlanes(dx, dy, dw, dh, &planes);
+         }
       }
       measureFps(frame);
       int overlayUp = state.chaptersVisible || state.descriptionVisible || state.optionsVisible;   // a full-screen overlay hides the HUD noise
