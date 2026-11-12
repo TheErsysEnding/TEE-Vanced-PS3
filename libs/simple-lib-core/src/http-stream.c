@@ -525,6 +525,15 @@ int seekHttpStream(HttpStream *stream, uint64_t offset)
    lock(&stream->stateLock);
    if (!stream->inUse) { unlock(&stream->stateLock); return -1; }
    stream->position = offset;
+   // (V3.0.0 Test 12) a stream that gave up (its reconnects all failed) gets a fresh try with every seek: it used to
+   // stay dead, so a seek after a network failure played what the ring held and stopped again
+   if (stream->error) {
+      stream->error = 0;
+      stream->errorRetries = 0;
+      stream->refused = 0;
+      stream->needReconnect = 1;
+      stream->atEof = 0;
+   }
    // a seek to data not already in the ring: reconnect at the target (a large forward seek would
    // otherwise coast up at the server's throttled bitrate). a SMALL forward gap is the exception -
    // the prefetch streams through it in a few chunks, cheaper than a full https round trip (seeks

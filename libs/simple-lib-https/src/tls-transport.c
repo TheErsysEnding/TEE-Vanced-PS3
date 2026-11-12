@@ -10,7 +10,6 @@
 #include <stdlib.h>   // strtoull, atoi
 
 #include <sys/socket.h>
-#include <netex/errno.h>   // sys_net_errno
 #include <netinet/in.h>
 #include <netdb.h>
 #include <sys/time.h>
@@ -27,11 +26,11 @@ extern const size_t TLS_TRUST_ANCHORS_COUNT;
 #define SECONDS_PER_DAY   86400     // split the unix clock into BearSSL's (days, seconds-of-day) time
 #define HEAD_MAX          8192     // response header block cap; larger is treated as a malformed response
 
-// (TEE Vanced V3.0.0) the socket's receive buffer. The console's default holds only a few packets, and TCP can never
-// have more than that in flight unacknowledged: one stream topped out near 3.3 MB/s (TEE's downloads, 2026-11-12) -
-// less than the hardest minutes of a 1440p60 VP9 stream ask for (about 3.1 MB/s, with the handshake between two
-// windows on top), so the picture fell behind its sound there. Set before connect so the window scale is offered.
-#define SOCKET_BUFFER_BYTES (256 * 1024)
+// (TEE Vanced V3.0.0 Test 12) No SO_RCVBUF here. Test 10 and 11 asked for 256 KB a connection, and on the console
+// every connection then failed after about 256 KB ("recv failed", the offsets 262144 bytes apart); each was replaced
+// at once, ten a second, until the closed ones still held by the system left none: "socket() failed", the stream
+// gave out (the Elden Ring video froze at 17:12 with its sound running on) and webMAN's FTP stopped answering too.
+// RPCS3 never showed it - the PC's network stack holds its sockets. The console's default is what works.
 
 struct TlsConn {
    int                    socketHandle;
@@ -97,18 +96,6 @@ static int connectHost(const char *host, int port)
    struct timeval timeout = { SOCKET_TIMEOUT, 0 };
    setsockopt(socketHandle, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof timeout);
    setsockopt(socketHandle, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof timeout);
-
-   int bufferBytes = SOCKET_BUFFER_BYTES;
-   static int bufferLogged;   // once per run: what the stack granted
-   if (setsockopt(socketHandle, SOL_SOCKET, SO_RCVBUF, &bufferBytes, sizeof bufferBytes) < 0) {
-      if (!bufferLogged) { bufferLogged = 1; logWarn("[tls] could not grow the receive buffer, errno=%d\n", sys_net_errno); }
-   } else if (!bufferLogged) {
-      bufferLogged = 1;
-      int granted = 0;
-      socklen_t grantedLength = sizeof granted;
-      if (getsockopt(socketHandle, SOL_SOCKET, SO_RCVBUF, &granted, &grantedLength) == 0)
-         logInfo("[tls] receive buffer %d KB a connection\n", granted / 1024);
-   }
 
    if (connect(socketHandle, (struct sockaddr *)&address, sizeof address) < 0) {
       logError("[tls] connect failed to %s\n", host);

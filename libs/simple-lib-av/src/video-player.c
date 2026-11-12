@@ -52,6 +52,7 @@ typedef struct {
 #define VP9_PREROLL_FRAMES 2
 #define VP9_RATE_PICTURES  30     // a WebM without a frame duration: the rate is measured over this many pictures
 #define VP9_STALL_MS       5000   // no picture and nothing fed for this long = the stream is dead
+#define VP9_RECOVERIES     5      // (Test 12) read failures a player tries again from where they stopped
 
 // (Test 2) what the decoder is opened with, the first that fits: picture buffers (its default 10 + 2 for the ring
 // above, 6.5 MB each at 1440p) and how much input it may hold before it says "full". YouTube's 1440p60 averages
@@ -85,6 +86,7 @@ struct VideoPlayer {
    volatile int     vp9FeedError;     // the stream could not be read
    volatile uint32_t vp9Fed;          // blocks fed so far (the decode thread's stall check)
    int              vp9StartedAtKeyframe;   // feeder-owned: the first key frame since the open / the last seek
+   int              vp9Recoveries;          // (V3.0.0 Test 12) read failures tried again from where they stopped
    uint64_t     vp9StatsUs;       // when the decoder's numbers last went to the log
    uint64_t     vp9FirstPts;      // the rate measurement for a WebM without a frame duration
    int          vp9RatePictures;
@@ -170,6 +172,7 @@ static VideoDemuxer *getAudioSource(VideoPlayer *player);
 static void audioDecodeThread(uint64_t arg);
 static void opusAudioThread(uint64_t arg);   // (V3.0.0) the Opus one, beside it below
 static void setUpDisplaySync(VideoPlayer *player);   // a VP9 stream whose rate the decode thread measured
+static void postSeek(VideoPlayer *player, float seconds, int landAfter);   // (Test 12) the VP9 feeder's retry
 
 // how far the freshly decoded picture may fall behind the clock before the decoder is allowed to
 // drop non-reference B pictures, and where it stops again. Hysteresis so it cannot flap per frame.
@@ -318,8 +321,17 @@ static void vp9FeedThread(uint64_t arg)
       int fed = feedVp9(player, &player->vp9StartedAtKeyframe);
       if (fed < 0) {
          if (player->running && player->seekRequestNs < 0) {
-            logError("[video-player] reading the VP9 stream failed\n");
-            player->vp9FeedError = 1;
+            // (V3.0.0 Test 12) the network failed: try again from the picture on screen (a seek reconnects the stream)
+            // a few times before giving up - a frozen picture with its sound running on (Test 11) helps nobody
+            if (player->vp9Recoveries < VP9_RECOVERIES) {
+               player->vp9Recoveries++;
+               logWarn("[video-player] reading the VP9 stream failed: trying again from %d s (%d of %d)\n",
+                       (int)(player->currentPts / 1000000000ull), player->vp9Recoveries, VP9_RECOVERIES);
+               postSeek(player, (float)((double)player->currentPts / 1.0e9), 0);
+            } else {
+               logError("[video-player] reading the VP9 stream failed\n");
+               player->vp9FeedError = 1;
+            }
          }
          continue;
       }
@@ -525,6 +537,7 @@ static void performSeek(VideoPlayer *player)
    }
    player->hasPendingAu = 0;
    player->inputEnded = 0;
+   player->vp9FeedError = 0;   // (V3.0.0 Test 12) a seek is a fresh try at the stream
    // land on the fragment keyframe covering the target - or, for a sponsor skip, the next keyframe at/after it
    uint64_t landedNs = seekVideoDemuxer(&player->demuxer, targetNs, player->seekLandAfter);
    // audio follows the video keyframe, but on its own thread: its demuxer seek costs a network
@@ -693,7 +706,7 @@ static void audioDecodeThread(uint64_t arg)
       int got = getPcmAac(player->aacDecoder, player->pcmScratch, &frames, &rate, &pts);
       if (got < 0) break;
       if (got == 1) {
-         if (!player->audioClockValid) {   // anchor the A/V clock to the first audible frame
+         if (!player->audioClockValid && !player->ended) {   // anchor the A/V clock to the first audible frame (Test 12: once)
             // the feed and the A/V clock both assume the demuxer's rate; a decoder that disagrees
             // (e.g. SBR doubling the mp4a rate) means wrong pitch AND a drifting clock - make it visible
             int expectedRate = getAudioSource(player)->audioRate;
@@ -788,7 +801,10 @@ static void opusAudioThread(uint64_t arg)
       int frames = topus_decode(player->opus, au.data, (size_t)au.size, player->pcmScratch);
       if (frames <= 0) continue;   // pre-skip or run-in being dropped, or a packet that is not Opus
 
-      if (!player->audioClockValid) {   // anchor the A/V clock to the first audible frame
+      // anchor the A/V clock to the first audible frame - not again once the picture has ended: the presenter then
+      // drops the audio clock with every frame, and the anchor came back with every packet (Test 11: "audio up" 50
+      // times a second, the clock jumping)
+      if (!player->audioClockValid && !player->ended) {
          int dropped = packetFrames > frames ? packetFrames - frames : 0;
          int64_t firstNs = (int64_t)au.pts - delayNs + (int64_t)dropped * 1000000000ll / 48000;
          player->audioClockBasePts = firstNs < 0 ? 0 : (uint64_t)firstNs;
