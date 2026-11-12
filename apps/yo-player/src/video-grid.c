@@ -79,6 +79,9 @@
 #define THUMB_UA    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
 
 #define PROGRESS_BAR_H 6        // "you got this far" line along the bottom edge of a thumbnail
+// (V3.0.0) a channel's tile (Subscriptions): its picture, round, in the middle of the card
+#define AVATAR_FETCH_PX 176      // asked for at this size (a JPEG of ~11 KB)
+#define AVATAR_SHARE    0.78f    // the circle's diameter, of the thumbnail box's height
 // (V3.0.0) a download on its way (the Downloads page): the rail indicator's bar, a white track filling green
 #define DOWNLOAD_BAR_TRACK 0xFFF0F7FBu
 #define DOWNLOAD_BAR_FILL  0xFF22C55Eu
@@ -113,8 +116,13 @@ static void thumbFetchThread(uint64_t arg)
          int i = __sync_fetch_and_add(&grid->thumbNext, 1);
          if (i >= grid->thumbEnd || grid->stopWorker) break;
 
-         char url[128];
-         snprintf(url, sizeof url, "https://i.ytimg.com/vi/%s/mqdefault.jpg", grid->results.items[i].videoId);
+         char url[256];
+         const SearchResult *item = &grid->results.items[i];
+         if (item->videoId[0]) snprintf(url, sizeof url, "https://i.ytimg.com/vi/%s/mqdefault.jpg", item->videoId);
+         else if (!getChannelAvatarUrl(item->channelId, AVATAR_FETCH_PX, url, sizeof url)) {   // (V3.0.0) a channel
+            grid->thumbs[i].state = THUMB_FAILED;   // no picture known: the tile keeps its round placeholder
+            continue;
+         }
          int length = 0, status = 0;
          int rc = fetchHttp("GET", url, headers, 2, NULL, 0, (char *)buffer, THUMB_CAP, &length, &status);
          if (rc == 0 && status == 200 && length > 0) {
@@ -1125,6 +1133,20 @@ static uint32_t cornerColor(float strength)
 // progress line along its bottom, then the corner masks, which round both.
 static void drawImage(VideoGrid *grid, int i, int x, int y, int w, int h, int radius, uint32_t behind, TileState state)
 {
+   const SearchResult *item = &grid->results.items[i];
+   if (!item->videoId[0] && item->channelId[0]) {   // (V3.0.0) a channel: its picture, round, on the card
+      fillGfxRectangle(x, y, w, h, activeTheme->surface);
+      int d = (int)((float)h * AVATAR_SHARE + 0.5f);
+      int ax = x + (w - d) / 2, ay = y + (h - d) / 2;
+      if (grid->thumbs[i].tex.offset) {
+         drawGfxTexture(ax, ay, d, d, grid->thumbs[i].tex, 0, 0, 1, 1, 0xFFFFFFFF, GFX_FILTER_LINEAR);
+         uiDrawImageCorners(ax, ay, d, d, d / 2, activeTheme->surface);   // the corners away: a circle
+      } else {
+         uiFillCircle(ax, ay, d, activeTheme->surface1);
+      }
+      uiDrawImageCorners(x, y, w, h, radius, behind);
+      return;
+   }
    if (grid->thumbs[i].tex.offset)
       drawGfxTexture(x, y, w, h, grid->thumbs[i].tex, 0, 0, 1, 1,
                      state.watched || state.downloading ? activeTheme->watchedThumbTint : 0xFFFFFFFF, GFX_FILTER_LINEAR);

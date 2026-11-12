@@ -200,10 +200,8 @@ static int fetchSubscriptionChannels(SearchResults *out)
 
       if (!page || getChannelVideos(channels[c].id, NULL, page) != 0) continue;   // keep the stored name
       if (page->channelName[0]) strCopy(item->title, sizeof item->title, page->channelName);
-      if (page->count > 0) {
-         strCopy(item->videoId, sizeof item->videoId, page->items[0].videoId);   // tile art: latest upload
+      if (page->count > 0)   // (V3.0.0) the tile is the channel's picture (its page gave it); the latest upload in words
          snprintf(item->author, sizeof item->author, "Latest: %s", page->items[0].title);
-      }
    }
    free(page);
    free(channels);
@@ -231,8 +229,28 @@ static int tileWatched(const char *videoId)
 #define SUBS_FEED_PAGES 4
 static char subsShown[MAX_SEARCH_RESULTS][CHANNEL_ID_LEN];   // the grid worker's: one fetch runs at a time
 static int  subsShownCount;
+static int  subsFromFeed;   // (V3.0.0) page 1 came from the feed (the channel list failed): its next pages do too
 
+static int fetchSubscriptionsFromFeed(const char *token, SearchResults *out);   // below: the way before V3.0.0
+
+// (V3.0.0) Signed in, Subscriptions is the account's own list of the channels it follows (FEchannels): every one of
+// them - 339 on TEE's account - in one request, each tile the channel's name and picture, "@handle . subscribers"
+// under it (TEE: "wirklich nur die channels ... mit den jeweiligen namen", then "All, profile pictures"). Built from
+// the feed below, the page had asked for 30 pages of uploads and still showed only the channels that had uploaded
+// lately. Should the list not come, the feed's channels stand in.
 static int fetchAccountSubscriptionChannels(const char *token, SearchResults *out)
+{
+   if (!token) subsFromFeed = 0;
+   if (!subsFromFeed) {
+      if (getAccountFeed(ACCOUNT_FEED_CHANNELS, token, out) == 0 && (out->count > 0 || token)) return 0;
+      if (token) return -1;
+      logWarn("[home] the account's channel list did not come: the channels of its subscription feed instead\n");
+      subsFromFeed = 1;
+   }
+   return fetchSubscriptionsFromFeed(token, out);
+}
+
+static int fetchSubscriptionsFromFeed(const char *token, SearchResults *out)
 {
    memset(out, 0, sizeof *out);
    if (!token) subsShownCount = 0;   // page 1: nothing is on screen yet
@@ -259,7 +277,7 @@ static int fetchAccountSubscriptionChannels(const char *token, SearchResults *ou
          memset(tile, 0, sizeof *tile);
          strCopy(tile->channelId, sizeof tile->channelId, video->channelId);
          strCopy(tile->title, sizeof tile->title, video->author[0] ? video->author : video->channelId);
-         strCopy(tile->videoId, sizeof tile->videoId, video->videoId);   // tile art: the latest upload
+         strCopy(tile->videoId, sizeof tile->videoId, video->videoId);   // tile art: the latest upload (no picture here)
          snprintf(tile->author, sizeof tile->author, "Latest: %s", video->title);
       }
       strCopy(next, MAX_CONTINUATION, page->continuation);
@@ -443,7 +461,11 @@ static void setHeading(void)
    uiSetHintShown(&hintsTop, TRIANGLE_HINT, home.category != HOME_FORYOU);
    // A live stream cannot be downloaded, and a Live page holds nothing else: R3 does nothing there (updateHome),
    // so it has no hint either. The bottom row only gets narrower for it.
-   uiSetHintShown(&hintsBottom, R3_HINT, !isLiveCategory(home.category) && home.category != HOME_DOWNLOADS);
+   uiSetHintShown(&hintsBottom, R3_HINT, !isLiveCategory(home.category) && home.category != HOME_DOWNLOADS &&
+                  !subsAreChannels());
+   // (V3.0.0) a Subscriptions tile is a channel's picture, no video: nothing to download, file or watch later
+   uiSetHintShown(&hintsBottom, 1, !subsAreChannels());   // L3, Add to playlist
+   uiSetHintShown(&hintsTop, SQUARE_HINT, !subsAreChannels());
    uiSetHintCaption(&hintsTop, SQUARE_HINT, home.category == HOME_DOWNLOADS ? "To XMB" : "Watch Later");
    fitTitleWidth();   // after the captions: the row's new width decides how far the title may run
    // on the playlist tab the heading is the playlist's name - the user's text, so raw and checked for Manrope
@@ -1012,7 +1034,7 @@ static void updateHome(void)
          uiSetHintCaption(&hintsTop, TRIANGLE_HINT, wantPending ? "Stop download" : "Delete");
       } else {
          uiSetHintShown(&hintsTop, CROSS_HINT, 1);
-         uiSetHintShown(&hintsTop, SQUARE_HINT, 1);
+         uiSetHintShown(&hintsTop, SQUARE_HINT, !subsAreChannels());
       }
       fitTitleWidth();
    }
@@ -1068,6 +1090,7 @@ static void updateHome(void)
       }
    }
    if (isPadButtonPressed(PAD_BTN_SQUARE)) {
+      if (subsAreChannels()) return;   // (V3.0.0) a channel's tile has no video to keep for later
       if (isAccountSignedIn()) {   // the account's Watch Later: the tag flips at once, YouTube is told on a worker
          int inList = isInAccountWatchLater(selected->videoId);
          char videoId[sizeof selected->videoId];

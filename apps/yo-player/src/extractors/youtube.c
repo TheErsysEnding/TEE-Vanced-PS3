@@ -17,6 +17,7 @@
 #include "string-utilities.h"   // strCopy
 #include "dbg.h"                // logInfo (resolve diagnostics)
 #include "vfs.h"                // readFile/writeFile/deleteFile (persist the visitor session)
+#include "thread.h"             // (V3.0.0) the lock round the channels' pictures
 
 #include <stdlib.h>
 #include <stdio.h>
@@ -204,6 +205,8 @@ static int extractVideoId(const char *input, char *out, int cap)
 // a bounded strstr: the first needle that starts inside [from, end), or NULL. jsonString/jsonInt run on to the
 // end of the response when a key is missing; the audio-track fields below are optional, so each probe stays
 // inside its own format object instead of scanning a megabyte for every stream that lacks them.
+static int keepChannelAvatar(const char *channelId, const char *from, const char *end);   // (V3.0.0) below
+
 static const char *findIn(const char *from, const char *end, const char *needle)
 {
    int length = (int)strlen(needle);
@@ -984,7 +987,16 @@ static void parseVideoResults(const char *resp, int respLen, SearchResults *out)
    // the OBJECT ("...":{) - the bare name appears first in youtube's schema list, and the title after it is a
    // tab ("Home"), not the channel name.
    const char *channelMeta = strstr(resp, "\"channelMetadataRenderer\":{");
-   if (channelMeta && channelMeta < end) jsonString(channelMeta, end, "title", out->channelName, sizeof out->channelName);
+   if (channelMeta && channelMeta < end) {
+      jsonString(channelMeta, end, "title", out->channelName, sizeof out->channelName);
+      // (V3.0.0) and its picture, for the channel's tile on Subscriptions: the renderer's "avatar", by its "externalId"
+      char channelId[32];
+      const char *metaEnd = objectEnd(channelMeta + sizeof "\"channelMetadataRenderer\":{" - 2, end);
+      if (metaEnd && jsonString(channelMeta, metaEnd, "externalId", channelId, sizeof channelId)) {
+         const char *avatar = findIn(channelMeta, metaEnd, "\"avatar\":{");
+         if (avatar) keepChannelAvatar(channelId, avatar, metaEnd);
+      }
+   }
 
    // channel Videos feeds sort by Latest, Popular or Oldest, each with a continuation token the screen re-browses
    // with. YouTube used to send them as three chips (chipViewModel with the text, the token after it); it now sends
@@ -1294,6 +1306,71 @@ static int parseTileItem(const char *tile, const char *end, SearchResult *item)
 
 // A channel tile (the account's channel list): its id and name, its handle ("@217ae") in author and its subscriber
 // count ("4.6M subscribers") in views - the tile's two lines.
+// ---- the channels' pictures (V3.0.0) ----
+// Subscriptions draws each channel as its picture (TEE: "All, profile pictures"). YouTube gives it on the account's
+// channel list and on a channel's own page; it is kept here by channel id, without its size part
+// ("=s88-c-k-c0x00ffffff-no-rj"), so a tile asks for the size it draws. The list workers write, the grid's
+// thumbnail workers read: under a lock, created by whichever comes first.
+#define AVATAR_SLOTS   512
+#define AVATAR_URL_CAP 176
+static struct { char id[32]; char url[AVATAR_URL_CAP]; } avatars[AVATAR_SLOTS];
+static int avatarCount, avatarNext;
+static sys_lwmutex_t avatarLock;
+static volatile int avatarLockState;   // 0 none, 1 being created, 2 ready
+
+static void ensureAvatarLock(void)
+{
+   if (avatarLockState == 2) return;
+   if (__sync_bool_compare_and_swap(&avatarLockState, 0, 1)) { createLock(&avatarLock); __sync_synchronize(); avatarLockState = 2; }
+   else while (avatarLockState != 2) yieldThread();
+}
+
+// the first channel picture in [from, end) - a "url" on one of YouTube's picture hosts - for channelId
+static int keepChannelAvatar(const char *channelId, const char *from, const char *end)
+{
+   if (!channelId || strncmp(channelId, "UC", 2) != 0) return 0;
+   static const char KEY[] = "\"url\":\"";
+   for (const char *at = from; (at = findIn(at, end, KEY)) != NULL; at += sizeof KEY - 1) {
+      const char *u = at + sizeof KEY - 1;
+      const char *scheme = "";
+      if (strncmp(u, "//yt3.", 6) == 0) scheme = "https:";
+      else if (strncmp(u, "https://yt3.", 12) != 0) continue;
+      const char *quote = u, *equals = NULL, *slash = NULL;
+      while (quote < end && *quote != '"') { if (*quote == '=') equals = quote; if (*quote == '/') slash = quote; quote++; }
+      const char *stop = equals && equals > slash ? equals : quote;
+      char base[AVATAR_URL_CAP];
+      int length = snprintf(base, sizeof base, "%s%.*s", scheme, (int)(stop - u), u);
+      if (length <= 0 || length >= (int)sizeof base || memchr(base, '\\', (size_t)length)) return 0;
+      ensureAvatarLock();
+      lock(&avatarLock);
+      int slot = -1;
+      for (int i = 0; i < avatarCount && slot < 0; i++) if (strcmp(avatars[i].id, channelId) == 0) slot = i;
+      if (slot < 0) {
+         if (avatarCount < AVATAR_SLOTS) slot = avatarCount++;
+         else { slot = avatarNext; avatarNext = (avatarNext + 1) % AVATAR_SLOTS; }   // full: the oldest goes
+         strCopy(avatars[slot].id, sizeof avatars[slot].id, channelId);
+      }
+      strCopy(avatars[slot].url, sizeof avatars[slot].url, base);
+      unlock(&avatarLock);
+      return 1;
+   }
+   return 0;
+}
+
+int getChannelAvatarUrl(const char *channelId, int size, char *url, int cap)
+{
+   if (!channelId || !channelId[0] || avatarLockState != 2) return 0;
+   int found = 0;
+   lock(&avatarLock);
+   for (int i = 0; i < avatarCount && !found; i++)
+      if (strcmp(avatars[i].id, channelId) == 0) {
+         int length = snprintf(url, cap, "%s=s%d-c-k-c0x00ffffff-no-rj", avatars[i].url, size);   // a JPEG
+         found = length > 0 && length < cap;
+      }
+   unlock(&avatarLock);
+   return found;
+}
+
 static int parseChannelTile(const char *tile, const char *end, SearchResult *item)
 {
    if (!jsonString(tile, end, "contentId", item->channelId, sizeof item->channelId) ||
@@ -1317,35 +1394,14 @@ static int parseChannelTile(const char *tile, const char *end, SearchResult *ite
       }
       at = lineEnd;
    }
-   // (V3.0.0, a diagnosis for the Subscriptions page) once a run: does a channel tile carry the channel's picture? The
-   // host and the size part of its first image only - never the path, which names the channel.
-   static int pictureLogged;
-   if (!pictureLogged) {
-      pictureLogged = 1;
-      static const char URL_KEY[] = "\"url\":\"https://";
-      const char *url = findIn(tile, end, URL_KEY);
-      int images = 0;
-      for (const char *at = tile; (at = findIn(at, end, URL_KEY)) != NULL; at += sizeof URL_KEY - 1) images++;
-      char host[48] = "", size[48] = "";
-      if (url) {
-         const char *h = url + sizeof URL_KEY - 1, *slash = h;
-         while (slash < end && *slash != '/' && *slash != '"' && slash - h < (int)sizeof host - 1) slash++;
-         memcpy(host, h, (size_t)(slash - h));
-         host[slash - h] = 0;
-         const char *quote = slash, *equals = NULL;
-         while (quote < end && *quote != '"') { if (*quote == '=') equals = quote; quote++; }
-         if (equals && quote - equals - 1 < (int)sizeof size) { memcpy(size, equals + 1, (size_t)(quote - equals - 1)); size[quote - equals - 1] = 0; }
-      }
-      logInfo("[yt] channel tiles: %d image url(s) in the first, %s%s%s\n", images, url ? host : "no picture",
-              size[0] ? ", size " : "", size);
-   }
-   return 1;
+   return keepChannelAvatar(item->channelId, tile, end) ? 2 : 1;   // (V3.0.0) 2: with its picture
 }
 
 // channels: keep the channel tiles (ACCOUNT_FEED_CHANNELS) instead of the videos
 static void parseTileResults(const char *resp, int respLen, int channels, SearchResults *out)
 {
    const char *end = resp + respLen;
+   int pictures = 0;   // (V3.0.0) channel tiles that came with their picture
    static const char TILE[] = "\"tileRenderer\":{";
    for (const char *at = resp; out->count < MAX_SEARCH_RESULTS && (at = findIn(at, end, TILE)) != NULL; ) {
       const char *open = at + sizeof TILE - 2, *close = objectEnd(open, end);
@@ -1353,8 +1409,8 @@ static void parseTileResults(const char *resp, int respLen, int channels, Search
       if (channels) {
          SearchResult *item = &out->items[out->count];
          memset(item, 0, sizeof *item);
-         if (findIn(open, close, "\"contentType\":\"TILE_CONTENT_TYPE_CHANNEL\"") && parseChannelTile(open, close, item))
-            out->count++;
+         int got = findIn(open, close, "\"contentType\":\"TILE_CONTENT_TYPE_CHANNEL\"") ? parseChannelTile(open, close, item) : 0;
+         if (got) { out->count++; if (got == 2) pictures++; }
          continue;
       }
       if (!findIn(open, close, "\"contentType\":\"TILE_CONTENT_TYPE_VIDEO\"")) continue;   // Shorts, channels, the ad
@@ -1369,6 +1425,7 @@ static void parseTileResults(const char *resp, int respLen, int channels, Search
    const char *last = NULL;
    for (const char *at = resp; (at = findIn(at, end, NEXT)) != NULL; at += sizeof NEXT - 1) last = at;
    if (last) jsonString(last, end, "continuation", out->continuation, sizeof out->continuation);
+   if (channels) logInfo("[yt] channel tiles: %d of %d with a picture\n", pictures, out->count);
 }
 
 // POST a signed-in TV browse and parse its tiles. A 401 - the access token refused before its time - is answered

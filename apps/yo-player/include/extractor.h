@@ -236,6 +236,10 @@ int getChannelVideos(const char *channelId, const char *token, SearchResults *ou
 // transport/HTTP error.
 int getAccountFeed(AccountFeed feed, const char *continuation, SearchResults *out);
 
+// (V3.0.0) a channel's picture, as YouTube last gave it - the account's channel list (ACCOUNT_FEED_CHANNELS) or the
+// channel's own page (getChannelVideos): its URL at `size` px, a JPEG. 1 when one is known. Thread-safe.
+int getChannelAvatarUrl(const char *channelId, int size, char *url, int cap);
+
 // one change to the signed-in account, sent at once (blocks on the network). 0 when YouTube took it.
 int changeAccount(AccountAction action, const char *id);
 
