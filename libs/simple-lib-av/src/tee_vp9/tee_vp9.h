@@ -64,7 +64,7 @@
 extern "C" {
 #endif
 
-#define TEE_VP9_VERSION "0.2.1"
+#define TEE_VP9_VERSION "0.2.2"
 
 typedef struct tvp9 tvp9;
 
@@ -133,7 +133,13 @@ void   tvp9_release_picture(tvp9 *d, const tvp9_picture *pic);
 void   tvp9_copy_i420(const tvp9_picture *pic, uint8_t *dst);
 
 /* seek: everything fed and not shown is dropped. Release every picture first; feed the new position from a key
-   frame on (earlier blocks are dropped). A stream of another size may follow a flush. 0 ok, -1 failed (tvp9_error) */
+   frame on (earlier blocks are dropped). A stream of another size may follow a flush. 0 ok, -1 failed (tvp9_error)
+
+   (0.2.2) A change of quality needs no flush: feed the other stream from one of its key frames right after the last
+   block of the first one (a key frame of another size, within max_width x max_height). The decoder lets the frames
+   before it finish, then goes on at the new size; no picture is lost, those of the old size keep their planes and
+   size until released. The change costs the pipeline's depth once - about 5 frames of decoding time. A frame of
+   another size that is not a key frame is still refused. */
 int    tvp9_flush(tvp9 *d);
 
 const char *tvp9_error(const tvp9 *d);         /* NULL while all is well */

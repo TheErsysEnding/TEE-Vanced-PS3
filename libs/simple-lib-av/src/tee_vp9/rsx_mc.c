@@ -143,6 +143,7 @@ static rsxmc_geom geom;
 static void *fb_mapped[MAX_FB];
 static int fb_n;
 static uint8_t *pred_mem;
+static int alloc_aw;                        /* the width the RSX-memory surfaces were made for */
 static size_t pred_bytes, surf_bytes;
 static int pred_mapped;
 static u32 pred_off0;
@@ -1062,8 +1063,12 @@ static void worker(void *arg)
 
 /* ---- set-up ------------------------------------------------------------------------------------------------------- */
 
+static int max_aw;                          /* (rsx_mc_prealloc) the widest stream: the RSX-memory surfaces are this wide */
+
 int rsx_mc_prealloc(int aw, int ah)
 {
+	if (aw > max_aw)
+		max_aw = aw;
 	if (pred_mem)
 		return 0;
 	{                                       /* (a slot's surface: frame-shaped, or cells of 192 x 32 - whichever is larger) */
@@ -1213,8 +1218,9 @@ int rsx_mc_init(void *const *fb, int n, size_t fb_bytes, int aw, int ah)
 	ploc_use = packed_want == 2;
 	geom.border_y = PIX_BORDER_Y;
 	geom.border_c = PIX_BORDER_C;
-	ploc = tv9h_local_alloc(128, (u32)aw * RSXMC_STORE_H);
-	mid = tv9h_local_alloc(128, (u32)aw * RSXMC_MID_H);
+	alloc_aw = aw > max_aw ? aw : max_aw;   /* (0.2.2: as wide as the widest stream, for rsx_mc_resize) */
+	ploc = tv9h_local_alloc(128, (u32)alloc_aw * RSXMC_STORE_H);
+	mid = tv9h_local_alloc(128, (u32)alloc_aw * RSXMC_MID_H);
 	idx = tv9h_local_alloc(128, 6 * CHUNK_RECTS * sizeof(u16));
 	ramp = tv9h_local_alloc(128, 512 * 8);
 	if (ramp) {
@@ -1223,7 +1229,7 @@ int rsx_mc_init(void *const *fb, int n, size_t fb_bytes, int aw, int ah)
 		ramp_off = offset_of(ramp);
 	}
 	mark_off = pred_off0 + (u32)(pred_bytes - MARK_BYTES);
-	store = tv9h_local_alloc(128, (u32)aw * RSXMC_STORE_H);
+	store = tv9h_local_alloc(128, (u32)alloc_aw * RSXMC_STORE_H);
 	if (ploc)
 		ploc_off = offset_of(ploc);
 	if (!mid || !idx || !ramp || !store || !ploc) {
@@ -1312,6 +1318,28 @@ int rsx_mc_init(void *const *fb, int n, size_t fb_bytes, int aw, int ah)
 	         (unsigned)(fb_bytes >> 20), RSX_MC_SLOTS, (unsigned)(pred_bytes >> 20), aw, RSXMC_MID_H, (unsigned)(ring_size >> 10),
 	         tv9h_cb_room());
 	ready = 1;
+	return 0;
+}
+
+/* (0.2.2) a stream of another size, the RSX part stopped: everything stays mapped and allocated (pictures of the old
+   size may still be on the screen, drawn by the app's RSX from the same memory) - only the geometry changes */
+int rsx_mc_resize(int aw, int ah)
+{
+	const rsxmc_geom g = { aw, ah, 0, 0, 0, 0, 0, 0, 0 };
+	size_t sb = (size_t)aw * (size_t)ah * 3 / 2;
+
+	if (RSXMC_STRIP_BYTES(&g) > sb)
+		sb = RSXMC_STRIP_BYTES(&g);
+	if (!ready || running || aw > alloc_aw || sb * RSX_MC_SLOTS + MARK_BYTES > pred_bytes || ah + ah / 2 > 4096) {
+		log_line("rsx_mc: cannot change to %d x %d (%s)", aw, ah, !ready ? "not set up" : running ? "still running" : "too big");
+		return -1;
+	}
+	surf_bytes = sb;
+	memset(pred_mem, 0, pred_bytes);
+	cache_flush(pred_mem, pred_bytes);
+	geom.aw = aw;
+	geom.ah = ah;
+	log_line("rsx_mc: now for %d x %d (the mappings and the RSX memory stay)", aw, ah);
 	return 0;
 }
 

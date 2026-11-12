@@ -95,6 +95,11 @@ int rsx_mc_rows_done(int slot);
    two-pass blocks, 8 its label was seen within 100 us of its commands */
 int rsx_mc_row_flags(int slot, int row);
 
+/* (0.2.2) with the RSX part set up and stopped (rsx_mc_stop): a stream of another size, up to the size given to
+   rsx_mc_prealloc. Nothing is unmapped or freed: pictures of the old size may still be read from the same memory.
+   0 ok, -1 not possible (then rsx_mc_release + rsx_mc_init) */
+int rsx_mc_resize(int aw, int ah);
+
 /* the counts since start into the log */
 void rsx_mc_report(const char *name);
 /* The RSX part is given up for this stream (it has failed, or a pixel SPE waited for a row in vain): no more rows are

@@ -52,6 +52,7 @@ typedef struct {
 	int refs;                        /* reference slots holding it */
 	int writing, readers;            /* a pixel job decoding it; running ones reading it */
 	int disp;                        /* pictures of it on their way to the app or held by it */
+	int clear;                       /* (a size change while it was held) to be cleared when it comes free */
 } fbuf;
 
 typedef struct {
@@ -74,11 +75,14 @@ typedef struct {
 typedef struct {
 	uint32_t off, size, padded;      /* in the input ring */
 	int64_t pts;
+	int newsize;                     /* a key frame of another size than the frames before it (0.2.2: no flush needed) */
 } in_frame;
 
 typedef struct {
 	int fb, key, gen, index;
 	int64_t pts;
+	pix_frame pf;                    /* (0.2.2) the picture's planes and size as they were when it was decoded */
+	int w, h, sy, sc;
 } out_pic;
 
 struct tvp9 {
@@ -137,6 +141,9 @@ struct tvp9 {
 	volatile uint32_t in_done;       /* the decoder's: frames whose bytes are free again */
 	uint32_t in_sent;                /* the decoder's: frames sent to the entropy stage */
 	int started;                     /* the feeder's: a key frame has come */
+	int fed_w, fed_h;                /* the feeder's: the size of the last key frame fed (0: none since open / flush) */
+	size_t fb_one;                   /* a frame buffer's bytes at the stream's size */
+	int resizes;                     /* key frames of another size taken without a flush */
 
 	/* the RSX's part (tvp9_config.rsx) */
 	int rsx_on;                      /* asked for and prepared in tvp9_open */
@@ -357,7 +364,7 @@ int tvp9_feed(tvp9 *d, const void *block, size_t size, int64_t pts)
 	const uint8_t *frames[8];
 	size_t sizes[8];
 	uint32_t offs[8], w, done, nlive;
-	int n, i, m = 0;
+	int n, i, m = 0, newsize;
 
 	if (!d || d->failed || !block || size == 0 || size > d->in_cap / 2)
 		return -1;
@@ -391,10 +398,21 @@ int tvp9_feed(tvp9 *d, const void *block, size_t size, int64_t pts)
 		w = at + padded;
 		m++;
 	}
+	{                                   /* (0.2.2) a key frame of another size: the decoder changes over without a flush */
+		int kw = 0, kh = 0;
+
+		newsize = 0;
+		if (m && tvp9_probe(frames[0], sizes[0], &kw, &kh, NULL) == 1) {
+			newsize = d->fed_w && (kw != d->fed_w || kh != d->fed_h);
+			d->fed_w = kw;
+			d->fed_h = kh;
+		}
+	}
 	for (i = 0; i < m; i++) {
 		in_frame *f = &d->inq[(d->in_w + (uint32_t)i) % INQ];
 		const uint32_t padded = ((uint32_t)sizes[i] + 127) & ~127u;
 
+		f->newsize = i == 0 && newsize;
 		memcpy(d->inbuf + offs[i], frames[i], sizes[i]);
 		memset(d->inbuf + offs[i] + sizes[i], 0, padded - sizes[i]);
 		f->off = offs[i];
@@ -569,8 +587,22 @@ static void rsx_setup(tvp9 *d)
 
 	if (!d->rsx_on || d->rsx_lost || (d->rsx_started && d->rsx_aw == d->aw && d->rsx_ah == d->ah))
 		return;
-	if (d->rsx_started)
+	if (d->rsx_started) {
+		/* (0.2.2) a size change in the middle of the stream: pictures of the old size may still be on the screen,
+		   read by the app's RSX from the picture block - nothing is unmapped, only the geometry changes */
 		rsx_mc_stop();
+		d->rsx_started = 0;
+		if (rsx_mc_resize(d->aw, d->ah) != 0 || rsx_mc_start() != 0) {
+			tv9p_log("TEE VP9: the RSX's part did not change over to %d x %d - on the SPEs alone from here on", d->w, d->h);
+			d->rsx_lost = 1;
+			return;
+		}
+		d->rsx_aw = d->aw;
+		d->rsx_ah = d->ah;
+		d->rsx_started = 1;
+		rsx_control_reset(d);
+		return;
+	}
 	d->rsx_started = 0;
 	if (rsx_mc_init(list, 1, d->pic_bytes, d->aw, d->ah) != 0 || rsx_mc_start() != 0) {
 		tv9p_log("TEE VP9: the RSX's part did not start - this stream on the SPEs alone");
@@ -661,10 +693,16 @@ static int geometry(tvp9 *d, int w, int h)
 	d->aw = (w + 63) & ~63;
 	d->ah = (h + 63) & ~63;
 	d->sbr = d->ah / 64;
+	d->fb_one = one;
 	for (int k = 0; k < d->nfb; k++) {
 		uint8_t *m = d->pic_mem + (size_t)k * d->fb_cap;
 
-		memset(m, 0, one);
+		if (d->fb[k].disp)              /* (0.2.2) a picture of the size before, still the app's: cleared when it comes free */
+			d->fb[k].clear = 1;
+		else {
+			memset(m, 0, one);
+			d->fb[k].clear = 0;
+		}
 		d->fb[k].mem = m;
 		d->fb[k].pf.y = (uint64_t)tv9p_ea(m + (size_t)PIX_BORDER_Y * (size_t)d->sy + PIX_BORDER_Y);
 		d->fb[k].pf.u = (uint64_t)tv9p_ea(m + d->ysize + (size_t)PIX_BORDER_C * (size_t)d->sc + PIX_BORDER_C);
@@ -993,6 +1031,46 @@ static void pixel_done(tvp9 *d, int p, uint32_t word)
 	d->st_frames++;
 }
 
+/* a picture of buffer fb is released (or not handed out): the buffer may come free; one that held a picture of the
+   size before a change is cleared then, as geometry() clears the others */
+static void undisp(tvp9 *d, int fb)
+{
+	if (d->fb[fb].disp > 0 && --d->fb[fb].disp == 0 && d->fb[fb].clear) {
+		memset(d->fb[fb].mem, 0, d->fb_one);
+		d->fb[fb].clear = 0;
+	}
+}
+
+/* (0.2.2) a key frame of another size is next and every frame before it is through: the stream goes on at the new
+   size without a flush. Unlike restart(), the input, the pictures on their way out and those the app holds stay -
+   they keep their own planes and size (out_pic) - and only the references go (a key frame replaces them all) */
+static int pipeline_idle(const tvp9 *d)
+{
+	if (d->e_next != d->e_done || d->qn || d->dq_r != d->dq_w)
+		return 0;
+	for (int k = 0; k < d->ntask; k++)
+		if (d->tasks[k].used)
+			return 0;
+	return 1;
+}
+
+static void soft_restart(tvp9 *d)
+{
+	int held = 0;
+
+	for (int k = 0; k < NFB_MAX; k++) {
+		d->fb[k].refs = d->fb[k].writing = d->fb[k].readers = 0;
+		held += d->fb[k].disp > 0;
+	}
+	for (int k = 0; k < 8; k++)
+		d->slotfb[k] = -1;
+	d->geo = 0;
+	d->reset_next = 1;
+	d->resizes++;
+	tv9p_log("TEE VP9: a key frame of another size after %d frames - changing over without a flush (%d picture buffers "
+	         "still the app's)", d->st_frames, held);
+}
+
 /* everything that can go on without an answer; returns 1 when something did */
 static int advance(tvp9 *d)
 {
@@ -1003,8 +1081,8 @@ static int advance(tvp9 *d)
 	while (d->rel_r != d->rel_w) {
 		const int fb = d->relq[d->rel_r % RELQ].fb, gen = d->relq[d->rel_r % RELQ].gen;
 
-		if (gen == d->gen && fb >= 0 && fb < d->nfb && d->fb[fb].disp > 0)
-			d->fb[fb].disp--;
+		if (gen == d->gen && fb >= 0 && fb < d->nfb)
+			undisp(d, fb);
 		d->rel_r++;
 		moved = 1;
 	}
@@ -1019,7 +1097,14 @@ static int advance(tvp9 *d)
 	while (!stopping && d->in_sent != d->in_w && d->e_next - d->e_done < d->lead &&
 	       (!d->c.max_pictures || d->st_pictures + (int)(d->dq_w - d->dq_r) < d->c.max_pictures)) {
 		const int slot = d->e_next % DEPTH;
-		const in_frame *f = &d->inq[d->in_sent % INQ];
+		in_frame *const f = &d->inq[d->in_sent % INQ];
+
+		if (f->newsize) {                   /* (0.2.2) the frames before it go through first, then the size changes */
+			if (!pipeline_idle(d))
+				break;
+			soft_restart(d);
+			f->newsize = 0;
+		}
 
 		d->fseq++;
 		for (int k = 0; k < d->nent; k++) {
@@ -1106,10 +1191,7 @@ static int advance(tvp9 *d)
 		out_pic *o = &d->outq[d->out_w % OUTQ];
 
 		if (d->dq[d->dq_r % DQ].bad) {      /* (rsx_lost) not a picture to show: its buffer is free again, its number is used */
-			const int fb = d->dq[d->dq_r % DQ].fb;
-
-			if (d->fb[fb].disp > 0)
-				d->fb[fb].disp--;
+			undisp(d, d->dq[d->dq_r % DQ].fb);
 			d->pic_index++;
 			d->dq_r++;
 			moved = 1;
@@ -1120,6 +1202,11 @@ static int advance(tvp9 *d)
 		o->fb = d->dq[d->dq_r % DQ].fb;
 		o->key = d->dq[d->dq_r % DQ].key;
 		o->pts = d->dq[d->dq_r % DQ].pts;
+		o->pf = d->fb[o->fb].pf;
+		o->w = d->w;
+		o->h = d->h;
+		o->sy = d->sy;
+		o->sc = d->sc;
 		o->gen = d->gen;
 		o->index = d->pic_index++;
 		d->dq_r++;
@@ -1396,6 +1483,7 @@ int tvp9_flush(tvp9 *d)
 		return -1;
 	}
 	d->started = 0;
+	d->fed_w = d->fed_h = 0;
 	d->ring_w = 0;
 	d->eos = 0;
 	d->drained = 0;                     /* (the decoder's thread sets it only while no flush is asked for) */
@@ -1414,19 +1502,18 @@ int tvp9_get_picture(tvp9 *d, tvp9_picture *pic)
 		return -1;
 	while (d->out_r != d->out_w) {
 		const out_pic *o = &d->outq[d->out_r % OUTQ];
-		const fbuf *b = &d->fb[o->fb];
 
 		if (o->gen != d->gen) {         /* from before a flush */
 			d->out_r++;
 			continue;
 		}
-		pic->y = (const uint8_t *)(uintptr_t)b->pf.y;
-		pic->u = (const uint8_t *)(uintptr_t)b->pf.u;
-		pic->v = (const uint8_t *)(uintptr_t)b->pf.v;
-		pic->stride_y = d->sy;
-		pic->stride_c = d->sc;
-		pic->width = d->w;
-		pic->height = d->h;
+		pic->y = (const uint8_t *)(uintptr_t)o->pf.y;
+		pic->u = (const uint8_t *)(uintptr_t)o->pf.u;
+		pic->v = (const uint8_t *)(uintptr_t)o->pf.v;
+		pic->stride_y = o->sy;
+		pic->stride_c = o->sc;
+		pic->width = o->w;
+		pic->height = o->h;
 		pic->pts = o->pts;
 		pic->index = o->index;
 		pic->key_frame = o->key;
