@@ -43,6 +43,24 @@ SPEs alone (no RSX prediction yet - that will be the RSX test builds). Played in
   or play it afterwards). On the Downloads page, Square moves a video into the XMB after the same warning: a
   30 fps or 720p H.264 copy is remuxed as it is, a 1440p or 1080p60 one is fetched again as the XMB's MP4; the
   app's copy goes once the XMB has it.
+- **Test 15 List** (12 Nov): Home has a list view (TEE's design). DOWN on the cards - on Live too - eases it in: the
+  whole feed from top to bottom, each video with its picture, its title and under it the best quality the player plays
+  of it ("1440p60", "1080p30", no codec; a stream "LIVE · 1080p30"), then its channel with the channel's picture. On
+  the right the selection's details on its own picture: title, channel, views, chips for the quality, the duration or
+  LIVE, subtitles, audio tracks and a stream's rewind, what the quality setting plays of it ("Auto plays it at
+  1080p60 - choose 1440p ..."), the start of its description, and a bar with the channel's picture and two buttons,
+  Channel and Subscribe (RIGHT goes there; Triangle still opens the channel). UP off the first video or O closes it,
+  on the video the list was at; X, Square, R3 and L3 do what they do on a card, and the player comes back to the
+  list. L1/R1 keep the view (Subscriptions and Downloads show their cards). Each video is resolved once, in the
+  background below the UI thread, one at a time, once the selection rests (a quarter of a second): about half a
+  second each in RPCS3, the last 64 kept; those resolves leave their format lines out of dbg.txt. The channels'
+  pictures now show before the cards' meta line and in the preview too, wherever YouTube's feed carries them
+  (search, Live, Trending, channel pages); the last 48 stay decoded. On Home RIGHT off the last card turns to the
+  next page and LEFT off the first back; taking a video out of Watch Later, unsubscribing or deleting a download
+  keeps the place in the list. The first start of a version shows its changes - "1440p 60 FPS SUPPORT" large, what
+  to expect of it - and then once "Support TheErsysEnding:" with the link and its QR code. Checked in RPCS3: the
+  list on Trending, Continue watching and Live, subscribe and back, play and back, 100 videos deep and back again
+  several times - VRAM levels off at 48 - 49 MB, user memory stays at 194 MB free.
 - **Test 14 1080p** (12 Nov): VP9 changes between 1440p and 1080p on its own, so the hardest stretches keep 60
   pictures a second (the VP9 session's task, with TEE VP9 0.2.2). Beside a 1440p stream the player opens YouTube's
   1080p VP9 one (303 beside 308, 248 beside 271 - never offered on its own) and reads the bitrate of every section from
