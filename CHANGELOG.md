@@ -3,6 +3,18 @@
 Every release listed here was installed and used on a real PS3 (EVILNAT 4.92 DEX)
 before it was tagged. Anything that had not been is said so plainly.
 
+## v3.0.2 — not released yet
+
+### The test builds
+
+**V3.0.2 Test 1 Chapters** (2026-11-13): NEXT goes on chapter after chapter.
+- The BD Remote Control's NEXT (GitHub issue #6) - and R1, which it stands for - went to the next chapter once;
+  pressed again, it went back to the start of the chapter it had just gone to, until the playhead had passed that
+  start a few seconds later. A chapter jump lands on the keyframe at or before the chapter's start, and the step
+  went from the chapter the picture was still in. For up to 8 s after a jump, a picture still before the start
+  counts as the chapter the jump went to - for L1/R1 and for the HUD's chapter row; a scrub, a skip or any other
+  seek ends that at once. PREV (L1) went back one chapter at a time before and still does.
+
 ## v3.0.1 — 2026-11-13
 
 Installed and used on a real console (TEE's second one) and by the user who reported the bug, as V3.0.1 Test 1
