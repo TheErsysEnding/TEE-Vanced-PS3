@@ -11,6 +11,7 @@
 typedef struct {
    float start, end;              // seconds
    char  text[SUBTITLE_TEXT_MAX];
+   int   pending;                 // (V3.0.3) its translation is still to come (subtitle-translate.h): not shown yet
 } SubtitleCue;
 
 // one whole parsed track (~800 KB); heap-allocate it, never on the stack.

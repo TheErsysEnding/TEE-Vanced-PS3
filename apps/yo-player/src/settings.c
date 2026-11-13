@@ -8,6 +8,20 @@
 #include <stdio.h>              // snprintf: the runtime path
 #include <string.h>             // strlen
 
+// (V3.0.3) subtitle-language= and what it means, at the end of a new file. Also what an old file's block becomes
+// (migrateSubtitleSetting): V3.0.0 - V3.0.2 wrote it as off, because YouTube refused its translations.
+#define SUBTITLE_SETTING_BLOCK \
+   "subtitle-language=auto\n" \
+   "# the language subtitles are translated into when a video has none in it (Triangle offers that first):\n" \
+   "# auto = the region's (Settings > Region; Czechia: Czech), a code such as cs, pl, sk, hu, de, en, or off.\n" \
+   "# The player translates the video's own subtitles with Google Translate.\n"
+
+static const char *OLD_SUBTITLE_SETTING_BLOCK =
+   "subtitle-language=off\n"
+   "# the language YouTube translates subtitles into when a video has none in it (Triangle offers it first):\n"
+   "# off, auto = the region's (Czechia: Czech), or a code such as cs, pl, sk, hu, de, en. YouTube refuses\n"
+   "# translations to this player at the moment (HTTP 429); the player says so when it does.\n";
+
 // the file written on first launch: each setting at its default, with a comment explaining the values.
 static const char *DEFAULT_SETTINGS =
    "# yo-player settings - edit over FTP; changes apply on the next launch\n"
@@ -44,10 +58,7 @@ static const char *DEFAULT_SETTINGS =
    "# on = at every start, read the newest release's version from the app's GitHub page and say when a newer\n"
    "# one is out (nothing is downloaded); off = never ask GitHub.\n"
    "\n"
-   "subtitle-language=off\n"
-   "# the language YouTube translates subtitles into when a video has none in it (Triangle offers it first):\n"
-   "# off, auto = the region's (Czechia: Czech), or a code such as cs, pl, sk, hu, de, en. YouTube refuses\n"
-   "# translations to this player at the moment (HTTP 429); the player says so when it does.\n";
+   SUBTITLE_SETTING_BLOCK;
 
 static SponsorblockMode sponsorblockMode = SPONSORBLOCK_ADS;
 static VideoDecoderSetting videoDecoder = VIDEO_DECODER_AUTO;
@@ -55,7 +66,7 @@ static int teeDecoderSpes = 4;
 static int vp9Spes = 6;
 static int downloadQuality = 0;   // download-quality=: the R3 page's last choice (downloads.h DownloadQuality)
 static int qualityCap = 0;   // quality=: the highest video height to play, 0 = auto
-static char subtitleLanguage[12] = "off";    // (V3.0.0) subtitle-language=: off, auto or a code
+static char subtitleLanguage[12] = "auto";   // (V3.0.0) subtitle-language=: off, auto or a code (V3.0.3: auto)
 static int updateCheck = 1;                  // (V3.0.0 Test 12) update-check=: on / off
 
 // ---- content region ----
@@ -160,6 +171,24 @@ static void settingsPath(char *out, int cap)
    snprintf(out, cap, "%s/settings.txt", getAppDataDir());
 }
 
+// (V3.0.3) A file V3.0.0 - V3.0.2 wrote holds subtitle-language=off with the comment that YouTube refuses its
+// translations. The player translates subtitles itself now, and auto is the default: that block, exactly as it was
+// written, becomes the new one - in the text read and in the file. A value someone set is left as it is, and so is
+// a file read only in part (rewriting it would lose its tail).
+static void migrateSubtitleSetting(const char *path, char *text, int cap, int length)
+{
+   char *found = strstr(text, OLD_SUBTITLE_SETTING_BLOCK);
+   if (!found || length >= cap - 1) return;
+   int oldLength = (int)strlen(OLD_SUBTITLE_SETTING_BLOCK), newLength = (int)strlen(SUBTITLE_SETTING_BLOCK);
+   if (length - oldLength + newLength >= cap - 1) return;
+   memmove(found + newLength, found + oldLength, (size_t)(length - (int)(found - text) - oldLength + 1));
+   memcpy(found, SUBTITLE_SETTING_BLOCK, (size_t)newLength);
+   if (writeFile(path, text, (uint64_t)strlen(text)) == 0)
+      logInfo("[settings] subtitle-language off -> auto: subtitles are translated by the player now\n");
+   else
+      logWarn("[settings] subtitle-language off -> auto for this run; %s could not be rewritten\n", path);
+}
+
 void loadSettings(void)
 {
    char path[128];
@@ -182,6 +211,7 @@ void loadSettings(void)
    } else if (length >= (int)sizeof text - 1) {
       logWarn("[settings] %s is larger than %d bytes: only its start is read\n", path, (int)sizeof text - 1);
    }
+   if (length > 0) migrateSubtitleSetting(path, text, (int)sizeof text, length);
 
    const char *mode = findSettingValue(text, "sponsorblock-mode");
    if (mode) {
@@ -221,7 +251,7 @@ void loadSettings(void)
       }
       value[length] = 0;
       if (length >= 2) strCopy(subtitleLanguage, sizeof subtitleLanguage, value);
-      else logWarn("[settings] subtitle-language takes off, auto or a code such as cs, using off\n");
+      else logWarn("[settings] subtitle-language takes off, auto or a code such as cs, using auto\n");
    }
    const char *update = findSettingValue(text, "update-check");
    if (update) {

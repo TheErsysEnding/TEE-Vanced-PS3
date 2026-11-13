@@ -104,11 +104,14 @@ const char *getSubtitleCueText(const SubtitleTrack *track, float seconds, int *s
    // auto captions "roll up": cue windows overlap the next line's, so among the cues covering this
    // moment always show the LATEST-started one - returning the first match displays the previous
    // sentence for its whole overlap and reads as lagging subtitles.
+   // (V3.0.3) a cue whose translation is still to come shows nothing: the subtitle worker writes its text, then
+   // clears the flag - the barrier keeps this thread from reading the text before the flag
    const char *text = "";
    for (int i = *scanFrom; i < track->count; i++) {
       if (track->cues[i].start > seconds) break;
       *scanFrom = i;
-      if (seconds < track->cues[i].end) text = track->cues[i].text;
+      if (seconds < track->cues[i].end) text = ((volatile const SubtitleCue *)&track->cues[i])->pending ? "" : track->cues[i].text;
    }
+   __sync_synchronize();
    return text;
 }

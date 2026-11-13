@@ -46,11 +46,11 @@ typedef struct { const char *code; const char *name; const char *language; } Con
 int  getContentRegionCount(void);
 
 // ---- subtitles (V3.0.0, GitHub issue #4) ----
-// The language YouTube translates a video's subtitles into when the video has none in it - its "auto-translated"
-// tracks. settings.txt subtitle-language=: off (the default), auto = the content region's language (Czechia: cs), or
-// a code such as cs, pl, sk, hu, de, en. "" when off; never NULL. Off by default because YouTube refuses translated
-// tracks to an anonymous player without a PO token (HTTP 429, probed 2026-11-12 with every client that gets
-// captions at all); the player then says so and drops the track.
+// The language a video's subtitles are translated into when the video has none in it - YouTube's "auto-translated"
+// tracks. settings.txt subtitle-language=: auto (the default since V3.0.3) = the content region's language (Czechia:
+// cs), a code such as cs, pl, sk, hu, de, en, or off. "" when off; never NULL. YouTube refuses its own translations
+// to an anonymous player without a PO token (HTTP 429, probed 2026-11-12 and 13), so the player translates the
+// track itself with Google Translate (subtitle-translate.h).
 const char *getSubtitleLanguage(void);
 const ContentRegion *getContentRegionAt(int index);   // the fixed table in display order; NULL out of range
 int  getContentRegionIndex(void);                     // the current region's index into that table

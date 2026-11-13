@@ -3,6 +3,27 @@
 Every release listed here was installed and used on a real PS3 (EVILNAT 4.92 DEX)
 before it was tagged. Anything that had not been is said so plainly.
 
+## v3.0.3 — not released yet
+
+### The test builds
+
+**V3.0.3 Test 1 Subtitles** (2026-11-13): subtitles in your language on videos that have none in it (GitHub issue #4).
+- YouTube refuses its own translated subtitles to this player: a request for one without a PO token gets Google's
+  "Sorry..." page (HTTP 429) from every client that is given subtitles at all - over a home connection as over a
+  VPN, in a browser too. That is why they were off in v3.0.0 - v3.0.2, and a Czech viewer saw only English (GitHub
+  issue #4, asked again). The video's own track still comes, so the player now translates that one itself, with
+  Google Translate, where YouTube's own translations come from.
+- A line of speech recognition is a few words cut out of a sentence, and translated line by line it reads as
+  nonsense. The lines are joined into sentences first - short ones together, up to two lines on screen - each shown
+  over the time its words were spoken. The part the video is at is translated first, then the rest, a few minutes
+  of speech a request; a seek goes on from the new place. If Google stops answering, the rest stays in the
+  original language and the player says so.
+- On by default: `subtitle-language=auto` in settings.txt is the region's language (Settings > Region; Czechia:
+  Czech), a code such as cs, pl or de picks one, off turns it off. A settings.txt that V3.0.0 - V3.0.2 wrote, with
+  its `off`, is changed to `auto` once; a value set by hand stays.
+- An auto-dubbed video has a speech-recognition track for every dub: only the original's is listed now, and the
+  translation is made from it, not from a dub's.
+
 ## v3.0.2 — 2026-11-13
 
 Installed and used on a real console (PS3HEN) with the BD Remote Control by the user who reported the bug, as
