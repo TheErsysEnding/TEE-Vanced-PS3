@@ -3,6 +3,23 @@
 Every release listed here was installed and used on a real PS3 (EVILNAT 4.92 DEX)
 before it was tagged. Anything that had not been is said so plainly.
 
+## v3.0.1 — not released yet
+
+### The test builds
+
+**V3.0.1 Test 1 Audio** (2026-11-13): videos with YouTube's AI dubs play their original sound again.
+- Some newer videos played silent, with no Square to change the track (reported on GitHub for "Sayaka's Digital
+  Attic", e.g. J7DIjj4J5FA, which has 20 AI dubs; v2.0.0 played them). Since v3.0.0 the extractor kept every dub's
+  Opus stream (itag 251, VP9's sound) as a format of its own, and two dozen of them filled the 24 format slots
+  before the tracks' AAC stream could join them ("no room for the audio stream"). The Opus streams are now filed by
+  track like the AAC ones, so formats[] holds only the chosen track's two.
+- 1440p played an AI dub instead of the original: it took the first Opus stream YouTube listed - Arabic, on the
+  videos tried. It now plays the original track's Opus stream, and Square offers the tracks in 1440p too.
+- Square opens a list of the video's audio tracks - the original first, then its other languages and the AI dubs,
+  "Playing" beside the one that plays - instead of stepping to the next one: with two dozen dubs that was two dozen
+  player rebuilds to get back.
+- The BD Remote Control (GitHub issue #6) works on a real remote, says the user who asked for it.
+
 ## v3.0.0 — 2026-11-12
 
 Installed and used on TEE's console (EVILNAT 4.92 DEX) through eighteen test builds on 2026-11-11 and 2026-11-12
