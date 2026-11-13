@@ -7,13 +7,15 @@ before it was tagged. Anything that had not been is said so plainly.
 
 ### The test builds
 
-**V3.0.2 Test 1 Chapters** (2026-11-13): NEXT goes on chapter after chapter.
-- The BD Remote Control's NEXT (GitHub issue #6) - and R1, which it stands for - went to the next chapter once;
-  pressed again, it went back to the start of the chapter it had just gone to, until the playhead had passed that
-  start a few seconds later. A chapter jump lands on the keyframe at or before the chapter's start, and the step
-  went from the chapter the picture was still in. For up to 8 s after a jump, a picture still before the start
-  counts as the chapter the jump went to - for L1/R1 and for the HUD's chapter row; a scrub, a skip or any other
-  seek ends that at once. PREV (L1) went back one chapter at a time before and still does.
+**V3.0.2 Test 1 Chapters** (2026-11-13): PREV and NEXT go on chapter after chapter.
+- The BD Remote Control's NEXT and PREV (GitHub issue #6) - R1 and L1, which they stand for - stuck on some videos:
+  NEXT went to the next chapter once and, pressed again, back to the start of that same chapter, until the playhead
+  had passed it a few seconds later; on other videos PREV did the same the other way. A chapter jump lands on a
+  keyframe near the chapter's start - seconds before it on some videos, seconds after it on others - and the next
+  step went by where the picture was: still in the chapter before, or past the 3 s in which PREV goes back a
+  chapter rather than restarting it. For 8 s after a jump, while the picture is in that chapter or before it,
+  L1/R1 and the HUD's chapter row now go by the chapter's start plus the time since the jump; a scrub, a skip or
+  any other seek ends that at once.
 
 ## v3.0.1 — 2026-11-13
 

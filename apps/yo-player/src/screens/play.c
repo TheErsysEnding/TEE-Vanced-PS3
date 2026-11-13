@@ -61,8 +61,8 @@
 #define FAST_SEEK_STEP_SECONDS 60.0f
 // L1 this far into a chapter restarts that chapter instead of stepping back one, the way music players do
 #define CHAPTER_REWIND_GRACE   3.0f
-// (V3.0.2) how long after a chapter jump a picture still before the chapter's start counts as that chapter's (see
-// chapterNow): longer than YouTube's keyframe spacing, so the playhead has reached the start by then
+// (V3.0.2) how long after a chapter jump L1/R1 go by the time since it rather than by the picture (see chapterNow):
+// longer than YouTube's keyframe spacing, so the picture is where the jump meant by then
 #define CHAPTER_JUMP_HOLD_US   8000000ULL
 #define CONTROLS_VISIBLE_US 3000000ULL
 #define TOAST_VISIBLE_US    2000000ULL   // how long a toast ("Skipped ...", "Subtitles: ...") stays up
@@ -1351,19 +1351,22 @@ static int chapterAt(float position)
    return current;
 }
 
-// (V3.0.2) The chapter the playhead counts as in, for L1/R1 and the HUD's chapter row. A chapter jump lands on the
-// keyframe at or before the chapter's start, so for a few seconds the picture is still in the chapter before - and
-// a second R1 then (the BD remote's NEXT, pressed one after another, GitHub issue #6) went to the start of the same
-// chapter again, and again, until the playhead had passed it. Until it has, or CHAPTER_JUMP_HOLD_US on, the
-// position counts as the start of the chapter the jump went to. A later chapter, a scrub, a skip or any other seek
-// (they clear chapterJump) is taken as it is.
+// (V3.0.2) The chapter the playhead counts as in, and where in it, for L1/R1 and the HUD's chapter row. A chapter
+// jump lands on a keyframe near the chapter's start, not on it - seconds before it on some videos, seconds after
+// it on others (GitHub issue #6, the BD remote): landed before, the picture was still in the chapter before, and a
+// second NEXT went to the start of the same chapter again; landed more than CHAPTER_REWIND_GRACE after, a second
+// PREV only restarted the chapter it had gone to. So for CHAPTER_JUMP_HOLD_US after a jump, while the picture is
+// in that chapter or before it, the position counts as the chapter's start plus the time since the jump - what
+// the viewer pressed for. A later chapter, a scrub, a skip or any other seek (they clear chapterJump) is taken as
+// it is.
 static int chapterNow(float *position)
 {
    int current = chapterAt(*position);
-   if (state.chapterJump >= 0 && state.chapterJump < state.chapters.count && current < state.chapterJump &&
-       sys_time_get_system_time() - state.chapterJumpUs < CHAPTER_JUMP_HOLD_US) {
+   uint64_t since = sys_time_get_system_time() - state.chapterJumpUs;
+   if (state.chapterJump >= 0 && state.chapterJump < state.chapters.count && current <= state.chapterJump &&
+       since < CHAPTER_JUMP_HOLD_US) {
       current = state.chapterJump;
-      *position = state.chapters.chapters[current].start;
+      *position = state.chapters.chapters[current].start + (float)since / 1.0e6f;
    }
    return current;
 }
