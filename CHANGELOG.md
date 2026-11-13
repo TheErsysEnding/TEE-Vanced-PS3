@@ -7,6 +7,15 @@ before it was tagged. Anything that had not been is said so plainly.
 
 ### The test builds
 
+**V3.0.3 Test 2 Subtitles** (2026-11-13): every subtitle track in a language the fonts draw can be offered.
+- YouTube lists a video's subtitle tracks by name, and the player kept the first eight before it dropped the
+  languages its fonts do not draw. On a video with two dozen languages Arabic, Bangla and two Chinese took half the
+  places: Polish, Russian, Spanish, Portuguese, Turkish, Italian and more - written by people - were never offered,
+  and Test 1 would have translated one with Google where a person's track was there. Now every track is looked at
+  first; the eight places go to your subtitle language's tracks first (the region's), then the original's, then
+  the rest in YouTube's order, a written track before speech recognition in each. So Triangle shows a track in your
+  language first when the video has one, and the translation only when it has none.
+
 **V3.0.3 Test 1 Subtitles** (2026-11-13): subtitles in your language on videos that have none in it (GitHub issue #4).
 - YouTube refuses its own translated subtitles to this player: a request for one without a PO token gets Google's
   "Sorry..." page (HTTP 429) from every client that is given subtitles at all - over a home connection as over a

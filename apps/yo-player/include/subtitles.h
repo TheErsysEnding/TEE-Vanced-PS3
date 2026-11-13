@@ -23,6 +23,10 @@ typedef struct {
 // blocking GET + parse of a caption track url. 0 ok (count may still be 0), negative on error.
 int fetchSubtitles(const char *url, SubtitleTrack *out);
 
+// (V3.0.3) whether the subtitle fonts draw a language (a YouTube code such as "cs" or "en-GB"): Manrope's Latin with
+// Extended-A and Vietnamese, Greek and Cyrillic, and Japanese in FONT_POP. Tracks in any other are not offered.
+int isSubtitleLanguageShown(const char *code);
+
 // the cue text covering `seconds`, or "" if none. *scanFrom caches the search position across
 // calls (cues are time-ordered); reset it to 0 after a seek or track switch.
 const char *getSubtitleCueText(const SubtitleTrack *track, float seconds, int *scanFrom);

@@ -512,19 +512,6 @@ static void fail(const char *reason)
    state.stage = STAGE_FAILED;
 }
 
-// only languages the fonts render: Manrope's Latin (Extended-A and Vietnamese), Greek and Cyrillic (V3.0.0, see
-// SUBTITLE_TEXT_SIZE), and Japanese in FONT_POP. prefix match, so "en-GB" passes as "en".
-static int isRenderableSubtitleLanguage(const char *code)
-{
-   static const char *supported[] = { "en", "es", "pt", "fr", "de", "it", "nl", "sv", "da", "no", "nb", "fi",
-                                      "pl", "cs", "sk", "hu", "ro", "tr", "id", "ms", "ja",
-                                      "el", "ru", "uk", "bg", "sr", "mk", "be", "hr", "sl", "bs", "lt", "lv",
-                                      "et", "sq", "ca", "gl", "eu", "is", "af", "az", "vi", "fil", "sw", "mt" };
-   for (int i = 0; i < (int)(sizeof supported / sizeof *supported); i++)
-      if (strncmp(code, supported[i], strlen(supported[i])) == 0) return 1;
-   return 0;
-}
-
 static void writeLiveDescriptor(char *out, int cap, const char *descriptor, long edgeSq, long playSq);   // below
 
 // (V3.0.0, GitHub issue #4) YouTube translates most videos' subtitles - its "auto-translated" tracks, which other
@@ -536,7 +523,7 @@ static void writeLiveDescriptor(char *out, int cap, const char *descriptor, long
 static void addTranslatedSubtitles(const StreamInfo *info)
 {
    const char *code = info->translateCode;
-   if (!code[0] || !isRenderableSubtitleLanguage(code)) return;
+   if (!code[0] || !isSubtitleLanguageShown(code)) return;
    size_t codeLength = strlen(code);
    const CaptionTrack *source = NULL;
    for (int i = 0; i < info->captionCount; i++) {
@@ -651,8 +638,8 @@ static void worker(uint64_t arg)
    // exactly that length reads as cut too, which costs it no more than a "..."): renderDescription says so
    state.descriptionCut = (int)strlen(info->description) >= (int)sizeof info->description - 1;
    parseChapters(state.description, &state.chapters);
-   for (int i = 0; i < info->captionCount; i++)   // keep only tracks the system font can render
-      if (isRenderableSubtitleLanguage(info->captions[i].languageCode))
+   for (int i = 0; i < info->captionCount; i++)   // keep only tracks the fonts can render (V3.0.3: the extractor does)
+      if (isSubtitleLanguageShown(info->captions[i].languageCode))
          state.captionTracks[state.captionCount++] = info->captions[i];
    addTranslatedSubtitles(info);   // (V3.0.0, issue #4)
    pairVp9Streams(info);           // (Test 14) 1440p's 1080p stream, for the busy stretches

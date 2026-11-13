@@ -64,6 +64,20 @@ static const char *parseCue(const char *element, const char *end, SubtitleTrack 
    return close + 7;
 }
 
+// (V3.0.3, from play.c, where it was applied after the extractor had kept its first tracks) only languages the
+// fonts render: Manrope's Latin (Extended-A and Vietnamese), Greek and Cyrillic (V3.0.0), and Japanese in FONT_POP.
+// prefix match, so "en-GB" passes as "en".
+int isSubtitleLanguageShown(const char *code)
+{
+   static const char *supported[] = { "en", "es", "pt", "fr", "de", "it", "nl", "sv", "da", "no", "nb", "fi",
+                                      "pl", "cs", "sk", "hu", "ro", "tr", "id", "ms", "ja",
+                                      "el", "ru", "uk", "bg", "sr", "mk", "be", "hr", "sl", "bs", "lt", "lv",
+                                      "et", "sq", "ca", "gl", "eu", "is", "af", "az", "vi", "fil", "sw", "mt" };
+   for (int i = 0; i < (int)(sizeof supported / sizeof *supported); i++)
+      if (strncmp(code, supported[i], strlen(supported[i])) == 0) return 1;
+   return 0;
+}
+
 int fetchSubtitles(const char *url, SubtitleTrack *out)
 {
    memset(out, 0, sizeof *out);
