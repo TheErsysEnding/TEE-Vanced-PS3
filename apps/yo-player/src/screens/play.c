@@ -61,6 +61,9 @@
 #define FAST_SEEK_STEP_SECONDS 60.0f
 // L1 this far into a chapter restarts that chapter instead of stepping back one, the way music players do
 #define CHAPTER_REWIND_GRACE   3.0f
+// (V3.0.2) how long after a chapter jump L1/R1 go by the time since it rather than by the picture (see chapterNow):
+// longer than YouTube's keyframe spacing, so the picture is where the jump meant by then
+#define CHAPTER_JUMP_HOLD_US   8000000ULL
 #define CONTROLS_VISIBLE_US 3000000ULL
 #define TOAST_VISIBLE_US    2000000ULL   // how long a toast ("Skipped ...", "Subtitles: ...") stays up
 
@@ -325,6 +328,8 @@ static struct {
    int              chapterSelected;
    int              chapterTimeWidth;    // widest time label (the right-aligned time column)
    int              chapterPanelWidth;
+   int              chapterJump;         // (V3.0.2) the chapter the last L1/R1 or picker jump went to (-1 none)...
+   uint64_t         chapterJumpUs;       // ...and when: see chapterNow
 
    // the options menu: Quality, Chapters, Autoplay. Quality opens the list of the qualities this video offers
    // that the player can play (the worker fills it at resolve); a pick rebuilds the player at the position.
@@ -943,6 +948,7 @@ static void initPlay(void)
    memset(&state, 0, sizeof state);
    state.skipPrompt = state.skipPromptShown = -1;   // 0 is a real segment index; "none" has to be -1
    state.hudChapter = -1;
+   state.chapterJump = -1;
    state.screenW = getGfxScreenWidth();
    state.screenH = getGfxScreenHeight();
 
@@ -1188,6 +1194,7 @@ static void reopenWorker(uint64_t arg)
 static void reopenAt(float seconds)
 {
    if (state.threadActive || !state.videoUrl[0]) return;   // a worker is still busy; or nothing to reopen from
+   state.chapterJump = -1;   // (V3.0.2) a chapter jump sets it again after this (jumpChapter)
    state.reopenAtSec = seconds;
    state.reopenPending = 1;
    state.seeking = 0;   // the rebuilt player starts at the target; there is nothing left to apply
@@ -1298,6 +1305,7 @@ static int reopenLiveAt(long playSq)
 static void seekTo(float seconds, int atOrAfter)
 {
    if (!state.player) return;
+   state.chapterJump = -1;   // (V3.0.2) a chapter jump sets it again after this (jumpChapter)
    if (state.isLive) {   // no seek index: an ended stream is rebuilt at the segment (Replay at its end, too)
       if (state.liveEnded) reopenLiveAt((long)(liveWindowStartSq() + seconds / state.liveSegmentSec));
       return;
@@ -1318,6 +1326,7 @@ static void nudgeSeek(float deltaSeconds, uint64_t nowUs)
       state.seeking = 1;
       state.seekFrom = state.seekTarget = timelinePosition();
    }
+   state.chapterJump = -1;   // (V3.0.2) L1/R1 after a scrub step from where it went
    state.seekTarget += deltaSeconds;
    float duration = timelineLength();
    if (state.seekTarget < 0.0f) state.seekTarget = 0.0f;
@@ -1342,6 +1351,26 @@ static int chapterAt(float position)
    return current;
 }
 
+// (V3.0.2) The chapter the playhead counts as in, and where in it, for L1/R1 and the HUD's chapter row. A chapter
+// jump lands on a keyframe near the chapter's start, not on it - seconds before it on some videos, seconds after
+// it on others (GitHub issue #6, the BD remote): landed before, the picture was still in the chapter before, and a
+// second NEXT went to the start of the same chapter again; landed more than CHAPTER_REWIND_GRACE after, a second
+// PREV only restarted the chapter it had gone to. So for CHAPTER_JUMP_HOLD_US after a jump, while the picture is
+// in that chapter or before it, the position counts as the chapter's start plus the time since the jump - what
+// the viewer pressed for. A later chapter, a scrub, a skip or any other seek (they clear chapterJump) is taken as
+// it is.
+static int chapterNow(float *position)
+{
+   int current = chapterAt(*position);
+   uint64_t since = sys_time_get_system_time() - state.chapterJumpUs;
+   if (state.chapterJump >= 0 && state.chapterJump < state.chapters.count && current <= state.chapterJump &&
+       since < CHAPTER_JUMP_HOLD_US) {
+      current = state.chapterJump;
+      *position = state.chapters.chapters[current].start + (float)since / 1.0e6f;
+   }
+   return current;
+}
+
 // left/right scrub, cross toggles pause (restarts if the video ended). only once playing.
 // L1/R1 step chapter to chapter without opening the picker. The jump is immediate (no scrub deferral), and a
 // toast names the chapter it went to.
@@ -1350,7 +1379,7 @@ static void jumpChapter(int direction)
    if (state.chapters.count == 0) { showToast("No chapters"); return; }
 
    float position = hudPosition();
-   int current = chapterAt(position);
+   int current = chapterNow(&position);   // (V3.0.2) right after a jump: the chapter it went to
 
    int target = current + direction;
    // stepping back from the middle of a chapter restarts it rather than skipping to the previous one
@@ -1362,6 +1391,8 @@ static void jumpChapter(int direction)
    // on the first keyframe at or after the chapter's start: the one before it lies in the previous chapter, so
    // R1 used to land up to a few seconds early, with the previous chapter's name on screen
    seekTo(state.chapters.chapters[target].start, 1);
+   state.chapterJump = target;
+   state.chapterJumpUs = sys_time_get_system_time();
    showControls();
 
    char notice[96];
@@ -1472,6 +1503,7 @@ static int shouldAutoSkipSponsor(SponsorCategory category)
 static void skipSegment(SponsorSegment *segment)
 {
    segment->skipped = 1;
+   state.chapterJump = -1;   // (V3.0.2) L1/R1 after a skip step from where it went
    seekVideoPlayerPast(state.player, segment->end);
    char notice[64];
    snprintf(notice, sizeof notice, "Skipped %s", getSponsorCategoryName(segment->category));
@@ -1656,6 +1688,8 @@ static void handleChaptersInput(void)
       state.chaptersVisible = 0;
       state.seeking = 0;   // a pending scrub must not overwrite the jump
       seekTo(state.chapters.chapters[state.chapterSelected].start, 1);   // in the chapter, as L1/R1 (jumpChapter)
+      state.chapterJump = state.chapterSelected;   // (V3.0.2) L1/R1 right after it step from there (jumpChapter)
+      state.chapterJumpUs = sys_time_get_system_time();
       showControls();
       return;
    }
@@ -1848,13 +1882,14 @@ static void setAudioChip(void)
 
 // row A's chapter block: the chapter the playhead (or the scrub target) is in, and "· Chapter n of m" - by the
 // position the time, the knob and L1/R1 go by (hudPosition), so the row names the chapter L1/R1 step from. A
-// chapter jump lands on the keyframe at or before the chapter's start, so until the playhead reaches that
-// start the row still names the chapter before, as L1/R1 then do. Re-set only when the chapter or the list
-// changes - a scrub across chapters re-renders once per chapter.
+// chapter jump lands on the keyframe at or before the chapter's start; until the playhead reaches that start the
+// row names the chapter the jump went to (V3.0.2, chapterNow), as L1/R1 then step from it. Re-set only when the
+// chapter or the list changes - a scrub across chapters re-renders once per chapter.
 static void updateChapterRow(void)
 {
    int count = state.isLive ? 0 : state.chapters.count;   // live never shows chapters (openChapters refuses)
-   int current = count > 0 ? chapterAt(hudPosition()) : -1;
+   float position = hudPosition();
+   int current = count > 0 ? chapterNow(&position) : -1;
    if (current == state.hudChapter && count == state.hudChapterCount) return;
    state.hudChapter = current;
    state.hudChapterCount = count;

@@ -49,7 +49,7 @@ static const char *CHANGES[] = {
    BULLET "Downloads: 1440p or 1080p60 into the app's own Downloads page, or an MP4 into the XMB - progress in the "
    "rail, a note when one is in or failed, unfinished ones found at the next start.",
    BULLET "Subscriptions with every channel's picture; subtitles in Czech, Polish, Turkish, Greek, Cyrillic and more.",
-   BULLET "A new blue look, the BD Remote Control, and a note when a new version is out.",
+   BULLET "A new blue look, the BD Remote Control - PREV/NEXT step chapter by chapter - and a note when a new version is out.",
 };
 #define NOTE_COUNT   ((int)(sizeof NOTES / sizeof NOTES[0]))
 #define CHANGE_COUNT ((int)(sizeof CHANGES / sizeof CHANGES[0]))

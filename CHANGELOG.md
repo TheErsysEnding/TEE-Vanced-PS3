@@ -3,6 +3,29 @@
 Every release listed here was installed and used on a real PS3 (EVILNAT 4.92 DEX)
 before it was tagged. Anything that had not been is said so plainly.
 
+## v3.0.2 — 2026-11-13
+
+Installed and used on a real console (PS3HEN) with the BD Remote Control by the user who reported the bug, as
+V3.0.2 Test 1 Chapters; the release package is Test 1 with its version string and the welcome page's list changed.
+
+### In short
+
+- **PREV and NEXT go on chapter after chapter** - on the BD Remote Control (GitHub issue #6) and as L1/R1 on the
+  controller. On some videos NEXT, on others PREV, kept going back to the start of the chapter it had just gone to,
+  until a few seconds had passed.
+
+### The test builds
+
+**V3.0.2 Test 1 Chapters** (119-211e5d9, 2026-11-13): PREV and NEXT go on chapter after chapter.
+- The BD Remote Control's NEXT and PREV (GitHub issue #6) - R1 and L1, which they stand for - stuck on some videos:
+  NEXT went to the next chapter once and, pressed again, back to the start of that same chapter, until the playhead
+  had passed it a few seconds later; on other videos PREV did the same the other way. A chapter jump lands on a
+  keyframe near the chapter's start - seconds before it on some videos, seconds after it on others - and the next
+  step went by where the picture was: still in the chapter before, or past the 3 s in which PREV goes back a
+  chapter rather than restarting it. For 8 s after a jump, while the picture is in that chapter or before it,
+  L1/R1 and the HUD's chapter row now go by the chapter's start plus the time since the jump; a scrub, a skip or
+  any other seek ends that at once.
+
 ## v3.0.1 — 2026-11-13
 
 Installed and used on a real console (TEE's second one) and by the user who reported the bug, as V3.0.1 Test 1
