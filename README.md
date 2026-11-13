@@ -9,7 +9,7 @@ hardware. A fork of **[mohasi's Yo! Player](https://github.com/mohasi/ps3-dev)**
 (Apache-2.0) — see [NOTICE](NOTICE); the application and its libraries are his
 work. The H.264 decoder it plays most videos with, and the VP9 decoder that plays 1440p, are TEE's own (below).
 
-**Status: v3.0.0.** Every version here has been installed and used on a real
+**Status: v3.0.1.** Every version here has been installed and used on a real
 console before being called done. See [CHANGELOG.md](CHANGELOG.md).
 
 ---
@@ -97,9 +97,9 @@ Greek, Cyrillic and the rest of Latin show in subtitles as they do in titles.
 **The original audio, and Square for the others.** YouTube serves more and more
 videos with AI auto-dubbed audio tracks in other languages, and the player used
 to take whichever track came last, so a video could start in a machine voice in
-a language nobody asked for. It now plays the original. When a video has
-several tracks, the player says so as it starts, and Square steps through them
-from where you are.
+a language nobody asked for. It now plays the original - in 1440p too, since
+v3.0.1. When a video has several tracks, the player says so as it starts, and
+Square opens the list of them: pick one, and it plays on from where you are.
 
 **Its own H.264 decoder: 1080p60 at 60 fps.** The TEE Decoder runs on the
 PS3's SPEs and plays YouTube's 1080p60 at a full 60 frames a second, where
@@ -119,7 +119,7 @@ from the sofa. A new version shows what it brings once, at its first start.
 
 **The BD Remote Control.** The PS3's own remote works the app: Enter, Play and
 Pause are X, Return and Stop are O, the arrows and scan keys move and seek
-(not tried with a real remote yet).
+(confirmed on a real remote by the user who asked for it, GitHub issue #6).
 
 **A note when a newer version is out.** At every start the app asks its GitHub
 page; `update-check=off` in `settings.txt` leaves GitHub alone.
@@ -162,7 +162,7 @@ The package lands in `pkg/out/`, named after `APP_VERSION` in
 python3 genbuild.py                 # generate build-ps3.bat from the .vcxproj files
 ./tools/sync-work.sh                # mirror sources onto the build machine
 ssh <vm> "cd /d C:\ps3-dev && build-ps3.bat"
-./build-pkg-fromsource.sh TEE-Vanced-PS3-v3.0.0 "TEE Vanced PS3 V3.0.0"
+./build-pkg-fromsource.sh TEE-Vanced-PS3-v3.0.1 "TEE Vanced PS3 V3.0.1"
 ```
 
 Upstream is pinned (`UPSTREAM_REV` in `tools/build-env.sh`). mohasi's tree has
@@ -206,7 +206,7 @@ not contain the change. `build.sh` now checks this itself: it fetches the ELF to
 and that run's build stamp. By hand, on the build machine:
 
 ```sh
-ppu-lv2-strings yo-player.ppu.elf | grep "V3.0.0"
+ppu-lv2-strings yo-player.ppu.elf | grep "V3.0.1"
 ```
 
 ---
