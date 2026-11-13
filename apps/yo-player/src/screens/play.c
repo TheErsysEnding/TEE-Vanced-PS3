@@ -330,6 +330,11 @@ static struct {
    // that the player can play (the worker fills it at resolve); a pick rebuilds the player at the position.
    int              optionsVisible;
    int              optionsLevel;         // 0 the menu, 1 the quality list
+   // (V3.0.1) the audio track list (Square): every track by name, the one playing marked; X changes to the one picked
+   int              audioPickerVisible;
+   int              audioPickerSelected;
+   int              audioLabelsRendered;
+   int              audioPanelWidth;
    int              optionsSelected;
    QualityChoice    qualities[MAX_QUALITY_CHOICES];   // the best first
    int              qualityCount;
@@ -364,6 +369,7 @@ static struct {
    AudioTrack       audioTracks[MAX_AUDIO_TRACKS];   // copied from the resolve (worker sets)
    int              audioTrackCount;   // 0 unless there are at least two to choose between
    int              audioTrackPick;    // index of the track playing now
+   int              videoIsVp9;        // (V3.0.1) the picture is VP9: a track plays its Opus stream, else its AAC one
    char             videoUrl[MAX_STREAM_URL];   // the video stream (every track pairs with it); kept for a reopen too
    char             audioUrl[MAX_STREAM_URL];   // the separate audio stream it opened with ("" = muxed)
    char             aacUrl[MAX_STREAM_URL];     // (V3.0.0) the AAC stream (H.264's sound) ...
@@ -474,6 +480,10 @@ static Label descriptionHeading, chaptersHeading;    // the two overlay panels' 
 static Label optionsHeading, qualityHeading;          // the options menu's two pages
 static Label optionLabels[OPTION_ROWS];               // "Quality: ...", "Chapters", "Autoplay: On"
 static Label qualityLabels[MAX_QUALITY_CHOICES + 1];  // "Auto (1080p60)", then one per quality
+static Label audioTracksHeading;                      // (V3.0.1) the audio track list: its heading...
+static Label audioTrackLabels[MAX_AUDIO_TRACKS];      // ...and the tracks' names, as YouTube gives them
+static Label audioOnLabel;                            // ..."Playing", beside the track that plays
+static UiHints audioPickerHints;
 static UiHints optionHints;
 static UiHints hudHints;                      // the HUD's hint row
 static UiHints descriptionHints, chapterHints;       // each overlay's own buttons, in its heading
@@ -562,6 +572,30 @@ static void pairVp9Streams(const StreamInfo *info)
          break;
       }
    }
+}
+
+// (V3.0.1) the stream of audio track i that goes with the picture: Opus beside VP9 (decoded on the PPU, as every SPE
+// is on the picture), AAC beside H.264 - the other one where YouTube serves the track without it, as a quality
+// switch does for a single track (chooseQuality)
+static const AudioTrack *trackStream(int i, int vp9, const char **url)
+{
+   const AudioTrack *track = &state.audioTracks[i];
+   *url = (vp9 && track->opusUrl[0]) || !track->url[0] ? track->opusUrl : track->url;
+   return track;
+}
+
+static const char *trackAudioUrl(int i, int vp9)
+{
+   const char *url;
+   trackStream(i, vp9, &url);
+   return url;
+}
+
+static int trackAudioItag(int i, int vp9)
+{
+   const char *url;
+   const AudioTrack *track = trackStream(i, vp9, &url);
+   return url == track->opusUrl ? track->opusItag : track->itag;
 }
 
 // (Test 14) a player for these streams: with the 1080p VP9 stream beside a 1440p one that has it
@@ -690,13 +724,16 @@ static void worker(uint64_t arg)
    state.vidItag = video->itag; state.vidW = video->width; state.vidH = video->height; state.vidFps = video->fps;
    state.audItag = audio ? audio->itag : (video->hasAudio ? video->itag : 0);
    state.isLive = video->isLiveSegmented;
+   state.videoIsVp9 = video->isVp9;
 
    // several audio tracks: keep them for Square. Only behind a video-only stream - a muxed one (itag 18)
    // carries its own sound - and not live, whose rolling segment window a rebuild would have to rejoin.
+   // (V3.0.1) the AAC stream or the Opus one: 1440p plays a track's Opus stream
    if (audio && !video->hasAudio && !state.isLive && info->audioTrackCount > 1) {
       int playing = -1;
       for (int i = 0; i < info->audioTrackCount; i++)
-         if (strcmp(info->audioTracks[i].url, audio->url) == 0) { playing = i; break; }
+         if (strcmp(info->audioTracks[i].url, audio->url) == 0 ||
+             (info->audioTracks[i].opusUrl[0] && strcmp(info->audioTracks[i].opusUrl, audio->url) == 0)) { playing = i; break; }
       if (playing >= 0) {
          memcpy(state.audioTracks, info->audioTracks, info->audioTrackCount * sizeof *info->audioTracks);
          strCopy(state.videoUrl, sizeof state.videoUrl, video->url);
@@ -722,6 +759,7 @@ static void worker(uint64_t arg)
                  fallback->width, fallback->height);
          video = fallback;
          audio = video->hasAudio ? NULL : aacAudio;   // H.264's sound
+         state.videoIsVp9 = 0;
          state.vidItag = video->itag; state.vidW = video->width; state.vidH = video->height; state.vidFps = video->fps;
          state.audItag = audio ? audio->itag : (video->hasAudio ? video->itag : 0);
          strCopy(state.videoUrl, sizeof state.videoUrl, video->url);
@@ -743,6 +781,7 @@ static void worker(uint64_t arg)
          destroyVideoPlayer(state.pendingPlayer);
          video = fallback;
          if (video->hasAudio) audio = NULL;   // a muxed pick carries its own sound
+         state.videoIsVp9 = video->isVp9;
          state.vidItag = video->itag; state.vidW = video->width; state.vidH = video->height; state.vidFps = video->fps;
          state.audItag = audio ? audio->itag : (video->hasAudio ? video->itag : 0);
          strCopy(state.videoUrl, sizeof state.videoUrl, video->url);
@@ -887,6 +926,11 @@ static void initHints(void)
    uiAddHint(&chapterHints, GLYPH_START,     "Close");
    uiAddHint(&chapterHints, GLYPH_DPAD_UP,   "");
    uiAddHint(&chapterHints, GLYPH_DPAD_DOWN, "Move");
+   uiInitHints(&audioPickerHints);
+   uiAddHint(&audioPickerHints, GLYPH_CROSS,     "Play");
+   uiAddHint(&audioPickerHints, GLYPH_CIRCLE,    "Close");
+   uiAddHint(&audioPickerHints, GLYPH_DPAD_UP,   "");
+   uiAddHint(&audioPickerHints, GLYPH_DPAD_DOWN, "Move");
    uiInitHints(&optionHints);
    uiAddHint(&optionHints, GLYPH_CROSS,     "Select");
    uiAddHint(&optionHints, GLYPH_CIRCLE,    "Back");
@@ -927,6 +971,10 @@ static void initPlay(void)
                TEXT_NOWRAP, "Options");
    uiInitLabel(&qualityHeading, PANEL_TITLE_WEIGHT, 0, 0, AUTO, PANEL_TITLE_SIZE, activeTheme->textPrimary,
                TEXT_NOWRAP, "Quality");
+   uiInitLabel(&audioTracksHeading, PANEL_TITLE_WEIGHT, 0, 0, AUTO, PANEL_TITLE_SIZE, activeTheme->textPrimary,
+               TEXT_NOWRAP, "Audio track");
+   uiInitLabel(&audioOnLabel, CHAPTER_TITLE_WEIGHT, 0, 0, AUTO, CHAPTER_TEXT_SIZE, activeTheme->textSecondary,
+               TEXT_NOWRAP, "Playing");
    for (int i = 0; i < OPTION_ROWS; i++)
       uiInitLabel(&optionLabels[i], CHAPTER_TITLE_WEIGHT, 0, 0, OPTION_TEXT_MAX_W, CHAPTER_TEXT_SIZE,
                   activeTheme->textPrimary, TEXT_NOWRAP, "");
@@ -958,6 +1006,9 @@ static void initPlay(void)
    }
    for (int i = 0; i < MAX_CHAPTERS; i++)
       uiInitTextLabel(&chapterLabels[i], CHAPTER_TITLE_WEIGHT, 0, 0, CHAPTER_TITLE_MAX_W, CHAPTER_TEXT_SIZE,
+                      activeTheme->textPrimary, TEXT_NOWRAP_ELLIPSIS, "");
+   for (int i = 0; i < MAX_AUDIO_TRACKS; i++)
+      uiInitTextLabel(&audioTrackLabels[i], CHAPTER_TITLE_WEIGHT, 0, 0, OPTION_TEXT_MAX_W, CHAPTER_TEXT_SIZE,
                       activeTheme->textPrimary, TEXT_NOWRAP_ELLIPSIS, "");
    uiInitTextLabel(&subtitleLabel, SUBTITLE_WEIGHT, 0, 0, SUBTITLE_MAX_W, SUBTITLE_TEXT_SIZE, activeTheme->textPrimary,
                    TEXT_WRAP, "");
@@ -1025,12 +1076,12 @@ static void cycleSubtitles(void)
 }
 
 // build the player for the switchTarget audio track at switchStartSec. Runs on a worker thread because
-// createVideoPlayerSplit blocks on network i/o; the old player is already gone (cycleAudioTrack frees it
+// createVideoPlayerSplit blocks on network i/o; the old player is already gone (switchAudioTrack frees it
 // before spawning this), so two sets of video frame buffers never have to fit at once.
 static void switchWorker(uint64_t arg)
 {
    (void)arg;
-   VideoPlayer *player = openPlayer(state.videoUrl, state.audioTracks[state.switchTarget].url);
+   VideoPlayer *player = openPlayer(state.videoUrl, trackAudioUrl(state.switchTarget, state.videoIsVp9));
    if (player && state.switchStartSec > 1.0f) seekVideoPlayer(player, state.switchStartSec);
    state.pendingPlayer = player;
    __sync_synchronize();
@@ -1046,16 +1097,18 @@ static void startSwitchWorker(void)
    if (!state.threadActive) { state.switchPending = 0; fail("couldn't switch audio track"); }
 }
 
-// Square, on a video with several audio tracks: the next track, from where the video is now. The player
-// cannot swap its audio stream in place, so this is mohasi's resolution switch (upstream, b263bf9) applied to
-// audio: the current player is torn down, a worker builds the new one and seeks it to the same position,
-// and the screen says "Loading..." meanwhile. updatePlay adopts it - or, when the track will not open,
-// rebuilds the one we came from, so a bad track costs a second's reload rather than the video.
-static void cycleAudioTrack(void)
+// A track from the list (Square), from where the video is now. The player cannot swap its audio stream in
+// place, so this is mohasi's resolution switch (upstream, b263bf9) applied to audio: the current player is torn
+// down, a worker builds the new one and seeks it to the same position, and the screen says "Loading..."
+// meanwhile. updatePlay adopts it - or, when the track will not open, rebuilds the one we came from, so a bad
+// track costs a second's reload rather than the video. (V3.0.1) Square used to step to the next track; with two
+// dozen AI dubs that was two dozen reloads to get back, so it opens the list instead (openAudioPicker).
+static void switchAudioTrack(int target)
 {
-   if (state.stage != STAGE_PLAYING || !state.player || state.threadActive) return;   // still opening one
+   if (state.stage != STAGE_PLAYING || !state.player || state.threadActive) { showToast("Busy - try again"); return; }
+   if (target == state.audioTrackPick) { showControls(); return; }
 
-   state.switchTarget = (state.audioTrackPick + 1) % state.audioTrackCount;
+   state.switchTarget = target;
    state.switchPending = 1;
    state.switchReverting = 0;
    state.switchWasPaused = isVideoPaused(state.player);
@@ -1074,6 +1127,39 @@ static void cycleAudioTrack(void)
    startSwitchWorker();
 }
 
+// (V3.0.1) Square opens the list of the video's audio tracks - the original first, then its other languages and
+// YouTube's AI dubs - on the one playing. The names rasterise once per video, on the first open.
+static void openAudioPicker(void)
+{
+   if (!state.audioLabelsRendered) {
+      int widest = 0;
+      for (int i = 0; i < state.audioTrackCount; i++) {
+         uiSetTextLabel(&audioTrackLabels[i], CHAPTER_TITLE_WEIGHT, state.audioTracks[i].name[0] ? state.audioTracks[i].name : "Audio");
+         if (audioTrackLabels[i].tt.tex.w > widest) widest = audioTrackLabels[i].tt.tex.w;
+      }
+      state.audioPanelWidth = widest + CHAPTER_TIME_GAP + audioOnLabel.tt.tex.w;
+      state.audioLabelsRendered = 1;
+   }
+   state.audioPickerSelected = state.audioTrackPick;
+   state.audioPickerVisible = 1;
+}
+
+// while the list is up it owns the pad: up/down move, X changes to the track, O or Square close it
+static void handleAudioPickerInput(void)
+{
+   if (isPadButtonPressed(PAD_BTN_CIRCLE) || isPadButtonPressed(PAD_BTN_SQUARE)) { state.audioPickerVisible = 0; return; }
+   if (isPadButtonPressed(PAD_BTN_CROSS)) {
+      state.audioPickerVisible = 0;
+      switchAudioTrack(state.audioPickerSelected);
+      return;
+   }
+   static ButtonRepeat navigateRepeat;
+   if (isRepeatDue(&navigateRepeat, getPadButtonState(PAD_BTN_DOWN)))    state.audioPickerSelected++;
+   else if (isRepeatDue(&navigateRepeat, getPadButtonState(PAD_BTN_UP))) state.audioPickerSelected--;
+   if (state.audioPickerSelected < 0) state.audioPickerSelected = 0;
+   if (state.audioPickerSelected >= state.audioTrackCount) state.audioPickerSelected = state.audioTrackCount - 1;
+}
+
 // Rebuilds the player from the streams it was opened with and starts it at reopenAtSec - the same rebuild an
 // audio-track switch does, on whatever track is playing. Runs on a worker: createVideoPlayerSplit blocks on the
 // network.
@@ -1081,7 +1167,7 @@ static void reopenWorker(uint64_t arg)
 {
    (void)arg;
    const char *video = state.videoUrl;
-   const char *audio = state.audioTrackCount > 1 ? state.audioTracks[state.audioTrackPick].url
+   const char *audio = state.audioTrackCount > 1 ? trackAudioUrl(state.audioTrackPick, state.videoIsVp9)
                                                  : (state.audioUrl[0] ? state.audioUrl : NULL);
    if (state.isLive) {   // the descriptors with the segment to begin at (reopenLiveAt)
       video = state.liveVideoOpen;
@@ -1655,8 +1741,11 @@ static void chooseQuality(int choice)
    if (state.firstFrameSeen && !state.isLive) setWatchedPosition(requestedInput, (int)at);
    strCopy(state.videoUrl, sizeof state.videoUrl, quality->url);
    // (V3.0.0) the sound that goes with it: Opus for VP9 (on the PPU), AAC for H.264
-   if (state.audioTrackCount <= 1 && (state.aacUrl[0] || state.opusUrl[0]))
+   if (state.audioTrackCount > 1)   // (V3.0.1) the track playing, in the codec that goes with the new picture
+      strCopy(state.audioUrl, sizeof state.audioUrl, trackAudioUrl(state.audioTrackPick, quality->isVp9));
+   else if (state.aacUrl[0] || state.opusUrl[0])
       strCopy(state.audioUrl, sizeof state.audioUrl, quality->isVp9 && state.opusUrl[0] ? state.opusUrl : state.aacUrl);
+   state.videoIsVp9 = quality->isVp9;
    state.vidItag = quality->itag; state.vidW = quality->width; state.vidH = quality->height; state.vidFps = quality->fps;
    state.qualityPick = index;
    setQualityChip();
@@ -1919,14 +2008,15 @@ static void updatePlay(void)
 {
    // autoplay gets first refusal: a finished video hands the screen over before anything else runs
    if (state.stage == STAGE_PLAYING && state.player && !state.descriptionVisible && !state.chaptersVisible &&
-       !state.optionsVisible && isVideoEnded(state.player) && advanceAutoplay()) return;
+       !state.optionsVisible && !state.audioPickerVisible && isVideoEnded(state.player) && advanceAutoplay()) return;
 
    // an overlay owns the pad for the whole frame it was (or just became) visible, so the button that
    // closed or opened it can't leak into playback input below (e.g. cross toggling pause on the way out)
-   int overlayHadPad = state.descriptionVisible || state.chaptersVisible || state.optionsVisible;
+   int overlayHadPad = state.descriptionVisible || state.chaptersVisible || state.optionsVisible || state.audioPickerVisible;
    if (state.descriptionVisible) handleDescriptionInput();
    else if (state.chaptersVisible) handleChaptersInput();
    else if (state.optionsVisible) handleOptionsInput();
+   else if (state.audioPickerVisible) handleAudioPickerInput();
    else {
       // O puts the controls away first, paused or not; only with nothing on the picture does it leave the video
       // (it used to leave at once, controls up or not)
@@ -1936,8 +2026,9 @@ static void updatePlay(void)
       }
       if (isPadButtonPressed(PAD_BTN_R3)) state.showStats = !state.showStats;
       // Square picks the audio track on a video that has several - its original language and YouTube's AI
-      // dubs of it, say. Autoplay moved to the options menu (START).
-      if (isPadButtonPressed(PAD_BTN_SQUARE) && state.audioTrackCount > 1) cycleAudioTrack();
+      // dubs of it, say - from a list (V3.0.1). Autoplay moved to the options menu (START).
+      if (isPadButtonPressed(PAD_BTN_SQUARE) && state.audioTrackCount > 1 && state.stage == STAGE_PLAYING && state.player)
+         openAudioPicker();
       if (isPadButtonPressed(PAD_BTN_SELECT) && state.stage == STAGE_PLAYING && state.player) openDescription();
       // START brings the controls up; with them up, it opens the options menu (quality, chapters, autoplay)
       if (isPadButtonPressed(PAD_BTN_START) && state.stage == STAGE_PLAYING && state.player) {
@@ -1954,7 +2045,7 @@ static void updatePlay(void)
    // direction still held from scrolling the description or walking the chapter list ran the volume down - or
    // up - the moment the overlay was gone. Stamped now, a direction held across the close waits out the
    // normal first-repeat delay as though it had just been pressed; a fresh press still steps at once.
-   if (overlayHadPad && !state.descriptionVisible && !state.chaptersVisible && !state.optionsVisible) {
+   if (overlayHadPad && !state.descriptionVisible && !state.chaptersVisible && !state.optionsVisible && !state.audioPickerVisible) {
       volumeMeter.repeat.timer   = sys_time_get_system_time();
       volumeMeter.repeat.repeats = 0;
    }
@@ -1985,7 +2076,7 @@ static void updatePlay(void)
                snprintf(state.audioNotice, sizeof state.audioNotice, "Audio %d/%d: %s", state.switchTarget + 1,
                         state.audioTrackCount, state.audioTracks[state.switchTarget].name);
             state.audioTrackPick = state.switchTarget;
-            state.audItag = state.audioTracks[state.audioTrackPick].itag;
+            state.audItag = trackAudioItag(state.audioTrackPick, state.videoIsVp9);
             state.switchPending = 0;
             state.audioNoticePending = 1;
          } else if (state.reopenPending) {   // the rebuild after the end (reopenAt): it just plays on, no notice
@@ -2090,7 +2181,8 @@ static void updatePlay(void)
    // segment - or after scrubbing out of one - a Triangle meant for the subtitles would still have run the
    // skip and jumped the video forward to that segment's end. It also has to clear itself when the segment
    // ends, so it is recomputed every frame rather than latched.
-   state.skipPrompt = (state.stage == STAGE_PLAYING && !state.descriptionVisible && !state.chaptersVisible && !state.optionsVisible)
+   state.skipPrompt = (state.stage == STAGE_PLAYING && !state.descriptionVisible && !state.chaptersVisible && !state.optionsVisible &&
+                       !state.audioPickerVisible)
                       ? findSkipOffer() : -1;
    if (state.skipPrompt >= 0 && state.skipPrompt != state.skipPromptShown) {
       const SponsorSegment *segment = &state.sb.segments[state.skipPrompt];
@@ -2104,7 +2196,7 @@ static void updatePlay(void)
    }
 
    if (state.stage == STAGE_PLAYING && state.player && !overlayHadPad && !state.descriptionVisible && !state.chaptersVisible &&
-       !state.optionsVisible)
+       !state.optionsVisible && !state.audioPickerVisible)
       handlePlaybackInput();
    if (state.sbReady && state.stage == STAGE_PLAYING && state.player && !isVideoPaused(state.player) && !state.seeking)
       autoSkipSponsor();
@@ -2555,6 +2647,41 @@ static void drawChapters(void)
    }
 }
 
+// (V3.0.1) the audio track list on a panel like the chapter picker's: rows windowed around the selection, the
+// selected one on an accent plate, "Playing" at the right of the track that plays
+static void drawAudioPicker(void)
+{
+   fillGfxRectangle(0, 0, state.screenW, state.screenH, activeTheme->scrim);
+
+   int count = state.audioTrackCount;
+   int rows = count < CHAPTER_VISIBLE_ROWS ? count : CHAPTER_VISIBLE_ROWS;
+   int firstRow = state.audioPickerSelected - rows / 2;
+   if (firstRow > count - rows) firstRow = count - rows;
+   if (firstRow < 0) firstRow = 0;
+
+   int panelW = state.audioPanelWidth + 2 * PANEL_PAD_X;
+   if (panelW < CHAPTER_PANEL_MIN_W) panelW = CHAPTER_PANEL_MIN_W;
+   if (panelW > CHAPTER_PANEL_MAX_W) panelW = CHAPTER_PANEL_MAX_W;
+   int panelH = PANEL_HEADER_H + CHAPTER_LIST_PAD_TOP + rows * CHAPTER_ROW_HEIGHT + CHAPTER_LIST_PAD_BOTTOM;
+   int panelX = state.screenW / 2 - panelW / 2, panelY = state.screenH / 2 - panelH / 2;
+   drawOverlayPanel(panelX, panelY, panelW, panelH, &audioTracksHeading, &audioPickerHints);
+
+   int topY   = panelY + PANEL_HEADER_H + CHAPTER_LIST_PAD_TOP;
+   int plateX = panelX + PANEL_PAD_X - CHAPTER_ROW_INSET;
+   int plateW = panelW - 2 * (PANEL_PAD_X - CHAPTER_ROW_INSET);
+   for (int row = 0; row < rows; row++) {
+      int index = firstRow + row;
+      int rowY  = topY + row * CHAPTER_ROW_HEIGHT;
+      if (index == state.audioPickerSelected)
+         uiFillRounded(plateX, rowY + 4, plateW, CHAPTER_ROW_HEIGHT - 8, UI_RADIUS_ROW, activeTheme->rowHighlight);
+      uiDrawLabelAt(&audioTrackLabels[index], panelX + PANEL_PAD_X,
+                    uiLabelYForCenter(&audioTrackLabels[index], rowY, CHAPTER_ROW_HEIGHT));
+      if (index == state.audioTrackPick)
+         uiDrawLabelAt(&audioOnLabel, panelX + panelW - PANEL_PAD_X - audioOnLabel.tt.tex.w,
+                       uiLabelYForCenter(&audioOnLabel, rowY, CHAPTER_ROW_HEIGHT));
+   }
+}
+
 // The options menu on a panel like the chapter picker's: its page's rows, the selected one on an accent plate.
 static void drawOptions(void)
 {
@@ -2695,13 +2822,15 @@ static void drawPlay(void)
          }
       }
       measureFps(frame);
-      int overlayUp = state.chaptersVisible || state.descriptionVisible || state.optionsVisible;   // a full-screen overlay hides the HUD noise
+      int overlayUp = state.chaptersVisible || state.descriptionVisible || state.optionsVisible ||   // a full-screen overlay
+                      state.audioPickerVisible;                                                     // hides the HUD noise
       int hudUp = state.stage == STAGE_PLAYING && controlsVisible() && !overlayUp;   // live too: title, chips, LIVE
       if (hudUp) drawHud();
       if (state.showStats && frame) { updateStatLabels(); drawStatsOverlay(); }   // over the HUD's gradient
       if (state.stage == STAGE_PLAYING && !overlayUp) { drawSubtitle(hudUp); drawSkipPrompt(); drawToast(); drawVolume(); }
       if (state.chaptersVisible) drawChapters();
       if (state.optionsVisible) drawOptions();
+      if (state.audioPickerVisible) drawAudioPicker();
       if (state.descriptionVisible) drawDescription();
    }
 
@@ -2756,7 +2885,11 @@ static void termPlay(void)
    freeLabel(&qualityHeading);
    for (int i = 0; i < OPTION_ROWS; i++) freeLabel(&optionLabels[i]);
    for (int i = 0; i < MAX_QUALITY_CHOICES + 1; i++) freeLabel(&qualityLabels[i]);
+   freeLabel(&audioTracksHeading);
+   freeLabel(&audioOnLabel);
+   for (int i = 0; i < MAX_AUDIO_TRACKS; i++) freeLabel(&audioTrackLabels[i]);
    uiTermHints(&hudHints);
+   uiTermHints(&audioPickerHints);
    uiTermHints(&descriptionHints);
    uiTermHints(&chapterHints);
    freeVolumeMeter(&volumeMeter);

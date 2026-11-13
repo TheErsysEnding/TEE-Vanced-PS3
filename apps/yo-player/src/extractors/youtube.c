@@ -274,8 +274,10 @@ static int audioStreamScore(int itag, int isDrc)
    return (itag == 140 ? 2 : 0) + (isDrc ? 0 : 1);
 }
 
-// An AAC audio stream that belongs to one of several audio tracks goes into out->audioTracks rather than
-// out->formats: one entry per track, holding that track's best stream. The track is named by the reply's
+// An AAC or (V3.0.1) Opus audio stream that belongs to one of several audio tracks goes into out->audioTracks
+// rather than out->formats: one entry per track, holding that track's best stream of each codec. Opus was left
+// out until V3.0.1, so 1440p (VP9, whose sound is Opus) played whichever track YouTube listed first - an AI dub
+// (Arabic first, the original last, on MrBeast's videos) - and Square had no tracks to offer. The track is named by the reply's
 // audioTrack object (id, displayName, audioIsDefault) where it has one, and by the url's xtags otherwise -
 // whichever the client returns, the same video can be told apart from its dubs. Returns 1 when the stream
 // was such a track stream (taken, or dropped as unplayable), 0 for an ordinary single-track audio stream.
@@ -321,7 +323,13 @@ static int collectAudioTrack(const char *object, const char *objectEnd, const St
       strCopy(track->name, sizeof track->name, name);
       track->rank = rank;
    }
-   if (!track->itag || audioStreamScore(format->itag, format->isDrc) > audioStreamScore(track->itag, track->isDrc)) {
+   if (format->isOpus) {   // itag 251 only (parseFormatArray): YouTube's normal mix over its compressed copy
+      if (!track->opusItag || (track->opusIsDrc && !format->isDrc)) {
+         track->opusItag = format->itag;
+         track->opusIsDrc = format->isDrc;
+         strCopy(track->opusUrl, sizeof track->opusUrl, format->url);
+      }
+   } else if (!track->itag || audioStreamScore(format->itag, format->isDrc) > audioStreamScore(track->itag, track->isDrc)) {
       track->itag = format->itag;
       track->isDrc = format->isDrc;
       strCopy(track->url, sizeof track->url, format->url);
@@ -329,28 +337,42 @@ static int collectAudioTrack(const char *object, const char *objectEnd, const St
    return 1;
 }
 
+// one stream of the chosen track, into formats[] as an ordinary audio stream
+static void addTrackStream(StreamInfo *out, int itag, int isDrc, int isOpus, const char *url)
+{
+   if (out->formatCount >= MAX_STREAM_FORMATS) { logError("[yt] no room for the audio stream\n"); return; }
+   StreamFormat *format = &out->formats[out->formatCount++];
+   memset(format, 0, sizeof *format);
+   format->itag = itag;
+   format->hasAudio = 1;
+   format->isDrc = isDrc;
+   format->isOpus = isOpus;
+   strCopy(format->container, sizeof format->container, isOpus ? "webm" : "mp4");
+   strCopy(format->url, sizeof format->url, url);
+}
+
 // Several audio tracks: sort them best first - stable, so equal ranks keep YouTube's order - and put the best
-// one's stream into formats[], where pickBestAudio finds it as the only audio stream on offer.
+// one's streams into formats[], where pickBestAudio and pickOpusAudio find them as the only audio on offer.
 static void finishAudioTracks(StreamInfo *out)
 {
    for (int i = 1; i < out->audioTrackCount; i++) {
       if (out->audioTracks[i - 1].rank >= out->audioTracks[i].rank) continue;   // already in place
-      AudioTrack moving = out->audioTracks[i];   // ~2 KB of stack; the resolve workers have 64 KB
+      AudioTrack moving = out->audioTracks[i];   // ~4 KB of stack; the resolve workers have 64 KB
       int j = i;
       while (j > 0 && out->audioTracks[j - 1].rank < moving.rank) { out->audioTracks[j] = out->audioTracks[j - 1]; j--; }
       out->audioTracks[j] = moving;
    }
    if (out->audioTrackCount == 0) return;
-   if (out->formatCount >= MAX_STREAM_FORMATS) { logError("[yt] no room for the audio stream\n"); return; }
 
-   const AudioTrack *best = &out->audioTracks[0];
-   StreamFormat *format = &out->formats[out->formatCount++];
-   memset(format, 0, sizeof *format);
-   format->itag = best->itag;
-   format->hasAudio = 1;
-   format->isDrc = best->isDrc;
-   strCopy(format->container, sizeof format->container, "mp4");
-   strCopy(format->url, sizeof format->url, best->url);
+   // the best track's AAC and Opus streams - the first track that has one, should the best lack it
+   for (int i = 0; i < out->audioTrackCount; i++) {
+      const AudioTrack *track = &out->audioTracks[i];
+      if (track->url[0]) { addTrackStream(out, track->itag, track->isDrc, 0, track->url); break; }
+   }
+   for (int i = 0; i < out->audioTrackCount; i++) {
+      const AudioTrack *track = &out->audioTracks[i];
+      if (track->opusUrl[0]) { addTrackStream(out, track->opusItag, track->opusIsDrc, 1, track->opusUrl); break; }
+   }
 }
 
 // parse one formats array (region [arrayStart, regionEnd)) into out->formats.
@@ -406,9 +428,10 @@ static void parseFormatArray(const char *arrayStart, const char *regionEnd, int 
       }
 
       // an audio stream of a video with several audio tracks (other languages, AI dubs) is filed by track
-      // instead - see collectAudioTrack; the chosen track's stream joins formats[] once the array is read
+      // instead - see collectAudioTrack; the chosen track's streams join formats[] once the array is read.
+      // (V3.0.1) Opus too: two dozen dubs' Opus streams used to fill formats[] here, the original's last of all
       int tracked = 0;
-      if (format->hasAudio && !format->hasVideo && !format->isOpus) {
+      if (format->hasAudio && !format->hasVideo) {
          char drc[4];
          format->isDrc = findIn(object, objectEnd, "\"isDrc\":true") != NULL ||
                          (xtagValue(format->url, "drc", drc, sizeof drc) && drc[0] == '1');
@@ -785,7 +808,8 @@ static int extract(const char *input, StreamInfo *out)
    // and every audio track, best first: the first one is what plays
    for (int i = 0; i < out->audioTrackCount && !quiet; i++) {
       const AudioTrack *t = &out->audioTracks[i];
-      logInfo("[yt] audio track %d: %s [%s] rank=%d itag=%d%s\n", i, t->name, t->id, t->rank, t->itag, t->isDrc ? " drc" : "");
+      logInfo("[yt] audio track %d: %s [%s] rank=%d itag=%d%s opus=%d%s\n", i, t->name, t->id, t->rank, t->itag,
+              t->isDrc ? " drc" : "", t->opusItag, t->opusIsDrc ? " drc" : "");
    }
 
    // a currently-live stream (isLive:true) is a rolling DVR window, so the init/moov at byte 0 may have

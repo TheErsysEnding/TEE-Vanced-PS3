@@ -35,7 +35,8 @@ typedef struct {
 // rather than what was recorded. The original wins; an auto-dub only plays when nothing better is offered.
 enum { AUDIO_RANK_DESCRIPTIVE, AUDIO_RANK_DUBBED, AUDIO_RANK_OTHER, AUDIO_RANK_DEFAULT, AUDIO_RANK_ORIGINAL };
 
-// one audio track (language) of a video that has several. url is that track's best AAC stream.
+// one audio track (language) of a video that has several. url is that track's best AAC stream (H.264's sound),
+// opusUrl its Opus one (VP9's, itag 251) - either "" where YouTube serves the track without it.
 typedef struct {
    char id[24];            // "en-US.4", or language + kind from the url's xtags when the reply names none
    char name[64];          // "English (United States) original", "German (auto-dubbed)" - shown on screen
@@ -43,6 +44,9 @@ typedef struct {
    int  itag;
    int  isDrc;
    char url[MAX_STREAM_URL];
+   int  opusItag;          // (V3.0.1) 0 = no Opus stream for this track
+   int  opusIsDrc;
+   char opusUrl[MAX_STREAM_URL];
 } AudioTrack;
 
 #define MAX_CAPTION_TRACKS 8
@@ -79,8 +83,8 @@ typedef struct {
    int  formatCount;
    StreamFormat formats[MAX_STREAM_FORMATS];
    // a video with several audio tracks: all of them, best first (see AudioTrack). formats[] then holds only
-   // audioTracks[0]'s stream, so playback and downloads pick it like any single audio stream - and two dozen
-   // dubs (two or three AAC streams each) can no longer push the original past the end of formats[]. 0 for
+   // audioTracks[0]'s streams - its AAC one and (V3.0.1) its Opus one - so playback and downloads pick them like
+   // any single audio stream, and two dozen dubs can no longer push the original past the end of formats[]. 0 for
    // the usual one-track video, whose audio is in formats[] as before.
    int  audioTrackCount;
    AudioTrack audioTracks[MAX_AUDIO_TRACKS];
