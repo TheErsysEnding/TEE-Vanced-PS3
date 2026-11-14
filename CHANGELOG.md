@@ -7,6 +7,30 @@ before it was tagged. Anything that had not been is said so plainly.
 
 ### The test builds
 
+**V3.0.4 Test 2 Hybrid** (2026-11-14): a key frame too big for TEE VP9 in 1440p goes in 1080p before it is fed - no
+new player, no word on screen.
+- Test 1's answer to the stops on LHGughAkidk was hard: a new player in 1080p60 H.264, "Loading", the sound stopping,
+  and 1080p for the rest of the video, though 1350p plays the rest of it well; its word on screen was too short to
+  read anyway (TEE: "warum harter fallback. warum nicht so hybrid wie wir es bisher haben?"). The log on TEE's console
+  named the cause: every stop came on a key frame whose records - the entropy stage's output, about 7 times the
+  block - outgrew TEE VP9's 5 MB buffer: 933 KB at 5.5 s (records 6.8 MB), 748 KB at 55 s (5.3 MB). The feeder now
+  looks at every 1440p key frame before it feeds it. One above 600 KB goes in 1080p from the 1080p key frame at the
+  same time, the way a change for the bitrate does - no picture lost, the sound untouched - and the rule takes it back
+  to 1440p once the next 10 s are light (straight back to 1080p if the key frame there is too big as well). For
+  scale: LXb3EKWsInQ's largest key frames are 499 KB, the Elden Ring DLC's (tqE50cUXGCs) 748, 662 and 640 KB.
+  Checked in RPCS3: 1080p at 5.5 s and 55 s, 1350p again at 27.5 s and 66 s, no stop; the 1080p key frames at
+  those times (652 and 476 KB) went through.
+- Should TEE VP9 stop in 1440p all the same, the player opens it anew by itself and goes on in 1080p from the next
+  key frame, the sound running on; the limit goes below the key frame it stopped on for the rest of the run. Checked
+  in RPCS3 with the limit out of the way: stops at 5.5 s and 55 s, TEE VP9 open again 50 ms after each, the first
+  1080p picture 0.5 - 0.6 s after the stop (the screen black meanwhile), the picture caught up within a second, the
+  sound never waited; 1350p again 11 s later.
+- Only where the player cannot go on by itself (a stop in 1080p, a 1440p stream without the 1080p one beside it, a
+  fourth stop) is it built anew in 1080p60 H.264 as in Test 1 - now without a word on screen. The frame rate stays
+  the video's, as before: 1440p60 changes to 1080p60, 1440p30 to 1080p30, 1440p24 to 1080p24.
+- R3's panel names the stream of the picture on screen. It named the feeder's, which reads seconds ahead: "itag 308"
+  while 1080p still played.
+
 **V3.0.4 Test 1 Smooth** (2026-11-14): 1440p gives way without a stutter, a stopped VP9 decoder goes on in 1080p60,
 and Square says what it did.
 - A 1440p60 nature video at 13 Mbit/s (LXb3EKWsInQ, from 0:20) took the TEE VP9 decoder below 60 pictures a second:

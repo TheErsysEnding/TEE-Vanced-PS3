@@ -1838,11 +1838,11 @@ static void setPlayingQuality(int index)
    setQualityChip();
 }
 
-// (V3.0.4) TEE VP9 stopped on a frame it cannot take - "its records do not go into superblock-row order", a 2560x1350
-// video at 1:47 (TEE, 2026-11-14) - and the picture stood still to the end, with no change to 1080p: a stopped
-// decoder takes no flush, so the player's own change of stream cannot help it. The player is built anew at the
+// (V3.0.4) TEE VP9 stopped and the player could not go on in 1080p VP9 by itself (video-player.c: a 1440p key frame
+// too big for it goes in 1080p before it is fed, a stop in 1440p all the same opens it anew in 1080p): a stop in 1080p,
+// a 1440p stream without the 1080p one beside it, or one stop too many. Then the player is built anew at the
 // picture's position in the best quality that is not VP9 - 1080p60 on the TEE Decoder - for the rest of the video.
-// The quality saved for the next videos stays as it is.
+// No word on screen (TEE: R3's panel says what plays); the quality saved for the next videos stays as it is.
 static void fallBackFromVp9(void)
 {
    int index = -1;
@@ -1850,18 +1850,13 @@ static void fallBackFromVp9(void)
    float at = getVideoPositionSeconds(state.player);
    if (index < 0) {
       logError("[yt] TEE VP9 stopped at %d s and the video has no quality besides VP9\n", (int)at);
-      state.videoIsVp9 = 0;   // said once
-      showToast("VP9 stopped - no other quality to go on with");
+      state.videoIsVp9 = 0;   // looked at once
       return;
    }
    const QualityChoice *quality = &state.qualities[index];
-   char name[24], text[64];
-   qualityName(name, sizeof name, quality->height, quality->fps);
    logWarn("[yt] TEE VP9 stopped at %d s: going on in itag %d %dx%d %dfps\n", (int)at, quality->itag, quality->width,
            quality->height, quality->fps);
    setPlayingQuality(index);
-   snprintf(text, sizeof text, "VP9 stopped - going on in %s", name);
-   showToast(text);
    reopenAt(at);
 }
 
@@ -2167,8 +2162,8 @@ static void updateHud(void)
 
 static void updatePlay(void)
 {
-   // (V3.0.4) a 1440p VP9 stream whose decoder stopped goes on in 1080p60 (fallBackFromVp9) - before the autoplay below
-   // takes the stopped player for a finished video
+   // (V3.0.4) a VP9 stream whose decoder stopped for good goes on in 1080p60 H.264 (fallBackFromVp9) - before the
+   // autoplay below takes the stopped player for a finished video
    if (state.stage == STAGE_PLAYING && state.player && state.videoIsVp9 && !state.threadActive &&
        hasVideoPlayerFailed(state.player)) {
       fallBackFromVp9();

@@ -47,9 +47,9 @@ void  seekVideoPlayer(VideoPlayer *player, float seconds);
 // span (e.g. a sponsor segment) instead of resuming on the keyframe before it and replaying the tail.
 void  seekVideoPlayerPast(VideoPlayer *player, float seconds);
 int   isVideoEnded(const VideoPlayer *player);       // decode reached end of stream and the ring drained
-// (V3.0.4) the decoder stopped with an error it does not come back from (TEE VP9 on a frame it cannot take): the
-// picture stands, isVideoEnded says 1 - the app had better build the player anew, in a quality that plays. A seek
-// starts it over.
+// (V3.0.4) the decoder stopped with an error it does not come back from (TEE VP9 on a frame it cannot take, where the
+// player cannot go on in 1080p VP9 by itself): the picture stands, isVideoEnded says 1 - the app had better build the
+// player anew, in a quality that plays. A seek starts it over.
 int   hasVideoPlayerFailed(const VideoPlayer *player);
 float getVideoPositionSeconds(const VideoPlayer *player);
 // the same in nanoseconds, exact: a live stream's pts count from its broadcast's start, and after months on air
@@ -72,7 +72,7 @@ int isVideoOnTeeDecoder(const VideoPlayer *player);
 // (slower: 50 - 63 pictures a second measured, so 1440p60 cannot hold 60). Process-wide; settings.txt vp9-spes=.
 void setVideoVp9Spes(int spes);
 int  isVideoVp9(const VideoPlayer *player);      // the picture comes from the TEE VP9 building block
-int  isVideoOnLowTrack(const VideoPlayer *player);   // (Test 14) the 1080p VP9 stream plays in place of the 1440p one
+int  isVideoOnLowTrack(const VideoPlayer *player);   // (Test 14) 1080p VP9 in place of 1440p: the picture on screen
 int  isAudioOpus(const VideoPlayer *player);     // (V3.0.0) the sound is Opus, on TEE Opus (VP9's own track)
 
 // where the planes of the picture getVideoFrame last handed out lie, for drawing it in place. A packed frame (H.264:
