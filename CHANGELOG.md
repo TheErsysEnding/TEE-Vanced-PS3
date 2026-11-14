@@ -7,6 +7,17 @@ before it was tagged. Anything that had not been is said so plainly.
 
 ### The test builds
 
+**V3.0.3 Test 3 Style** (2026-11-14): a subtitle style of your own (asked for on PSX-Place).
+- START > Subtitle style, a fourth row in the player's options: the text colour (white, yellow, green, cyan, blue,
+  magenta, red, black), the background's colour (the same eight) and opacity (0 - 100%), an edge round the letters
+  (none, shadow, outline) and the size (75 - 200%), with a sample in the style set above the rows. LEFT/RIGHT (or X)
+  change a row; O goes back and saves - into settings.txt as `subtitle-color=`, `subtitle-background=`,
+  `subtitle-opacity=`, `subtitle-edge=` and `subtitle-size=`.
+- The default is the look subtitles had: white on black at 80% (the plate was a near-black blue at 86%).
+- The font renderer has no outline of its own: a subtitle is now rasterised white and drawn tinted - in its colour,
+  and in black (white under black text) offset beneath it, down and right for the shadow, all round for the outline.
+  Checked in RPCS3: the page, the sample at every size, the cue on the video in yellow with an outline at 150%.
+
 **V3.0.3 Test 2 Subtitles** (2026-11-13): every subtitle track in a language the fonts draw can be offered.
 - YouTube lists a video's subtitle tracks by name, and the player kept the first eight before it dropped the
   languages its fonts do not draw. On a video with two dozen languages Arabic, Bangla and two Chinese took half the

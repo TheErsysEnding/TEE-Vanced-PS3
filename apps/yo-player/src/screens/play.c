@@ -290,9 +290,16 @@ typedef enum { STAGE_LOADING, STAGE_FAILED, STAGE_PLAYING } Stage;
 
 // the options menu (START with the controls up): one page of rows, Quality opening a second with the qualities
 #define MAX_QUALITY_CHOICES 6
-#define OPTION_ROWS         3
+#define OPTION_ROWS         4
 #define OPTION_TEXT_MAX_W   720
-enum { OPTION_QUALITY, OPTION_CHAPTERS, OPTION_AUTOPLAY };
+enum { OPTION_QUALITY, OPTION_CHAPTERS, OPTION_AUTOPLAY, OPTION_SUBTITLES };
+// (V3.0.3, asked for on PSX-Place) the subtitle style page: a preview of a subtitle in the style set, over a stand-in
+// for the picture, and a row per field (settings.h SubtitleStyleField) whose value LEFT/RIGHT change
+#define STYLE_PANEL_W          900
+#define STYLE_PREVIEW_H        150
+#define STYLE_PREVIEW_GAP      16
+#define STYLE_PREVIEW_BACKDROP 0xFF3C4A5Au
+#define STYLE_PREVIEW_TEXT     "Sample subtitle"
 typedef struct { int itag, width, height, fps, isVp9; char url[MAX_STREAM_URL]; } QualityChoice;
 
 static struct {
@@ -335,7 +342,7 @@ static struct {
    // the options menu: Quality, Chapters, Autoplay. Quality opens the list of the qualities this video offers
    // that the player can play (the worker fills it at resolve); a pick rebuilds the player at the position.
    int              optionsVisible;
-   int              optionsLevel;         // 0 the menu, 1 the quality list
+   int              optionsLevel;         // 0 the menu, 1 the quality list, 2 (V3.0.3) the subtitle style
    // (V3.0.1) the audio track list (Square): every track by name, the one playing marked; X changes to the one picked
    int              audioPickerVisible;
    int              audioPickerSelected;
@@ -495,6 +502,11 @@ static Label audioTrackLabels[MAX_AUDIO_TRACKS];      // ...and the tracks' name
 static Label audioOnLabel;                            // ..."Playing", beside the track that plays
 static UiHints audioPickerHints;
 static UiHints optionHints;
+static Label styleHeading;                            // (V3.0.3) the subtitle style page: its heading,
+static Label styleLabels[SUBTITLE_STYLE_FIELDS];      // "Text color: White", ...
+static Label stylePreviewLabel;                       // the sample subtitle, white like subtitleLabel
+static UiHints styleHints;
+static int subtitleLabelSize;                         // the size subtitleLabel and the sample were made at
 static UiHints hudHints;                      // the HUD's hint row
 static UiHints descriptionHints, chapterHints;       // each overlay's own buttons, in its heading
 static TextTexture descriptionTexture;        // whole description as one tall texture (scrolled by draw)
@@ -932,6 +944,26 @@ static void initHints(void)
    uiAddHint(&optionHints, GLYPH_CIRCLE,    "Back");
    uiAddHint(&optionHints, GLYPH_DPAD_UP,   "");
    uiAddHint(&optionHints, GLYPH_DPAD_DOWN, "Move");
+   uiInitHints(&styleHints);   // (V3.0.3)
+   uiAddHint(&styleHints, GLYPH_DPAD_LEFT,  "");
+   uiAddHint(&styleHints, GLYPH_DPAD_RIGHT, "Change");
+   uiAddHint(&styleHints, GLYPH_CIRCLE,     "Back");
+   uiAddHint(&styleHints, GLYPH_DPAD_UP,    "");
+   uiAddHint(&styleHints, GLYPH_DPAD_DOWN,  "Move");
+}
+
+// (V3.0.3) subtitleLabel and the style page's sample at the size the subtitle style sets, rasterised white:
+// drawStyledSubtitle tints them to the text colour (and black for an edge). A new size makes them again; the cue
+// comes back with the next frame's uiSetTextLabel.
+static void makeSubtitleLabels(int force)
+{
+   int size = getSubtitleTextSize();
+   if (!force && size == subtitleLabelSize) return;
+   subtitleLabelSize = size;
+   freeLabel(&subtitleLabel);
+   uiInitTextLabel(&subtitleLabel, SUBTITLE_WEIGHT, 0, 0, SUBTITLE_MAX_W, size, 0xFFFFFFFFu, TEXT_WRAP, "");
+   freeLabel(&stylePreviewLabel);
+   uiInitLabel(&stylePreviewLabel, SUBTITLE_WEIGHT, 0, 0, AUTO, size, 0xFFFFFFFFu, TEXT_NOWRAP, STYLE_PREVIEW_TEXT);
 }
 
 static void initPlay(void)
@@ -968,6 +1000,11 @@ static void initPlay(void)
                TEXT_NOWRAP, "Options");
    uiInitLabel(&qualityHeading, PANEL_TITLE_WEIGHT, 0, 0, AUTO, PANEL_TITLE_SIZE, activeTheme->textPrimary,
                TEXT_NOWRAP, "Quality");
+   uiInitLabel(&styleHeading, PANEL_TITLE_WEIGHT, 0, 0, AUTO, PANEL_TITLE_SIZE, activeTheme->textPrimary,
+               TEXT_NOWRAP, "Subtitle style");
+   for (int i = 0; i < SUBTITLE_STYLE_FIELDS; i++)
+      uiInitLabel(&styleLabels[i], CHAPTER_TITLE_WEIGHT, 0, 0, OPTION_TEXT_MAX_W, CHAPTER_TEXT_SIZE,
+                  activeTheme->textPrimary, TEXT_NOWRAP, "");
    uiInitLabel(&audioTracksHeading, PANEL_TITLE_WEIGHT, 0, 0, AUTO, PANEL_TITLE_SIZE, activeTheme->textPrimary,
                TEXT_NOWRAP, "Audio track");
    uiInitLabel(&audioOnLabel, CHAPTER_TITLE_WEIGHT, 0, 0, AUTO, CHAPTER_TEXT_SIZE, activeTheme->textSecondary,
@@ -1007,8 +1044,7 @@ static void initPlay(void)
    for (int i = 0; i < MAX_AUDIO_TRACKS; i++)
       uiInitTextLabel(&audioTrackLabels[i], CHAPTER_TITLE_WEIGHT, 0, 0, OPTION_TEXT_MAX_W, CHAPTER_TEXT_SIZE,
                       activeTheme->textPrimary, TEXT_NOWRAP_ELLIPSIS, "");
-   uiInitTextLabel(&subtitleLabel, SUBTITLE_WEIGHT, 0, 0, SUBTITLE_MAX_W, SUBTITLE_TEXT_SIZE, activeTheme->textPrimary,
-                   TEXT_WRAP, "");
+   makeSubtitleLabels(1);   // (V3.0.3) at the style's size, white: drawStyledSubtitle colours it
    state.subtitlePick = state.subtitleFetched = -1;   // default off (memset left them 0)
 
    initVolumeMeter(&volumeMeter, uiGetFont(VOLUME_NUMBER_WEIGHT), activeTheme->accent, volumeLevel);
@@ -1730,6 +1766,20 @@ static void setOptionLabels(void)
    setLabelText(&optionLabels[OPTION_QUALITY], text);
    setLabelText(&optionLabels[OPTION_CHAPTERS], state.chapters.count && !state.isLive ? "Chapters" : "Chapters: none");
    setLabelText(&optionLabels[OPTION_AUTOPLAY], getAutoplay() ? "Autoplay: On" : "Autoplay: Off");
+   setLabelText(&optionLabels[OPTION_SUBTITLES], "Subtitle style");
+}
+
+// (V3.0.3) the subtitle style page's rows, each with the value in use
+static void setStyleLabels(void)
+{
+   static const char *ROW_NAMES[SUBTITLE_STYLE_FIELDS] = { "Text color", "Background", "Background opacity",
+                                                           "Text edge", "Size" };
+   char text[64];
+   for (int field = 0; field < SUBTITLE_STYLE_FIELDS; field++) {
+      snprintf(text, sizeof text, "%s: %s", ROW_NAMES[field],
+               getSubtitleStyleChoiceName((SubtitleStyleField)field, getSubtitleStyleChoice((SubtitleStyleField)field)));
+      setLabelText(&styleLabels[field], text);
+   }
 }
 
 // row 0 is Auto (the best that plays, no cap), then one row per quality; the one in use says so
@@ -1800,14 +1850,32 @@ static void openOptions(void)
 
 static void handleOptionsInput(void)
 {
-   if (isPadButtonPressed(PAD_BTN_START)) { state.optionsVisible = 0; return; }
+   // (V3.0.3) the subtitle style is saved when its page is left, not at every press
+   if (isPadButtonPressed(PAD_BTN_START)) {
+      if (state.optionsLevel == 2) saveSubtitleStyle();
+      state.optionsVisible = 0;
+      return;
+   }
    if (isPadButtonPressed(PAD_BTN_CIRCLE)) {
       if (state.optionsLevel == 1) { state.optionsLevel = 0; state.optionsSelected = OPTION_QUALITY; }
+      else if (state.optionsLevel == 2) { saveSubtitleStyle(); state.optionsLevel = 0; state.optionsSelected = OPTION_SUBTITLES; }
       else state.optionsVisible = 0;
       return;
    }
 
-   int rows = state.optionsLevel == 0 ? OPTION_ROWS : state.qualityCount + 1;
+   int rows = state.optionsLevel == 0 ? OPTION_ROWS : state.optionsLevel == 1 ? state.qualityCount + 1 : SUBTITLE_STYLE_FIELDS;
+   if (state.optionsLevel == 2) {   // (V3.0.3) RIGHT and X step a row's value on, LEFT back; the preview follows
+      int step = (isPadButtonPressed(PAD_BTN_RIGHT) || isPadButtonPressed(PAD_BTN_CROSS)) ? 1
+               : isPadButtonPressed(PAD_BTN_LEFT) ? -1 : 0;
+      if (step) {
+         SubtitleStyleField field = (SubtitleStyleField)state.optionsSelected;
+         int count = getSubtitleStyleChoiceCount(field);
+         setSubtitleStyleChoice(field, (getSubtitleStyleChoice(field) + step + count) % count);
+         if (field == SUBTITLE_STYLE_SIZE) makeSubtitleLabels(0);
+         setStyleLabels();
+         return;
+      }
+   }
    if (isPadButtonPressed(PAD_BTN_CROSS)) {
       if (state.optionsLevel == 1) {
          state.optionsVisible = 0;
@@ -1820,6 +1888,10 @@ static void handleOptionsInput(void)
       } else if (state.optionsSelected == OPTION_CHAPTERS) {
          state.optionsVisible = 0;
          openChapters();
+      } else if (state.optionsSelected == OPTION_SUBTITLES) {   // (V3.0.3)
+         setStyleLabels();
+         state.optionsLevel = 2;
+         state.optionsSelected = 0;
       } else {
          setAutoplay(!getAutoplay());
          setOptionLabels();
@@ -2583,6 +2655,36 @@ static int controlsVisible(void)
    return state.controlsShownUs != 0 && sys_time_get_system_time() - state.controlsShownUs < CONTROLS_VISIBLE_US;
 }
 
+// (V3.0.3) a white-rasterised label drawn in one colour
+static void drawLabelTinted(const Label *label, int x, int y, uint32_t tint)
+{
+   drawGfxTexture(x, y, label->tt.tex.w, label->tt.tex.h, label->tt.tex, 0.0f, 0.0f, 1.0f, 1.0f, tint, GFX_FILTER_NEAREST);
+}
+
+// (V3.0.3) a subtitle in the style set (START > Subtitle style): the plate in its colour and opacity, an edge drawn as
+// the text in black (white under black text) offset beneath it - a shadow down and right, an outline all round,
+// since the font renderer has no outline of its own - and the text in its colour on top
+static void drawStyledSubtitle(const Label *label, int x, int y)
+{
+   int w = label->tt.tex.w, h = label->tt.tex.h;
+   uint32_t plate = getSubtitleBackgroundColor();
+   if (plate >> 24)
+      uiFillRounded(x - SUBTITLE_PAD_X, y - SUBTITLE_PAD_Y, w + 2 * SUBTITLE_PAD_X, h + 2 * SUBTITLE_PAD_Y, SUBTITLE_RADIUS,
+                    plate);
+   uint32_t color = getSubtitleTextColor();
+   uint32_t edgeColor = (color & 0x00FFFFFFu) == 0 ? 0xFFFFFFFFu : 0xFF000000u;
+   int offset = getSubtitleTextSize() >= 45 ? 3 : 2;
+   SubtitleEdge edge = getSubtitleEdge();
+   if (edge == SUBTITLE_EDGE_SHADOW) {
+      drawLabelTinted(label, x + offset, y + offset, edgeColor);
+   } else if (edge == SUBTITLE_EDGE_OUTLINE) {
+      for (int dy = -offset; dy <= offset; dy += offset)
+         for (int dx = -offset; dx <= offset; dx += offset)
+            if (dx || dy) drawLabelTinted(label, x + dx, y + dy, edgeColor);
+   }
+   drawLabelTinted(label, x, y, color);
+}
+
 // The active subtitle cue, centred low on the picture on a dark plate. While the HUD is up it moves above
 // the bottom block - and above the skip offer as well when that stands, as a wide cue would run into it.
 static void drawSubtitle(int hudUp)
@@ -2595,9 +2697,7 @@ static void drawSubtitle(int hudUp)
    }
    int w = subtitleLabel.tt.tex.w, h = subtitleLabel.tt.tex.h;
    int x = state.screenW / 2 - w / 2, y = bottom - h;
-   uiFillRounded(x - SUBTITLE_PAD_X, y - SUBTITLE_PAD_Y, w + 2 * SUBTITLE_PAD_X, h + 2 * SUBTITLE_PAD_Y, SUBTITLE_RADIUS,
-                 activeTheme->panelOnVideo);
-   uiDrawLabelAt(&subtitleLabel, x, y);
+   drawStyledSubtitle(&subtitleLabel, x, y);   // (V3.0.3) in the style set
 }
 
 // ---- the overlays ----
@@ -2734,9 +2834,37 @@ static void drawAudioPicker(void)
 }
 
 // The options menu on a panel like the chapter picker's: its page's rows, the selected one on an accent plate.
+// (V3.0.3) the subtitle style page: the sample in the style set on a stand-in for the picture, the rows under it
+static void drawSubtitleStyle(void)
+{
+   int panelW = STYLE_PANEL_W;
+   int panelH = PANEL_HEADER_H + CHAPTER_LIST_PAD_TOP + STYLE_PREVIEW_H + STYLE_PREVIEW_GAP +
+                SUBTITLE_STYLE_FIELDS * CHAPTER_ROW_HEIGHT + CHAPTER_LIST_PAD_BOTTOM;
+   int panelX = state.screenW / 2 - panelW / 2, panelY = state.screenH / 2 - panelH / 2;
+   drawOverlayPanel(panelX, panelY, panelW, panelH, &styleHeading, &styleHints);
+
+   int previewX = panelX + PANEL_PAD_X, previewY = panelY + PANEL_HEADER_H + CHAPTER_LIST_PAD_TOP;
+   int previewW = panelW - 2 * PANEL_PAD_X;
+   uiFillRounded(previewX, previewY, previewW, STYLE_PREVIEW_H, UI_RADIUS_ROW, STYLE_PREVIEW_BACKDROP);
+   if (stylePreviewLabel.tt.tex.w > 0)
+      drawStyledSubtitle(&stylePreviewLabel, previewX + previewW / 2 - stylePreviewLabel.tt.tex.w / 2,
+                         previewY + STYLE_PREVIEW_H / 2 - stylePreviewLabel.tt.tex.h / 2);
+
+   int topY   = previewY + STYLE_PREVIEW_H + STYLE_PREVIEW_GAP;
+   int plateX = panelX + PANEL_PAD_X - CHAPTER_ROW_INSET;
+   int plateW = panelW - 2 * (PANEL_PAD_X - CHAPTER_ROW_INSET);
+   for (int row = 0; row < SUBTITLE_STYLE_FIELDS; row++) {
+      int rowY = topY + row * CHAPTER_ROW_HEIGHT;
+      if (row == state.optionsSelected)
+         uiFillRounded(plateX, rowY + 4, plateW, CHAPTER_ROW_HEIGHT - 8, UI_RADIUS_ROW, activeTheme->rowHighlight);
+      uiDrawLabelAt(&styleLabels[row], panelX + PANEL_PAD_X, uiLabelYForCenter(&styleLabels[row], rowY, CHAPTER_ROW_HEIGHT));
+   }
+}
+
 static void drawOptions(void)
 {
    fillGfxRectangle(0, 0, state.screenW, state.screenH, activeTheme->scrim);
+   if (state.optionsLevel == 2) { drawSubtitleStyle(); return; }
 
    int level = state.optionsLevel;
    int rows = level == 0 ? OPTION_ROWS : state.qualityCount + 1;
@@ -2928,6 +3056,12 @@ static void termPlay(void)
    freeLabel(&audioNameLabel);
    freeLabel(&audioCountLabel);
    freeLabel(&subtitleLabel);
+   freeLabel(&stylePreviewLabel);   // (V3.0.3) and the style page's
+   freeLabel(&styleHeading);
+   for (int i = 0; i < SUBTITLE_STYLE_FIELDS; i++) freeLabel(&styleLabels[i]);
+   uiTermHints(&styleHints);
+   subtitleLabelSize = 0;
+   saveSubtitleStyle();             // a style page left by the player closing: saved all the same
    freeLabel(&subsHudLabel);
    freeLabel(&chapterNameLabel);
    freeLabel(&chapterInfoLabel);

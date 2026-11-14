@@ -58,7 +58,16 @@ static const char *DEFAULT_SETTINGS =
    "# on = at every start, read the newest release's version from the app's GitHub page and say when a newer\n"
    "# one is out (nothing is downloaded); off = never ask GitHub.\n"
    "\n"
-   SUBTITLE_SETTING_BLOCK;
+   SUBTITLE_SETTING_BLOCK
+   "\n"
+   "subtitle-color=white\n"
+   "subtitle-background=black\n"
+   "subtitle-opacity=80\n"
+   "subtitle-edge=none\n"
+   "subtitle-size=100\n"
+   "# how subtitles look - the player sets it too: START > Subtitle style. color and background: white, yellow,\n"
+   "# green, cyan, blue, magenta, red or black; the background's opacity in per cent: 0, 20, 40, 60, 80 or 100;\n"
+   "# edge: none, shadow or outline; size in per cent: 75, 100, 125, 150 or 200.\n";
 
 static SponsorblockMode sponsorblockMode = SPONSORBLOCK_ADS;
 static VideoDecoderSetting videoDecoder = VIDEO_DECODER_AUTO;
@@ -189,6 +198,57 @@ static void migrateSubtitleSetting(const char *path, char *text, int cap, int le
       logWarn("[settings] subtitle-language off -> auto for this run; %s could not be rewritten\n", path);
 }
 
+// ---- the subtitle style (V3.0.3, asked for on PSX-Place) ----
+
+typedef struct { const char *name, *value; uint32_t number; } StyleChoice;   // shown, saved, what it is
+static const StyleChoice STYLE_COLORS[] = {          // the eight YouTube offers, for the text and its background
+   { "White", "white", 0xFFFFFF }, { "Yellow", "yellow", 0xFFFF00 }, { "Green", "green", 0x00FF00 },
+   { "Cyan", "cyan", 0x00FFFF }, { "Blue", "blue", 0x0000FF }, { "Magenta", "magenta", 0xFF00FF },
+   { "Red", "red", 0xFF0000 }, { "Black", "black", 0x000000 },
+};
+static const StyleChoice STYLE_BACKGROUNDS[] = {
+   { "Black", "black", 0x000000 }, { "White", "white", 0xFFFFFF }, { "Yellow", "yellow", 0xFFFF00 },
+   { "Green", "green", 0x00FF00 }, { "Cyan", "cyan", 0x00FFFF }, { "Blue", "blue", 0x0000FF },
+   { "Magenta", "magenta", 0xFF00FF }, { "Red", "red", 0xFF0000 },
+};
+static const StyleChoice STYLE_OPACITIES[] = {       // the alpha: 80% is near the plate subtitles always had
+   { "0%", "0", 0 }, { "20%", "20", 51 }, { "40%", "40", 102 }, { "60%", "60", 153 }, { "80%", "80", 204 },
+   { "100%", "100", 255 },
+};
+static const StyleChoice STYLE_EDGES[] = {
+   { "None", "none", SUBTITLE_EDGE_NONE }, { "Shadow", "shadow", SUBTITLE_EDGE_SHADOW },
+   { "Outline", "outline", SUBTITLE_EDGE_OUTLINE },
+};
+static const StyleChoice STYLE_SIZES[] = {           // per cent of the 30 px subtitles always had
+   { "75%", "75", 22 }, { "100%", "100", 30 }, { "125%", "125", 38 }, { "150%", "150", 45 }, { "200%", "200", 60 },
+};
+#define STYLE_CHOICES(table) table, (int)(sizeof table / sizeof *table)
+static const struct { const char *key; const StyleChoice *choices; int count; int fallback; }
+STYLE_FIELDS[SUBTITLE_STYLE_FIELDS] = {
+   { "subtitle-color",      STYLE_CHOICES(STYLE_COLORS),      0 },   // white
+   { "subtitle-background", STYLE_CHOICES(STYLE_BACKGROUNDS), 0 },   // black
+   { "subtitle-opacity",    STYLE_CHOICES(STYLE_OPACITIES),   4 },   // 80%
+   { "subtitle-edge",       STYLE_CHOICES(STYLE_EDGES),       0 },   // none
+   { "subtitle-size",       STYLE_CHOICES(STYLE_SIZES),       1 },   // 100%
+};
+static int styleChoice[SUBTITLE_STYLE_FIELDS] = { 0, 0, 4, 0, 1 };
+static int styleSaved[SUBTITLE_STYLE_FIELDS]  = { 0, 0, 4, 0, 1 };   // what settings.txt holds
+
+static void loadSubtitleStyle(const char *text)
+{
+   for (int field = 0; field < SUBTITLE_STYLE_FIELDS; field++) {
+      const char *value = findSettingValue(text, STYLE_FIELDS[field].key);
+      if (!value) continue;
+      int found = -1;
+      for (int i = 0; i < STYLE_FIELDS[field].count && found < 0; i++)
+         if (settingValueEquals(value, STYLE_FIELDS[field].choices[i].value)) found = i;
+      if (found < 0)
+         logWarn("[settings] %s: unknown value, using %s\n", STYLE_FIELDS[field].key,
+                 STYLE_FIELDS[field].choices[STYLE_FIELDS[field].fallback].value);
+      styleChoice[field] = styleSaved[field] = found >= 0 ? found : STYLE_FIELDS[field].fallback;
+   }
+}
+
 void loadSettings(void)
 {
    char path[128];
@@ -253,6 +313,7 @@ void loadSettings(void)
       if (length >= 2) strCopy(subtitleLanguage, sizeof subtitleLanguage, value);
       else logWarn("[settings] subtitle-language takes off, auto or a code such as cs, using auto\n");
    }
+   loadSubtitleStyle(text);   // (V3.0.3)
    const char *update = findSettingValue(text, "update-check");
    if (update) {
       if      (settingValueEquals(update, "on"))  updateCheck = 1;
@@ -399,3 +460,50 @@ int setDownloadQuality(int quality)
    downloadQuality = quality;
    return saveSetting("download-quality", values[quality]);
 }
+
+// ---- the subtitle style (V3.0.3) ----
+
+static int styleField(SubtitleStyleField field) { return field >= 0 && field < SUBTITLE_STYLE_FIELDS; }
+
+int getSubtitleStyleChoice(SubtitleStyleField field) { return styleField(field) ? styleChoice[field] : 0; }
+int getSubtitleStyleChoiceCount(SubtitleStyleField field) { return styleField(field) ? STYLE_FIELDS[field].count : 1; }
+
+const char *getSubtitleStyleChoiceName(SubtitleStyleField field, int choice)
+{
+   if (!styleField(field) || choice < 0 || choice >= STYLE_FIELDS[field].count) return "";
+   return STYLE_FIELDS[field].choices[choice].name;
+}
+
+void setSubtitleStyleChoice(SubtitleStyleField field, int choice)
+{
+   if (styleField(field) && choice >= 0 && choice < STYLE_FIELDS[field].count) styleChoice[field] = choice;
+}
+
+int saveSubtitleStyle(void)
+{
+   int rc = 0, changed = 0;
+   for (int field = 0; field < SUBTITLE_STYLE_FIELDS; field++) {
+      if (styleChoice[field] == styleSaved[field]) continue;
+      changed = 1;
+      if (saveSetting(STYLE_FIELDS[field].key, STYLE_FIELDS[field].choices[styleChoice[field]].value) == 0)
+         styleSaved[field] = styleChoice[field];
+      else
+         rc = -1;
+   }
+   if (changed)
+      logInfo("[settings] subtitle style: %s on %s %s, edge %s, size %s (%s)\n", STYLE_COLORS[styleChoice[0]].value,
+              STYLE_BACKGROUNDS[styleChoice[1]].value, STYLE_OPACITIES[styleChoice[2]].name, STYLE_EDGES[styleChoice[3]].value,
+              STYLE_SIZES[styleChoice[4]].name, rc == 0 ? "saved" : "NOT saved");
+   return rc;
+}
+
+uint32_t getSubtitleTextColor(void) { return 0xFF000000u | STYLE_COLORS[styleChoice[SUBTITLE_STYLE_COLOR]].number; }
+
+uint32_t getSubtitleBackgroundColor(void)
+{
+   return (STYLE_OPACITIES[styleChoice[SUBTITLE_STYLE_OPACITY]].number << 24) |
+          STYLE_BACKGROUNDS[styleChoice[SUBTITLE_STYLE_BACKGROUND]].number;
+}
+
+SubtitleEdge getSubtitleEdge(void) { return (SubtitleEdge)STYLE_EDGES[styleChoice[SUBTITLE_STYLE_EDGE]].number; }
+int getSubtitleTextSize(void) { return (int)STYLE_SIZES[styleChoice[SUBTITLE_STYLE_SIZE]].number; }
