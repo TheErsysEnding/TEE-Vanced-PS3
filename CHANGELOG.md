@@ -3,7 +3,25 @@
 Every release listed here was installed and used on a real PS3 (EVILNAT 4.92 DEX)
 before it was tagged. Anything that had not been is said so plainly.
 
-## v3.0.3 — not released yet
+## v3.0.3 — 2026-11-14
+
+Installed and used on real consoles before the tag: the translated subtitles (V3.0.3 Test 2) by the user who asked
+for them, in Czech, and V3.0.3 Test 5 Decoder by TEE; the release package is Test 5 with its version string and the
+welcome page's list changed.
+
+### In short
+
+- **Subtitles in your language** (GitHub issue #4): a video without subtitles in your region's language (Settings >
+  Region, or `subtitle-language=` in settings.txt) gets them translated. YouTube refuses its own translations to
+  this player, so the player translates the video's own track with Google Translate - sentence by sentence, the
+  part the video is at first.
+- **Every subtitle track the PS3's fonts can show is offered** - yours first, then the original's. On a video with
+  two dozen languages most of them used to be missing; the transcripts of AI dubs are left out.
+- **A subtitle style of your own** (asked for on PSX-Place): START > Subtitle style - the text color, the background's
+  color and opacity, a shadow or an outline, the size from 75 to 200%. A subtitle of two lines is centred.
+- **No lag after a decoder stall**: when the TEE Decoder stalled twice within 30 s - on a slow connection, the input
+  dry - the player handed the video to Sony's cellVdec, which lags at 1080p60. The TEE Decoder now starts again from
+  the next keyframe.
 
 ### The test builds
 
