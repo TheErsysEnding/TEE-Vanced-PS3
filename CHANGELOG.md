@@ -7,6 +7,15 @@ before it was tagged. Anything that had not been is said so plainly.
 
 ### The test builds
 
+**V3.0.3 Test 5 Decoder** (2026-11-14): the TEE Decoder stays on - no more cellVdec in the middle of a video.
+- When the TEE Decoder stopped twice within 30 s ("no SPE answered for 2000 ms"), the player handed the stream to
+  Sony's cellVdec for the rest of the video - which plays 1080p60 at about 35 fps, so the video froze, then lagged
+  to its end. On TEE's console it happened with subtitles on, each time the connection had slowed to 260 KB/s or
+  less (once to 20 KB/s) - reported as lag by two viewers. Now the TEE Decoder is flushed and goes on from the next
+  keyframe however often it stops, and when its flush fails a new TEE Decoder takes over; cellVdec only plays what
+  the TEE Decoder cannot open at all (portrait videos and Shorts, whose coded width is no multiple of 128; too
+  little memory) and `video-decoder=sony`. Played in RPCS3: 1080p60 at 60 fps on the TEE Decoder, subtitles on.
+
 **V3.0.3 Test 4 Style** (2026-11-14): a subtitle of two lines has them centred under each other.
 - A wrapped subtitle had its second line at the left edge of the first (a label lays wrapped lines out
   left-aligned) - without a plate, in the new style, it hung there on its own. The cue is now rendered with its

@@ -637,11 +637,14 @@ static int decodeNextFrame(VideoPlayer *player, uint8_t *yuv, int *width, int *h
 }
 
 // The TEE Decoder stopped while playing: an error it reported, a stream it cannot take after all (several
-// slices per picture only shows while decoding), or no picture for the stall window. Flush it once and go on
-// from the next keyframe; a second failure within 30 s, or a failed flush, hands the stream to cellVdec for
-// the rest of this video (disableH264TeeForVideo, Test 15: it was the rest of the run, so one odd 360p stream took
-// 1080p60 away from every video after it). Returns 1 when decoding can go on. The old decoder is closed
-// before the next one opens, so their SPEs never add up.
+// slices per picture only shows while decoding), or no picture for the stall window. It is flushed and goes on
+// from the next keyframe; when the flush fails, a new TEE Decoder takes over from there. Returns 1 when decoding
+// can go on. The old decoder is closed before the next one opens, so their SPEs never add up.
+// (V3.0.3, asked by TEE) A second failure within 30 s, or a failed flush, used to hand the stream to cellVdec for
+// the rest of the video (Test 15). cellVdec plays 1080p60 at about 35 fps: a stall of a few seconds - "no SPE
+// answered", seen on a slow connection, the input dry - became a video that lagged to its end. The TEE Decoder
+// now always comes back; cellVdec plays only what the TEE Decoder cannot open at all (a coded width that is not
+// a multiple of 128 - portrait videos, Shorts - too little memory) and video-decoder=sony.
 static int recoverDecoder(VideoPlayer *player, int *startedAtKeyframe)
 {
    if (!player->decoder || !isTeeH264Decoder(player->decoder) || player->inputEnded) return 0;
@@ -650,16 +653,16 @@ static int recoverDecoder(VideoPlayer *player, int *startedAtKeyframe)
    player->decoderFailureUs = now;
    player->hasPendingAu = 0;
    *startedAtKeyframe = 0;
-   if (!again && resetH264Decoder(player->decoder) == 0) {
-      logWarn("[video-player] TEE Decoder flushed after a failure, going on from the next keyframe\n");
+   if (resetH264Decoder(player->decoder) == 0) {
+      logWarn("[video-player] TEE Decoder flushed after a failure%s, going on from the next keyframe\n",
+              again ? " (the second within 30 s)" : "");
       return 1;
    }
-   disableH264TeeForVideo(again ? "it failed twice within 30 s" : "its flush failed");
    destroyH264Decoder(player->decoder);
-   player->decoder = createH264DecoderFor(&player->streamParams);   // cellVdec now
+   player->decoder = createTeeH264DecoderFor(&player->streamParams);
    if (!player->decoder) { logError("[video-player] no decoder after the TEE Decoder failed\n"); return 0; }
-   setH264CatchUpSkip(player->decoder, 0);
-   logWarn("[video-player] playing on with %s from the next keyframe\n", getH264DecoderName(player->decoder));
+   setH264CatchUpSkip(player->decoder, 0);   // fresh decoder, fresh start: re-armed while behind
+   logWarn("[video-player] its flush failed: a new TEE Decoder goes on from the next keyframe\n");
    return 1;
 }
 
@@ -705,9 +708,10 @@ static void performSeek(VideoPlayer *player)
    // than going dark (a NULL decoder makes decode report end-of-stream until a later seek revives it)
    else if (!player->decoder || resetH264Decoder(player->decoder) != 0) {
       logWarn("[video-player] decoder reset failed, recreating decoder\n");
-      if (isTeeH264Decoder(player->decoder)) disableH264TeeForVideo("its flush failed at a seek");
+      // (V3.0.3) a TEE Decoder comes back as a TEE Decoder, never as cellVdec (see recoverDecoder)
+      int wasTee = isTeeH264Decoder(player->decoder);
       destroyH264Decoder(player->decoder);
-      player->decoder = createH264DecoderFor(&player->streamParams);
+      player->decoder = wasTee ? createTeeH264DecoderFor(&player->streamParams) : createH264DecoderFor(&player->streamParams);
       setH264CatchUpSkip(player->decoder, 0);   // fresh decoder, fresh start: re-armed while behind
    }
    player->hasPendingAu = 0;

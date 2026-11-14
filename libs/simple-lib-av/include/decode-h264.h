@@ -62,6 +62,11 @@ typedef struct {
 // memory), cellVdec otherwise. NULL when neither opens.
 H264Decoder *createH264DecoderFor(const H264StreamParams *params);
 
+// (V3.0.3) a new TEE Decoder for a stream it was already playing, after it failed: never cellVdec in its place -
+// cellVdec plays 1080p60 at about 35 fps, so handing it the stream turned a stall of a few seconds into a video
+// that lagged to its end. NULL when the TEE Decoder may not or cannot open (the log says why).
+H264Decoder *createTeeH264DecoderFor(const H264StreamParams *params);
+
 const char *getH264DecoderName(const H264Decoder *decoder);   // "TEE Decoder" or "cellVdec"
 int  isTeeH264Decoder(const H264Decoder *decoder);
 
