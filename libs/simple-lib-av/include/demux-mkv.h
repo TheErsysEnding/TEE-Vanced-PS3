@@ -74,3 +74,9 @@ void closeMkvDemuxer(MkvDemuxer *demuxer);
 // the audio consumer parked). Returns the time actually landed on. landAfter is accepted for a uniform
 // seek signature but ignored (MKV always lands at/before; the next-keyframe skip is an mp4/DASH concern).
 uint64_t seekMkvDemuxer(MkvDemuxer *demuxer, uint64_t targetNs, int landAfter);
+
+// (V3.0.4 Test 3) jumps the cluster walk to the first cluster that starts at or after targetNs - cued or not: a WebM
+// stream may start more clusters than it cues, each on a key frame. Returns that cluster's time; MKV_NO_CLUSTER when
+// there is none or a header could not be read - the walk is then where it was. Clears the audio queue as seeking does.
+#define MKV_NO_CLUSTER (~0ull)
+uint64_t seekMkvDemuxerToCluster(MkvDemuxer *demuxer, uint64_t targetNs);

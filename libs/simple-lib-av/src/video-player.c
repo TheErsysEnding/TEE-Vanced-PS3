@@ -77,6 +77,7 @@ typedef struct {
 #define VP9_KEY_FRAME_MIN   (256u << 10)    // ... a stop on a smaller one lowers the limit, to no less than this
 #define VP9_KEYS_KEPT       8               // ... the last 1440p key frames fed: the one a stop came on
 #define VP9_RESTARTS        3               // ... a player opens TEE VP9 anew after a stop at most this often
+#define VP9_SAME_TIME_NS    8000000ull      // (Test 3) ... two key frames this close are at the same time (half a frame)
 
 // (Test 2) what the decoder is opened with, the first that fits: picture buffers (its default 10 + 2 for the ring
 // above, 6.5 MB each at 1440p) and how much input it may hold before it says "full". YouTube's 1440p60 averages
@@ -133,8 +134,6 @@ struct VideoPlayer {
    int              vp9DropIgnore;    // ... stats seconds still to pass over (a seek's)
    int              vp9CatchingUp;    // (V3.0.4) UI: 1080p is asked for - the sound runs on until the picture caught up
    uint64_t         vp9CatchingUpUs;  // ... since when
-   int              vp9DropToSwitch;  // (V3.0.4 Test 2) feeder: 1440p's blocks are dropped up to the change at vp9SwitchAtNs
-   int              vp9SwitchKeyBytes;// ... the change is for a key frame this big (0: for the bitrate or the safety net)
    struct { uint64_t pts; int size; } vp9Keys[VP9_KEYS_KEPT];   // ... feeder: the last 1440p key frames fed
    int              vp9KeyCount;      // ... how many (the ring's write count, 0 again at a seek)
    int64_t          vp9LastPts;       // ... decode thread: the last picture's time (-1: none since the open or a seek)
@@ -409,17 +408,32 @@ static int vp9ConsiderChange(VideoPlayer *player, const VideoAu *au)
    // the player can make without a break (Test 1 built it anew in 1080p60 H.264 for the rest of the video; TEE: "warum
    // nicht so hybrid wie wir es bisher haben?"). The rule below takes it back up when the next 10 s allow - unless the
    // key frame there is too big as well, which sends it straight back here. Before a change planned for later, too.
+   // (Test 3) Test 2 looked for that 1080p key frame among the cues only, and dropped 1440p up to the next one when
+   // the key frame was not cued: YouTube cues every ~5.5 s but starts a cluster - on a key frame - every 0.03 - 7 s.
+   // On LHGughAkidk 1440p's 681 KB key frame at 17.2 s starts such a cluster: 1440p dropped up to 1080p's cue at 22 s,
+   // the picture held 4.8 s (TEE: "gefreezed auf 0 fps"), and again after a seek back. Now the change goes to 1080p's
+   // cluster at that time, cued or not, and at once: each of the 1440p key frames above 500 KB of LHGughAkidk (9),
+   // LXb3EKWsInQ (0) and the Elden Ring DLC (9 in its first 25 minutes) has a 1080p key frame at the same time.
    if (!player->vp9OnLow && au->keyframe && (uint32_t)au->size > vp9KeyFrameLimit) {
-      const MkvDemuxer *low = &player->lowDemuxer.container.mkv;
-      int k = vp9CueAtOrBefore(low, pts);
-      if (k < 0 || low->cues[k].timeNs < pts) k++;   // the 1080p key frame at or after this one
-      if (k < low->cueCount) {
-         player->vp9SwitchAtNs = (int64_t)low->cues[k].timeNs;
-         player->vp9SwitchToLow = 1;
-         player->vp9SwitchWhy = "a key frame too big for TEE VP9 in 1440p";
-         player->vp9SwitchKeyBytes = au->size;
-         player->vp9DropToSwitch = low->cues[k].timeNs > pts;   // later (streams not aligned): nothing until it is fed
+      uint64_t from = pts > VP9_SAME_TIME_NS ? pts - VP9_SAME_TIME_NS : 0;
+      uint64_t lowAt = seekMkvDemuxerToCluster(&player->lowDemuxer.container.mkv, from);
+      if (lowAt != MKV_NO_CLUSTER) {
+         player->vp9OnLow = 1;
+         player->vp9LastSwitchNs = lowAt;
+         player->vp9SwitchAtNs = -1;          // a change planned for later is this one
+         player->vp9StartedAtKeyframe = 0;    // the cluster's first block is a key frame - if not, on to the next one
+         if (lowAt <= pts + VP9_SAME_TIME_NS)
+            logInfo("[video-player] VP9 quality: 1440p -> 1080p at %d.%03d s (a key frame too big for TEE VP9 in 1440p: "
+                    "%d KB, the limit %d KB)\n", (int)(pts / 1000000000ull), (int)(pts / 1000000ull % 1000),
+                    au->size >> 10, (int)(vp9KeyFrameLimit >> 10));
+         else   // the two streams' key frames apart (none measured so): no picture for the time between
+            logWarn("[video-player] VP9 quality: 1440p -> 1080p at %d.%03d s, %d ms after a key frame too big for TEE "
+                    "VP9 in 1440p (%d KB, the limit %d KB): 1080p has none at its time - the picture holds meanwhile\n",
+                    (int)(lowAt / 1000000000ull), (int)(lowAt / 1000000ull % 1000), (int)((lowAt - pts) / 1000000ull),
+                    au->size >> 10, (int)(vp9KeyFrameLimit >> 10));
+         return 1;   // this block dropped: 1080p from its cluster
       }
+      // no 1080p cluster header could be read: 1440p goes on - should TEE VP9 stop on it, restartVp9OnLow takes over
    }
    if (pts >= player->vp9NextCueNs) {   // a new 1440p section: the rule
       int i = vp9CueAtOrBefore(high, pts);
@@ -461,8 +475,7 @@ static int vp9ConsiderChange(VideoPlayer *player, const VideoAu *au)
          }
       }
    }
-   if (player->vp9SwitchAtNs < 0) return 0;
-   if (pts < (uint64_t)player->vp9SwitchAtNs) return player->vp9DropToSwitch;   // (Test 2) 1440p without its key frame
+   if (player->vp9SwitchAtNs < 0 || pts < (uint64_t)player->vp9SwitchAtNs) return 0;
 
    // the change: the other stream from its key frame at vp9SwitchAtNs
    uint64_t at = (uint64_t)player->vp9SwitchAtNs;
@@ -473,17 +486,10 @@ static int vp9ConsiderChange(VideoPlayer *player, const VideoAu *au)
    player->vp9LastSwitchNs = landed;
    double down, up;
    vp9Thresholds(player, &down, &up);
-   if (player->vp9SwitchKeyBytes)   // (V3.0.4 Test 2)
-      logInfo("[video-player] VP9 quality: 1440p -> 1080p at %d.%03d s (%s: %d KB, the limit %d KB)\n",
-              (int)(landed / 1000000000ull), (int)(landed / 1000000ull % 1000), player->vp9SwitchWhy,
-              player->vp9SwitchKeyBytes >> 10, (int)(vp9KeyFrameLimit >> 10));
-   else
-      logInfo("[video-player] VP9 quality: %s at %d.%03d s (%s, %d.%d Mbit/s; T_down %d.%d, T_up %d.%d Mbit/s%s)\n",
-              toLow ? "1440p -> 1080p" : "1080p -> 1440p", (int)(landed / 1000000000ull), (int)(landed / 1000000ull % 1000),
-              player->vp9SwitchWhy, VP9_MBIT(player->vp9SwitchBps), VP9_MBIT(down), VP9_MBIT(up),
-              player->vp9RsxOn && !player->vp9Lowered ? ", the RSX's" : player->vp9Lowered ? ", lowered" : "");
-   player->vp9SwitchKeyBytes = 0;
-   player->vp9DropToSwitch = 0;
+   logInfo("[video-player] VP9 quality: %s at %d.%03d s (%s, %d.%d Mbit/s; T_down %d.%d, T_up %d.%d Mbit/s%s)\n",
+           toLow ? "1440p -> 1080p" : "1080p -> 1440p", (int)(landed / 1000000000ull), (int)(landed / 1000000ull % 1000),
+           player->vp9SwitchWhy, VP9_MBIT(player->vp9SwitchBps), VP9_MBIT(down), VP9_MBIT(up),
+           player->vp9RsxOn && !player->vp9Lowered ? ", the RSX's" : player->vp9Lowered ? ", lowered" : "");
    return 1;
 }
 
@@ -497,7 +503,6 @@ static uint64_t vp9SeekTrack(VideoPlayer *player, uint64_t targetNs, int landAft
    double peak = vp9PeakAhead(high, targetNs);
    int toLow = player->vp9OnLow ? !(peak < up) : peak > down;
    player->vp9SwitchAtNs = -1;
-   player->vp9DropToSwitch = player->vp9SwitchKeyBytes = 0;   // (V3.0.4 Test 2)
    player->vp9NextCueNs = 0;   // the rule looks again at the first block
    uint64_t landed = seekVideoDemuxer(toLow ? &player->lowDemuxer : &player->demuxer, targetNs, landAfter);
    if (toLow != player->vp9OnLow) {
@@ -742,17 +747,13 @@ static int recoverDecoder(VideoPlayer *player, int *startedAtKeyframe)
 // running on - no "Loading", no new player. The screen is black until the first new picture: the new decoder clears
 // the buffers the last ones are in. A stop on a key frame lowers vp9KeyFrameLimit below it for the rest of the run.
 // 1 done, 0 not possible (a stop in 1080p, no 1080p stream, opened anew too often, it did not open): the app takes
-// over then (hasVideoPlayerFailed).
+// over then (hasVideoPlayerFailed). (Test 3) That key frame is the first 1080p cluster's after the last picture, cued
+// or not (seekMkvDemuxerToCluster) - Test 2 waited for the next cue, up to 5.5 s of black.
 static int restartVp9OnLow(VideoPlayer *player)
 {
    const char *why = tvp9_error(player->vp9);
    if (!why || !player->hasLowDemuxer || player->vp9Restarts >= VP9_RESTARTS) return 0;
-   const MkvDemuxer *low = &player->lowDemuxer.container.mkv;
    int64_t last = player->vp9LastPts;
-   int k = 0;
-   while (k < low->cueCount && (int64_t)low->cues[k].timeNs <= last) k++;   // the 1080p key frame after the last picture
-   if (k >= low->cueCount) return 0;
-   uint64_t at = low->cues[k].timeNs;
 
    // the feeder parks, as for a seek: it reads the demuxer this moves, and nothing may be fed while the decoder closes
    player->vp9FeedParked = 0;
@@ -776,6 +777,30 @@ static int restartVp9OnLow(VideoPlayer *player)
    }
    // in 1080p - the feeder on it, and no 1440p key frame right after the last picture - it would stop there again
    if (player->vp9OnLow && !keyBytes) { player->vp9FeedPause = 0; return 0; }
+   // (Test 3) the sound runs on from here, as after a change (it waits only for a picture 1.5 s behind): finding the
+   // 1080p key frame can take a moment - a cluster header over the network (RPCS3: 0.4 s, the sound held 300 ms)
+   lock(&player->lock);
+   player->vp9CatchingUp = 1;
+   player->vp9CatchingUpUs = sys_time_get_system_time();
+   unlock(&player->lock);
+   // the 1080p key frame after the last picture: the next cue's when it is right there (a stop on a cued key frame:
+   // nothing to fetch), else the first 1080p cluster's after the picture, cued or not
+   const MkvDemuxer *low = &player->lowDemuxer.container.mkv;
+   int k = 0;
+   while (k < low->cueCount && (int64_t)low->cues[k].timeNs <= last) k++;
+   uint64_t at = k < low->cueCount ? low->cues[k].timeNs : MKV_NO_CLUSTER;
+   int walked = 0;
+   if (at == MKV_NO_CLUSTER || (int64_t)at > last + (int64_t)(8 * frameNs)) {
+      uint64_t cluster = seekMkvDemuxerToCluster(&player->lowDemuxer.container.mkv, (uint64_t)(last + 1));
+      if (cluster != MKV_NO_CLUSTER) { at = cluster; walked = 1; }
+   }
+   if (at == MKV_NO_CLUSTER) {
+      lock(&player->lock);
+      player->vp9CatchingUp = 0;
+      unlock(&player->lock);
+      player->vp9FeedPause = 0;
+      return 0;
+   }
    player->vp9Restarts++;
    if (keyBytes) {
       uint32_t lowered = (uint32_t)keyBytes / 8 * 7;
@@ -823,11 +848,10 @@ static int restartVp9OnLow(VideoPlayer *player)
       player->vp9FeedPause = 0;   // (it waits: no decoder)
       return 0;
    }
-   uint64_t landed = seekVideoDemuxer(&player->lowDemuxer, at, 0);
+   uint64_t landed = walked ? at : seekVideoDemuxer(&player->lowDemuxer, at, 0);
    player->vp9OnLow = 1;
    player->vp9LastSwitchNs = landed;
    player->vp9SwitchAtNs = -1;
-   player->vp9DropToSwitch = player->vp9SwitchKeyBytes = 0;
    player->vp9NextCueNs = 0;
    player->hasPendingAu = 0;
    player->inputEnded = 0;

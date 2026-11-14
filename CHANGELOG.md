@@ -7,6 +7,25 @@ before it was tagged. Anything that had not been is said so plainly.
 
 ### The test builds
 
+**V3.0.4 Test 3 Hybrid** (2026-11-15): the change to 1080p for a key frame too big for 1440p comes at that key frame,
+also where it starts a cluster without a cue.
+- On TEE's console Test 2 still froze once on LHGughAkidk: 4.8 s of still picture from 17.2 s, after it had gone back
+  up to 1440p at 16.5 s - and again after a seek back (TEE: "gefreezed auf 0 fps"). The 1440p key frame there
+  (681 KB) starts a cluster the cues do not name: YouTube cues one cluster every ~5.5 s but starts one, each on a key
+  frame, every 0.03 - 7 s (LHGughAkidk in 1440p: 93 clusters, 61 of them cued). Test 2 looked for the 1080p key frame
+  among the cues only, found the next one at 22 s and dropped 1440p up to it. Now the headers of the 1080p clusters
+  after the cue are read, a few bytes each, up to the key frame's time, and the change goes there at once. Measured
+  over every cluster: each 1440p key frame above 500 KB of LHGughAkidk (9, four of them without a cue), LXb3EKWsInQ
+  (none) and the first 25 minutes of the Elden Ring DLC (9) has a 1080p key frame at the same time. Checked in RPCS3
+  from 17 s: 1080p at 17.200 s, TEE VP9 changed over after the 1440p frames up to it, no hold (61 fps on R3's panel),
+  1350p again at 27.5 s.
+- Should TEE VP9 stop in 1440p all the same, it goes on in 1080p from the first 1080p key frame after the last
+  picture, cued or not (Test 2: the next cue, up to 5.5 s of black), and the sound runs on from the stop. Checked in
+  RPCS3 with the limit out of the way: a stop on the 1055 KB key frame at 121 s, the first 1080p picture of the new
+  decoder 0.12 s later, the sound never waited; a stop at 55 s (748 KB) went on from 55 s.
+- Also seen there with the limit out of the way: TEE VP9 took the 681 KB key frame in 1440p without a stop. The line
+  lies between 681 and 748 KB; the limit stays at 600 KB.
+
 **V3.0.4 Test 2 Hybrid** (2026-11-14): a key frame too big for TEE VP9 in 1440p goes in 1080p before it is fed - no
 new player, no word on screen.
 - Test 1's answer to the stops on LHGughAkidk was hard: a new player in 1080p60 H.264, "Loading", the sound stopping,

@@ -583,6 +583,43 @@ uint64_t seekMkvDemuxer(MkvDemuxer *demuxer, uint64_t targetNs, int landAfter)
    return best >= 0 ? index[best].timeNs : 0;
 }
 
+// (V3.0.4 Test 3) YouTube's WebM streams start a cluster - on a key frame - every 0.03 - 7 s, but cue only one every
+// ~5.5 s: LHGughAkidk's 2560x1350 stream has 93 clusters, 61 of them cued. From the cue at or before targetNs, the
+// headers of the clusters after it are read - a few bytes each - up to the first one at or after targetNs.
+uint64_t seekMkvDemuxerToCluster(MkvDemuxer *demuxer, uint64_t targetNs)
+{
+   if (!demuxer->cueCount) return MKV_NO_CLUSTER;
+   int best = 0;
+   for (int i = 0; i < demuxer->cueCount && demuxer->cues[i].timeNs <= targetNs; i++) best = i;
+   uint64_t pos = demuxer->cues[best].clusterPos;
+   for (int n = 0; n < 256 && pos < demuxer->segmentEnd; n++) {
+      uint32_t id; uint64_t size, dataStart;
+      if (readElementAt(demuxer, pos, &id, &size, &dataStart) != 0) return MKV_NO_CLUSTER;   // (an unsized one, too)
+      if (id == EBML_ID_CLUSTER) {
+         // the cluster's Timecode child precedes its blocks; tolerate a leading CRC-32
+         uint64_t childPos = dataStart, timeNs = MKV_NO_CLUSTER;
+         for (int child = 0; child < 4; child++) {
+            uint32_t childId; uint64_t childSize, childData;
+            if (readElementAt(demuxer, childPos, &childId, &childSize, &childData) != 0) break;
+            if (childId == EBML_ID_TIMECODE) {
+               timeNs = readUintBE(&demuxer->source, childSize) * demuxer->timecodeScale;
+               break;
+            }
+            childPos = childData + childSize;
+         }
+         if (timeNs == MKV_NO_CLUSTER) return MKV_NO_CLUSTER;
+         if (timeNs >= targetNs) {
+            clearAudioAuQueue(&demuxer->audioQueue);
+            demuxer->pos = pos;
+            demuxer->clusterTimecode = 0;
+            return timeNs;
+         }
+      }
+      pos = dataStart + size;   // the next cluster (anything else between them is stepped over)
+   }
+   return MKV_NO_CLUSTER;
+}
+
 void closeMkvDemuxer(MkvDemuxer *demuxer)
 {
    for (int i = 0; i < AU_BUFFER_COUNT; i++) { free(demuxer->auBuffers[i]); demuxer->auBuffers[i] = 0; }
