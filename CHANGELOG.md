@@ -7,6 +7,12 @@ before it was tagged. Anything that had not been is said so plainly.
 
 ### The test builds
 
+**V3.0.3 Test 4 Style** (2026-11-14): a subtitle of two lines has them centred under each other.
+- A wrapped subtitle had its second line at the left edge of the first (a label lays wrapped lines out
+  left-aligned) - without a plate, in the new style, it hung there on its own. The cue is now rendered with its
+  lines centred (the renderer's renderFontAligned; '{' and '[' in a cue are doubled, its escapes, so they stay plain
+  text). Checked in RPCS3 at 150% without a plate.
+
 **V3.0.3 Test 3 Style** (2026-11-14): a subtitle style of your own (asked for on PSX-Place).
 - START > Subtitle style, a fourth row in the player's options: the text colour (white, yellow, green, cyan, blue,
   magenta, red, black), the background's colour (the same eight) and opacity (0 - 100%), an edge round the letters

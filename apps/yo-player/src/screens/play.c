@@ -966,6 +966,30 @@ static void makeSubtitleLabels(int force)
    uiInitLabel(&stylePreviewLabel, SUBTITLE_WEIGHT, 0, 0, AUTO, size, 0xFFFFFFFFu, TEXT_NOWRAP, STYLE_PREVIEW_TEXT);
 }
 
+// (V3.0.3) A cue into subtitleLabel's texture with its wrapped lines centred under each other. A Label lays wrapped
+// lines out left-aligned and has no centred mode; the renderer has one (renderFontAligned), but reads markup, so
+// every '{' and '[' of the cue is doubled - its escapes - and stays plain text. Cleaned and font-picked as
+// uiSetTextLabel does (Manrope, or FONT_POP for a cue Manrope cannot draw), and rendered only when it changes;
+// subtitleLabel keeps the font, size and the text it shows.
+static void setSubtitleText(const char *text)
+{
+   char clean[LABEL_MAX_TEXT];
+   uiCleanText(clean, sizeof clean, text ? text : "");
+   if (strcmp(clean, subtitleLabel.text) == 0) return;
+   strCopy(subtitleLabel.text, sizeof subtitleLabel.text, clean);
+   subtitleLabel.font = uiPickFont(SUBTITLE_WEIGHT, clean);
+   subtitleLabel.raw  = 1;
+   char escaped[2 * LABEL_MAX_TEXT];
+   int length = 0;
+   for (const char *c = clean; *c && length < (int)sizeof escaped - 3; c++) {
+      if (*c == '{' || *c == '[') escaped[length++] = *c;
+      escaped[length++] = *c;
+   }
+   escaped[length] = 0;
+   renderFontAligned(&subtitleLabel.tt, subtitleLabel.font, subtitleLabel.size, escaped, 0xFFFFFFFFu, SUBTITLE_MAX_W,
+                     TEXT_WRAP, NULL, NULL, TEXT_ALIGN_CENTER);
+}
+
 static void initPlay(void)
 {
    memset(&state, 0, sizeof state);
@@ -1104,7 +1128,7 @@ static void cycleSubtitles(void)
    if (state.captionCount == 0 || state.isLive) { showToast("No subtitles"); return; }
    state.subtitlePick = state.subtitlePick + 1 < state.captionCount ? state.subtitlePick + 1 : -1;
 
-   uiSetTextLabel(&subtitleLabel, SUBTITLE_WEIGHT, "");   // clear the old track's cue; the new one repopulates once fetched
+   setSubtitleText("");   // clear the old track's cue; the new one repopulates once fetched
 
    char hud[64];
    if (state.subtitlePick < 0) strCopy(hud, sizeof hud, "Subtitles off");
@@ -2296,8 +2320,7 @@ static void updatePlay(void)
    if (state.subThreadActive && state.player)   // (V3.0.3) where a translation goes on from
       state.subtitleTranslation.position = getVideoPositionSeconds(state.player);
    if (state.subtitlesReady && state.subtitlePick >= 0 && state.stage == STAGE_PLAYING && state.player)
-      uiSetTextLabel(&subtitleLabel, SUBTITLE_WEIGHT,   // Manrope, or FONT_POP for a cue Manrope cannot draw
-                     getSubtitleCueText(state.subtitleTrack, getVideoPositionSeconds(state.player), &state.subtitleScanFrom));
+      setSubtitleText(getSubtitleCueText(state.subtitleTrack, getVideoPositionSeconds(state.player), &state.subtitleScanFrom));
 
    // The manual offer is recomputed BEFORE input is read, not after. Computing it afterwards left Triangle
    // judged against the previous frame's answer: on the first frame after the playhead left an "ask"
