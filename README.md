@@ -9,7 +9,7 @@ hardware. A fork of **[mohasi's Yo! Player](https://github.com/mohasi/ps3-dev)**
 (Apache-2.0) — see [NOTICE](NOTICE); the application and its libraries are his
 work. The H.264 decoder it plays most videos with, and the VP9 decoder that plays 1440p, are TEE's own (below).
 
-**Status: v3.0.2.** Every version here has been installed and used on a real
+**Status: v3.0.3.** Every version here has been installed and used on a real
 console before being called done. See [CHANGELOG.md](CHANGELOG.md).
 
 ---
@@ -91,8 +91,15 @@ you open it first.
 paged rather than endlessly scrolled; the app keeps its own search history
 because the PS3 keyboard keeps none.
 
-**Subtitles in more scripts.** Czech, Polish, Hungarian, Romanian, Turkish,
-Greek, Cyrillic and the rest of Latin show in subtitles as they do in titles.
+**Subtitles in your language, in your style.** A video without subtitles in your
+language gets them translated: YouTube refuses its own translations to apps like
+this one, so the player translates the video's own track with Google Translate -
+sentence by sentence, the part you are at first (since v3.0.3, GitHub issue #4).
+Your language is your region's (Settings > Region), or `subtitle-language=` in
+`settings.txt`; Triangle offers it first. START > Subtitle style sets the text
+color, the background and its opacity, a shadow or an outline, and the size.
+Czech, Polish, Hungarian, Romanian, Turkish, Greek, Cyrillic and the rest of
+Latin show as they do in titles.
 
 **The original audio, and Square for the others.** YouTube serves more and more
 videos with AI auto-dubbed audio tracks in other languages, and the player used
@@ -104,10 +111,12 @@ Square opens the list of them: pick one, and it plays on from where you are.
 **Its own H.264 decoder: 1080p60 at 60 fps.** The TEE Decoder runs on the
 PS3's SPEs and plays YouTube's 1080p60 at a full 60 frames a second, where
 Sony's `cellVdec` manages about 35 at 1080p - live streams included. Everything
-it cannot decode - Shorts, 480p - stays on `cellVdec`. A 60 fps video on the
-PS3's 59.94 Hz output shows one picture per vblank, with the sound 0.1% slower
-to match. START opens Options with the quality (Auto, or down to 144p for a slow
-connection), the chapters and autoplay.
+it cannot decode - Shorts, 480p - stays on `cellVdec`; a video it plays stays on
+it, and should it stall (a slow connection can do that), it starts again from
+the next keyframe (since v3.0.3). A 60 fps video on the PS3's 59.94 Hz output
+shows one picture per vblank, with the sound 0.1% slower to match. START opens
+Options with the quality (Auto, or down to 144p for a slow connection), the
+chapters, autoplay and the subtitle style.
 
 **Rewind a live stream.** Where the streamer left YouTube's rewind on, left/right
 and L2/R2 go back through the last 12 hours of a live stream and R1 returns to
@@ -129,8 +138,7 @@ page; `update-check=off` in `settings.txt` leaves GitHub alone.
 in, your YouTube playlists above them. L3 files the selected video into a local
 list; the sidebar opens them.
 
-Not shipped yet: search filters (date, duration, HD), and YouTube's automatically
-translated subtitles - YouTube refuses them to a client that is not signed in.
+Not shipped yet: search filters (date, duration, HD).
 
 ---
 
@@ -163,7 +171,7 @@ The package lands in `pkg/out/`, named after `APP_VERSION` in
 python3 genbuild.py                 # generate build-ps3.bat from the .vcxproj files
 ./tools/sync-work.sh                # mirror sources onto the build machine
 ssh <vm> "cd /d C:\ps3-dev && build-ps3.bat"
-./build-pkg-fromsource.sh TEE-Vanced-PS3-v3.0.2 "TEE Vanced PS3 V3.0.2"
+./build-pkg-fromsource.sh TEE-Vanced-PS3-v3.0.3 "TEE Vanced PS3 V3.0.3"
 ```
 
 Upstream is pinned (`UPSTREAM_REV` in `tools/build-env.sh`). mohasi's tree has
@@ -207,7 +215,7 @@ not contain the change. `build.sh` now checks this itself: it fetches the ELF to
 and that run's build stamp. By hand, on the build machine:
 
 ```sh
-ppu-lv2-strings yo-player.ppu.elf | grep "V3.0.2"
+ppu-lv2-strings yo-player.ppu.elf | grep "V3.0.3"
 ```
 
 ---

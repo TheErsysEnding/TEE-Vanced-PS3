@@ -742,6 +742,19 @@ H264Decoder *createH264DecoderFor(const H264StreamParams *params)
    return createH264Decoder(params->width, params->height, params->level, params->maxRefFrames);
 }
 
+H264Decoder *createTeeH264DecoderFor(const H264StreamParams *params)
+{
+   if (!isH264TeeUsable()) {
+      logError("[decode-h264] no new TEE Decoder: %s\n", policy == H264_POLICY_SONY ? "video-decoder=sony" : "it is off for this run");
+      return 0;
+   }
+   char why[200];
+   why[0] = 0;
+   H264Decoder *decoder = createTee(params, why, sizeof why);
+   if (!decoder) logError("[decode-h264] the TEE Decoder did not open again: %s\n", why);
+   return decoder;
+}
+
 int decodeAuH264(H264Decoder *decoder, const uint8_t *data, int size, uint64_t pts)
 {
    return decoder->backend == BACKEND_TEE ? teeDecodeAu(decoder, data, size, pts) : vdecDecodeAu(decoder, data, size, pts);

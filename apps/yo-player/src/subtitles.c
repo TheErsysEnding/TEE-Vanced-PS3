@@ -64,6 +64,20 @@ static const char *parseCue(const char *element, const char *end, SubtitleTrack 
    return close + 7;
 }
 
+// (V3.0.3, from play.c, where it was applied after the extractor had kept its first tracks) only languages the
+// fonts render: Manrope's Latin (Extended-A and Vietnamese), Greek and Cyrillic (V3.0.0), and Japanese in FONT_POP.
+// prefix match, so "en-GB" passes as "en".
+int isSubtitleLanguageShown(const char *code)
+{
+   static const char *supported[] = { "en", "es", "pt", "fr", "de", "it", "nl", "sv", "da", "no", "nb", "fi",
+                                      "pl", "cs", "sk", "hu", "ro", "tr", "id", "ms", "ja",
+                                      "el", "ru", "uk", "bg", "sr", "mk", "be", "hr", "sl", "bs", "lt", "lv",
+                                      "et", "sq", "ca", "gl", "eu", "is", "af", "az", "vi", "fil", "sw", "mt" };
+   for (int i = 0; i < (int)(sizeof supported / sizeof *supported); i++)
+      if (strncmp(code, supported[i], strlen(supported[i])) == 0) return 1;
+   return 0;
+}
+
 int fetchSubtitles(const char *url, SubtitleTrack *out)
 {
    memset(out, 0, sizeof *out);
@@ -104,11 +118,14 @@ const char *getSubtitleCueText(const SubtitleTrack *track, float seconds, int *s
    // auto captions "roll up": cue windows overlap the next line's, so among the cues covering this
    // moment always show the LATEST-started one - returning the first match displays the previous
    // sentence for its whole overlap and reads as lagging subtitles.
+   // (V3.0.3) a cue whose translation is still to come shows nothing: the subtitle worker writes its text, then
+   // clears the flag - the barrier keeps this thread from reading the text before the flag
    const char *text = "";
    for (int i = *scanFrom; i < track->count; i++) {
       if (track->cues[i].start > seconds) break;
       *scanFrom = i;
-      if (seconds < track->cues[i].end) text = track->cues[i].text;
+      if (seconds < track->cues[i].end) text = ((volatile const SubtitleCue *)&track->cues[i])->pending ? "" : track->cues[i].text;
    }
+   __sync_synchronize();
    return text;
 }

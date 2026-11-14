@@ -4,6 +4,8 @@
 // with defaults and explanatory comments on first launch, so it can be edited over FTP; an unknown
 // or malformed value silently falls back to its default. loadSettings() must run once at startup.
 
+#include <stdint.h>   // (V3.0.3) the subtitle style's colours
+
 // when auto-skip acts on community-flagged SponsorBlock segments.
 typedef enum {
    SPONSORBLOCK_OFF,   // never skip anything (the segments aren't even fetched)
@@ -46,12 +48,28 @@ typedef struct { const char *code; const char *name; const char *language; } Con
 int  getContentRegionCount(void);
 
 // ---- subtitles (V3.0.0, GitHub issue #4) ----
-// The language YouTube translates a video's subtitles into when the video has none in it - its "auto-translated"
-// tracks. settings.txt subtitle-language=: off (the default), auto = the content region's language (Czechia: cs), or
-// a code such as cs, pl, sk, hu, de, en. "" when off; never NULL. Off by default because YouTube refuses translated
-// tracks to an anonymous player without a PO token (HTTP 429, probed 2026-11-12 with every client that gets
-// captions at all); the player then says so and drops the track.
+// The language a video's subtitles are translated into when the video has none in it - YouTube's "auto-translated"
+// tracks. settings.txt subtitle-language=: auto (the default since V3.0.3) = the content region's language (Czechia:
+// cs), a code such as cs, pl, sk, hu, de, en, or off. "" when off; never NULL. YouTube refuses its own translations
+// to an anonymous player without a PO token (HTTP 429, probed 2026-11-12 and 13), so the player translates the
+// track itself with Google Translate (subtitle-translate.h).
 const char *getSubtitleLanguage(void);
+
+// ---- the subtitle style (V3.0.3, asked for on PSX-Place) ----
+// How subtitles look: the player's START > Subtitle style, kept in settings.txt as subtitle-color=, subtitle-background=,
+// subtitle-opacity=, subtitle-edge= and subtitle-size=. Each field is one of a few choices, by index.
+typedef enum { SUBTITLE_STYLE_COLOR, SUBTITLE_STYLE_BACKGROUND, SUBTITLE_STYLE_OPACITY, SUBTITLE_STYLE_EDGE,
+               SUBTITLE_STYLE_SIZE, SUBTITLE_STYLE_FIELDS } SubtitleStyleField;
+typedef enum { SUBTITLE_EDGE_NONE, SUBTITLE_EDGE_SHADOW, SUBTITLE_EDGE_OUTLINE } SubtitleEdge;
+int          getSubtitleStyleChoice(SubtitleStyleField field);                  // the index in use
+int          getSubtitleStyleChoiceCount(SubtitleStyleField field);
+const char  *getSubtitleStyleChoiceName(SubtitleStyleField field, int choice);  // "Yellow", "80%", "Shadow", "125%"
+void         setSubtitleStyleChoice(SubtitleStyleField field, int choice);      // in use at once, saved by saveSubtitleStyle
+int          saveSubtitleStyle(void);   // UI thread: the fields changed since the last save into settings.txt; 0 saved
+uint32_t     getSubtitleTextColor(void);         // 0xFFRRGGBB
+uint32_t     getSubtitleBackgroundColor(void);   // 0xAARRGGBB, the opacity as alpha: 0 = no plate
+SubtitleEdge getSubtitleEdge(void);
+int          getSubtitleTextSize(void);          // in px: 30 at 100%
 const ContentRegion *getContentRegionAt(int index);   // the fixed table in display order; NULL out of range
 int  getContentRegionIndex(void);                     // the current region's index into that table
 const char *getContentRegionCode(void);               // the current gl, e.g. "DE"; never NULL, always from the table

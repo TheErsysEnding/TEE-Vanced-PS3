@@ -3,6 +3,80 @@
 Every release listed here was installed and used on a real PS3 (EVILNAT 4.92 DEX)
 before it was tagged. Anything that had not been is said so plainly.
 
+## v3.0.3 — 2026-11-14
+
+Installed and used on real consoles before the tag: the translated subtitles (V3.0.3 Test 2) by the user who asked
+for them, in Czech, and V3.0.3 Test 5 Decoder by TEE; the release package is Test 5 with its version string and the
+welcome page's list changed.
+
+### In short
+
+- **Subtitles in your language** (GitHub issue #4): a video without subtitles in your region's language (Settings >
+  Region, or `subtitle-language=` in settings.txt) gets them translated. YouTube refuses its own translations to
+  this player, so the player translates the video's own track with Google Translate - sentence by sentence, the
+  part the video is at first.
+- **Every subtitle track the PS3's fonts can show is offered** - yours first, then the original's. On a video with
+  two dozen languages most of them used to be missing; the transcripts of AI dubs are left out.
+- **A subtitle style of your own** (asked for on PSX-Place): START > Subtitle style - the text color, the background's
+  color and opacity, a shadow or an outline, the size from 75 to 200%. A subtitle of two lines is centred.
+- **No lag after a decoder stall**: when the TEE Decoder stalled twice within 30 s - on a slow connection, the input
+  dry - the player handed the video to Sony's cellVdec, which lags at 1080p60. The TEE Decoder now starts again from
+  the next keyframe.
+
+### The test builds
+
+**V3.0.3 Test 5 Decoder** (2026-11-14): the TEE Decoder stays on - no more cellVdec in the middle of a video.
+- When the TEE Decoder stopped twice within 30 s ("no SPE answered for 2000 ms"), the player handed the stream to
+  Sony's cellVdec for the rest of the video - which plays 1080p60 at about 35 fps, so the video froze, then lagged
+  to its end. On TEE's console it happened with subtitles on, each time the connection had slowed to 260 KB/s or
+  less (once to 20 KB/s) - reported as lag by two viewers. Now the TEE Decoder is flushed and goes on from the next
+  keyframe however often it stops, and when its flush fails a new TEE Decoder takes over; cellVdec only plays what
+  the TEE Decoder cannot open at all (portrait videos and Shorts, whose coded width is no multiple of 128; too
+  little memory) and `video-decoder=sony`. Played in RPCS3: 1080p60 at 60 fps on the TEE Decoder, subtitles on.
+
+**V3.0.3 Test 4 Style** (2026-11-14): a subtitle of two lines has them centred under each other.
+- A wrapped subtitle had its second line at the left edge of the first (a label lays wrapped lines out
+  left-aligned) - without a plate, in the new style, it hung there on its own. The cue is now rendered with its
+  lines centred (the renderer's renderFontAligned; '{' and '[' in a cue are doubled, its escapes, so they stay plain
+  text). Checked in RPCS3 at 150% without a plate.
+
+**V3.0.3 Test 3 Style** (2026-11-14): a subtitle style of your own (asked for on PSX-Place).
+- START > Subtitle style, a fourth row in the player's options: the text colour (white, yellow, green, cyan, blue,
+  magenta, red, black), the background's colour (the same eight) and opacity (0 - 100%), an edge round the letters
+  (none, shadow, outline) and the size (75 - 200%), with a sample in the style set above the rows. LEFT/RIGHT (or X)
+  change a row; O goes back and saves - into settings.txt as `subtitle-color=`, `subtitle-background=`,
+  `subtitle-opacity=`, `subtitle-edge=` and `subtitle-size=`.
+- The default is the look subtitles had: white on black at 80% (the plate was a near-black blue at 86%).
+- The font renderer has no outline of its own: a subtitle is now rasterised white and drawn tinted - in its colour,
+  and in black (white under black text) offset beneath it, down and right for the shadow, all round for the outline.
+  Checked in RPCS3: the page, the sample at every size, the cue on the video in yellow with an outline at 150%.
+
+**V3.0.3 Test 2 Subtitles** (2026-11-13): every subtitle track in a language the fonts draw can be offered.
+- YouTube lists a video's subtitle tracks by name, and the player kept the first eight before it dropped the
+  languages its fonts do not draw. On a video with two dozen languages Arabic, Bangla and two Chinese took half the
+  places: Polish, Russian, Spanish, Portuguese, Turkish, Italian and more - written by people - were never offered,
+  and Test 1 would have translated one with Google where a person's track was there. Now every track is looked at
+  first; the eight places go to your subtitle language's tracks first (the region's), then the original's, then
+  the rest in YouTube's order, a written track before speech recognition in each. So Triangle shows a track in your
+  language first when the video has one, and the translation only when it has none.
+
+**V3.0.3 Test 1 Subtitles** (2026-11-13): subtitles in your language on videos that have none in it (GitHub issue #4).
+- YouTube refuses its own translated subtitles to this player: a request for one without a PO token gets Google's
+  "Sorry..." page (HTTP 429) from every client that is given subtitles at all - over a home connection as over a
+  VPN, in a browser too. That is why they were off in v3.0.0 - v3.0.2, and a Czech viewer saw only English (GitHub
+  issue #4, asked again). The video's own track still comes, so the player now translates that one itself, with
+  Google Translate, where YouTube's own translations come from.
+- A line of speech recognition is a few words cut out of a sentence, and translated line by line it reads as
+  nonsense. The lines are joined into sentences first - short ones together, up to two lines on screen - each shown
+  over the time its words were spoken. The part the video is at is translated first, then the rest, a few minutes
+  of speech a request; a seek goes on from the new place. If Google stops answering, the rest stays in the
+  original language and the player says so.
+- On by default: `subtitle-language=auto` in settings.txt is the region's language (Settings > Region; Czechia:
+  Czech), a code such as cs, pl or de picks one, off turns it off. A settings.txt that V3.0.0 - V3.0.2 wrote, with
+  its `off`, is changed to `auto` once; a value set by hand stays.
+- An auto-dubbed video has a speech-recognition track for every dub: only the original's is listed now, and the
+  translation is made from it, not from a dub's.
+
 ## v3.0.2 — 2026-11-13
 
 Installed and used on a real console (PS3HEN) with the BD Remote Control by the user who reported the bug, as

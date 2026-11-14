@@ -35,6 +35,7 @@
 #include "settings.h"           // sponsorblock-mode (which segment categories auto-skip)
 #include "sponsorblock.h"       // skip segments (auto-skip + seek-bar marks)
 #include "subtitles.h"          // fetch + parse a caption track; cue lookup during playback
+#include "subtitle-translate.h" // (V3.0.3) a track put into the subtitle language with Google Translate
 #include "chapters.h"           // description timestamp lines -> chapter list
 #include "ps-button.h"          // L3 presses PS for pads the console has no PS button from
 #include "ui/console-glyphs.h" // the Triangle glyph on the skip prompt
@@ -289,9 +290,16 @@ typedef enum { STAGE_LOADING, STAGE_FAILED, STAGE_PLAYING } Stage;
 
 // the options menu (START with the controls up): one page of rows, Quality opening a second with the qualities
 #define MAX_QUALITY_CHOICES 6
-#define OPTION_ROWS         3
+#define OPTION_ROWS         4
 #define OPTION_TEXT_MAX_W   720
-enum { OPTION_QUALITY, OPTION_CHAPTERS, OPTION_AUTOPLAY };
+enum { OPTION_QUALITY, OPTION_CHAPTERS, OPTION_AUTOPLAY, OPTION_SUBTITLES };
+// (V3.0.3, asked for on PSX-Place) the subtitle style page: a preview of a subtitle in the style set, over a stand-in
+// for the picture, and a row per field (settings.h SubtitleStyleField) whose value LEFT/RIGHT change
+#define STYLE_PANEL_W          900
+#define STYLE_PREVIEW_H        150
+#define STYLE_PREVIEW_GAP      16
+#define STYLE_PREVIEW_BACKDROP 0xFF3C4A5Au
+#define STYLE_PREVIEW_TEXT     "Sample subtitle"
 typedef struct { int itag, width, height, fps, isVp9; char url[MAX_STREAM_URL]; } QualityChoice;
 
 static struct {
@@ -334,7 +342,7 @@ static struct {
    // the options menu: Quality, Chapters, Autoplay. Quality opens the list of the qualities this video offers
    // that the player can play (the worker fills it at resolve); a pick rebuilds the player at the position.
    int              optionsVisible;
-   int              optionsLevel;         // 0 the menu, 1 the quality list
+   int              optionsLevel;         // 0 the menu, 1 the quality list, 2 (V3.0.3) the subtitle style
    // (V3.0.1) the audio track list (Square): every track by name, the one playing marked; X changes to the one picked
    int              audioPickerVisible;
    int              audioPickerSelected;
@@ -424,8 +432,12 @@ static struct {
    int              subtitleFetched;     // track index the fetch (in flight or done) belongs to, -1 = none
    int              subtitlesReady;      // fetched track is safe to read
    int              subtitleScanFrom;    // cue lookup cache (getSubtitleCueText)
-   int              subtitleFetchRc;     // (V3.0.0) what fetchSubtitles answered: -429 when YouTube refused it
+   int              subtitleFetchRc;     // (V3.0.0) what fetchSubtitles answered (V3.0.3: or the translation)
    SubtitleTrack   *subtitleTrack;       // heap; ~800 KB, allocated on first enable, freed on exit
+   // (V3.0.3) a translated track: the worker stays on after the fetch, translating, and the cues are read while it
+   // does once it has published them; stoppedShown is the toast for a translation Google broke off, said once
+   SubtitleTranslation subtitleTranslation;
+   int              subtitleStoppedShown;
    volatile int     subWorkerDone;
    int              subThreadActive;
    sys_ppu_thread_t subWorkerTid;
@@ -490,6 +502,11 @@ static Label audioTrackLabels[MAX_AUDIO_TRACKS];      // ...and the tracks' name
 static Label audioOnLabel;                            // ..."Playing", beside the track that plays
 static UiHints audioPickerHints;
 static UiHints optionHints;
+static Label styleHeading;                            // (V3.0.3) the subtitle style page: its heading,
+static Label styleLabels[SUBTITLE_STYLE_FIELDS];      // "Text color: White", ...
+static Label stylePreviewLabel;                       // the sample subtitle, white like subtitleLabel
+static UiHints styleHints;
+static int subtitleLabelSize;                         // the size subtitleLabel and the sample were made at
 static UiHints hudHints;                      // the HUD's hint row
 static UiHints descriptionHints, chapterHints;       // each overlay's own buttons, in its heading
 static TextTexture descriptionTexture;        // whole description as one tall texture (scrolled by draw)
@@ -507,29 +524,18 @@ static void fail(const char *reason)
    state.stage = STAGE_FAILED;
 }
 
-// only languages the fonts render: Manrope's Latin (Extended-A and Vietnamese), Greek and Cyrillic (V3.0.0, see
-// SUBTITLE_TEXT_SIZE), and Japanese in FONT_POP. prefix match, so "en-GB" passes as "en".
-static int isRenderableSubtitleLanguage(const char *code)
-{
-   static const char *supported[] = { "en", "es", "pt", "fr", "de", "it", "nl", "sv", "da", "no", "nb", "fi",
-                                      "pl", "cs", "sk", "hu", "ro", "tr", "id", "ms", "ja",
-                                      "el", "ru", "uk", "bg", "sr", "mk", "be", "hr", "sl", "bs", "lt", "lv",
-                                      "et", "sq", "ca", "gl", "eu", "is", "af", "az", "vi", "fil", "sw", "mt" };
-   for (int i = 0; i < (int)(sizeof supported / sizeof *supported); i++)
-      if (strncmp(code, supported[i], strlen(supported[i])) == 0) return 1;
-   return 0;
-}
-
 static void writeLiveDescriptor(char *out, int cap, const char *descriptor, long edgeSq, long playSq);   // below
 
 // (V3.0.0, GitHub issue #4) YouTube translates most videos' subtitles - its "auto-translated" tracks, which other
 // players offer and this one did not. When the video has no track in the language set for subtitles
 // (getSubtitleLanguage: the region's by default), one is made from a translatable track - one a person wrote before
-// speech recognition - with &tlang=, and put first, so one press of Triangle shows it.
+// speech recognition - and put first, so one press of Triangle shows it. (V3.0.3) YouTube refuses its own
+// translations (&tlang=) to this player, so the track's url stays the source's and the subtitle worker translates
+// what it fetches (subtitle-translate.h); `translated` and the language code mark it.
 static void addTranslatedSubtitles(const StreamInfo *info)
 {
    const char *code = info->translateCode;
-   if (!code[0] || !isRenderableSubtitleLanguage(code)) return;
+   if (!code[0] || !isSubtitleLanguageShown(code)) return;
    size_t codeLength = strlen(code);
    const CaptionTrack *source = NULL;
    for (int i = 0; i < info->captionCount; i++) {
@@ -540,9 +546,6 @@ static void addTranslatedSubtitles(const StreamInfo *info)
    }
    if (!source) return;
    CaptionTrack translated = *source;
-   size_t urlLength = strlen(source->url);
-   if (urlLength + 7 + codeLength >= sizeof translated.url) return;
-   snprintf(translated.url + urlLength, sizeof translated.url - urlLength, "&tlang=%s", code);
    strCopy(translated.languageCode, sizeof translated.languageCode, code);
    snprintf(translated.name, sizeof translated.name, "%s (auto-translated)", info->translateName);
    translated.translatable = translated.autoGenerated = 0;
@@ -647,8 +650,8 @@ static void worker(uint64_t arg)
    // exactly that length reads as cut too, which costs it no more than a "..."): renderDescription says so
    state.descriptionCut = (int)strlen(info->description) >= (int)sizeof info->description - 1;
    parseChapters(state.description, &state.chapters);
-   for (int i = 0; i < info->captionCount; i++)   // keep only tracks the system font can render
-      if (isRenderableSubtitleLanguage(info->captions[i].languageCode))
+   for (int i = 0; i < info->captionCount; i++)   // keep only tracks the fonts can render (V3.0.3: the extractor does)
+      if (isSubtitleLanguageShown(info->captions[i].languageCode))
          state.captionTracks[state.captionCount++] = info->captions[i];
    addTranslatedSubtitles(info);   // (V3.0.0, issue #4)
    pairVp9Streams(info);           // (Test 14) 1440p's 1080p stream, for the busy stretches
@@ -941,6 +944,50 @@ static void initHints(void)
    uiAddHint(&optionHints, GLYPH_CIRCLE,    "Back");
    uiAddHint(&optionHints, GLYPH_DPAD_UP,   "");
    uiAddHint(&optionHints, GLYPH_DPAD_DOWN, "Move");
+   uiInitHints(&styleHints);   // (V3.0.3)
+   uiAddHint(&styleHints, GLYPH_DPAD_LEFT,  "");
+   uiAddHint(&styleHints, GLYPH_DPAD_RIGHT, "Change");
+   uiAddHint(&styleHints, GLYPH_CIRCLE,     "Back");
+   uiAddHint(&styleHints, GLYPH_DPAD_UP,    "");
+   uiAddHint(&styleHints, GLYPH_DPAD_DOWN,  "Move");
+}
+
+// (V3.0.3) subtitleLabel and the style page's sample at the size the subtitle style sets, rasterised white:
+// drawStyledSubtitle tints them to the text colour (and black for an edge). A new size makes them again; the cue
+// comes back with the next frame's uiSetTextLabel.
+static void makeSubtitleLabels(int force)
+{
+   int size = getSubtitleTextSize();
+   if (!force && size == subtitleLabelSize) return;
+   subtitleLabelSize = size;
+   freeLabel(&subtitleLabel);
+   uiInitTextLabel(&subtitleLabel, SUBTITLE_WEIGHT, 0, 0, SUBTITLE_MAX_W, size, 0xFFFFFFFFu, TEXT_WRAP, "");
+   freeLabel(&stylePreviewLabel);
+   uiInitLabel(&stylePreviewLabel, SUBTITLE_WEIGHT, 0, 0, AUTO, size, 0xFFFFFFFFu, TEXT_NOWRAP, STYLE_PREVIEW_TEXT);
+}
+
+// (V3.0.3) A cue into subtitleLabel's texture with its wrapped lines centred under each other. A Label lays wrapped
+// lines out left-aligned and has no centred mode; the renderer has one (renderFontAligned), but reads markup, so
+// every '{' and '[' of the cue is doubled - its escapes - and stays plain text. Cleaned and font-picked as
+// uiSetTextLabel does (Manrope, or FONT_POP for a cue Manrope cannot draw), and rendered only when it changes;
+// subtitleLabel keeps the font, size and the text it shows.
+static void setSubtitleText(const char *text)
+{
+   char clean[LABEL_MAX_TEXT];
+   uiCleanText(clean, sizeof clean, text ? text : "");
+   if (strcmp(clean, subtitleLabel.text) == 0) return;
+   strCopy(subtitleLabel.text, sizeof subtitleLabel.text, clean);
+   subtitleLabel.font = uiPickFont(SUBTITLE_WEIGHT, clean);
+   subtitleLabel.raw  = 1;
+   char escaped[2 * LABEL_MAX_TEXT];
+   int length = 0;
+   for (const char *c = clean; *c && length < (int)sizeof escaped - 3; c++) {
+      if (*c == '{' || *c == '[') escaped[length++] = *c;
+      escaped[length++] = *c;
+   }
+   escaped[length] = 0;
+   renderFontAligned(&subtitleLabel.tt, subtitleLabel.font, subtitleLabel.size, escaped, 0xFFFFFFFFu, SUBTITLE_MAX_W,
+                     TEXT_WRAP, NULL, NULL, TEXT_ALIGN_CENTER);
 }
 
 static void initPlay(void)
@@ -977,6 +1024,11 @@ static void initPlay(void)
                TEXT_NOWRAP, "Options");
    uiInitLabel(&qualityHeading, PANEL_TITLE_WEIGHT, 0, 0, AUTO, PANEL_TITLE_SIZE, activeTheme->textPrimary,
                TEXT_NOWRAP, "Quality");
+   uiInitLabel(&styleHeading, PANEL_TITLE_WEIGHT, 0, 0, AUTO, PANEL_TITLE_SIZE, activeTheme->textPrimary,
+               TEXT_NOWRAP, "Subtitle style");
+   for (int i = 0; i < SUBTITLE_STYLE_FIELDS; i++)
+      uiInitLabel(&styleLabels[i], CHAPTER_TITLE_WEIGHT, 0, 0, OPTION_TEXT_MAX_W, CHAPTER_TEXT_SIZE,
+                  activeTheme->textPrimary, TEXT_NOWRAP, "");
    uiInitLabel(&audioTracksHeading, PANEL_TITLE_WEIGHT, 0, 0, AUTO, PANEL_TITLE_SIZE, activeTheme->textPrimary,
                TEXT_NOWRAP, "Audio track");
    uiInitLabel(&audioOnLabel, CHAPTER_TITLE_WEIGHT, 0, 0, AUTO, CHAPTER_TEXT_SIZE, activeTheme->textSecondary,
@@ -1016,8 +1068,7 @@ static void initPlay(void)
    for (int i = 0; i < MAX_AUDIO_TRACKS; i++)
       uiInitTextLabel(&audioTrackLabels[i], CHAPTER_TITLE_WEIGHT, 0, 0, OPTION_TEXT_MAX_W, CHAPTER_TEXT_SIZE,
                       activeTheme->textPrimary, TEXT_NOWRAP_ELLIPSIS, "");
-   uiInitTextLabel(&subtitleLabel, SUBTITLE_WEIGHT, 0, 0, SUBTITLE_MAX_W, SUBTITLE_TEXT_SIZE, activeTheme->textPrimary,
-                   TEXT_WRAP, "");
+   makeSubtitleLabels(1);   // (V3.0.3) at the style's size, white: drawStyledSubtitle colours it
    state.subtitlePick = state.subtitleFetched = -1;   // default off (memset left them 0)
 
    initVolumeMeter(&volumeMeter, uiGetFont(VOLUME_NUMBER_WEIGHT), activeTheme->accent, volumeLevel);
@@ -1055,10 +1106,15 @@ static void showToast(const char *text)
 }
 
 // fetches the picked caption track in the background; updatePlay reaps it and respawns on a new pick.
+// (V3.0.3) a translated track is then translated here as well: the worker publishes the cues once the part the
+// video is at is in (updatePlay shows them from then on) and goes on with the rest until it is done or cancelled.
 static void subtitleWorker(uint64_t arg)
 {
    (void)arg;
-   state.subtitleFetchRc = fetchSubtitles(state.captionTracks[state.subtitleFetched].url, state.subtitleTrack);   // a failure leaves count 0
+   const CaptionTrack *track = &state.captionTracks[state.subtitleFetched];
+   state.subtitleFetchRc = fetchSubtitles(track->url, state.subtitleTrack);   // a failure leaves count 0
+   if (state.subtitleFetchRc == 0 && track->translated && state.subtitleTrack->count > 0 && !state.subtitleTranslation.cancel)
+      state.subtitleFetchRc = translateSubtitles(state.subtitleTrack, track->languageCode, &state.subtitleTranslation);
    __sync_synchronize();
    state.subWorkerDone = 1;
    exitThread();
@@ -1072,7 +1128,7 @@ static void cycleSubtitles(void)
    if (state.captionCount == 0 || state.isLive) { showToast("No subtitles"); return; }
    state.subtitlePick = state.subtitlePick + 1 < state.captionCount ? state.subtitlePick + 1 : -1;
 
-   uiSetTextLabel(&subtitleLabel, SUBTITLE_WEIGHT, "");   // clear the old track's cue; the new one repopulates once fetched
+   setSubtitleText("");   // clear the old track's cue; the new one repopulates once fetched
 
    char hud[64];
    if (state.subtitlePick < 0) strCopy(hud, sizeof hud, "Subtitles off");
@@ -1734,6 +1790,20 @@ static void setOptionLabels(void)
    setLabelText(&optionLabels[OPTION_QUALITY], text);
    setLabelText(&optionLabels[OPTION_CHAPTERS], state.chapters.count && !state.isLive ? "Chapters" : "Chapters: none");
    setLabelText(&optionLabels[OPTION_AUTOPLAY], getAutoplay() ? "Autoplay: On" : "Autoplay: Off");
+   setLabelText(&optionLabels[OPTION_SUBTITLES], "Subtitle style");
+}
+
+// (V3.0.3) the subtitle style page's rows, each with the value in use
+static void setStyleLabels(void)
+{
+   static const char *ROW_NAMES[SUBTITLE_STYLE_FIELDS] = { "Text color", "Background", "Background opacity",
+                                                           "Text edge", "Size" };
+   char text[64];
+   for (int field = 0; field < SUBTITLE_STYLE_FIELDS; field++) {
+      snprintf(text, sizeof text, "%s: %s", ROW_NAMES[field],
+               getSubtitleStyleChoiceName((SubtitleStyleField)field, getSubtitleStyleChoice((SubtitleStyleField)field)));
+      setLabelText(&styleLabels[field], text);
+   }
 }
 
 // row 0 is Auto (the best that plays, no cap), then one row per quality; the one in use says so
@@ -1804,14 +1874,32 @@ static void openOptions(void)
 
 static void handleOptionsInput(void)
 {
-   if (isPadButtonPressed(PAD_BTN_START)) { state.optionsVisible = 0; return; }
+   // (V3.0.3) the subtitle style is saved when its page is left, not at every press
+   if (isPadButtonPressed(PAD_BTN_START)) {
+      if (state.optionsLevel == 2) saveSubtitleStyle();
+      state.optionsVisible = 0;
+      return;
+   }
    if (isPadButtonPressed(PAD_BTN_CIRCLE)) {
       if (state.optionsLevel == 1) { state.optionsLevel = 0; state.optionsSelected = OPTION_QUALITY; }
+      else if (state.optionsLevel == 2) { saveSubtitleStyle(); state.optionsLevel = 0; state.optionsSelected = OPTION_SUBTITLES; }
       else state.optionsVisible = 0;
       return;
    }
 
-   int rows = state.optionsLevel == 0 ? OPTION_ROWS : state.qualityCount + 1;
+   int rows = state.optionsLevel == 0 ? OPTION_ROWS : state.optionsLevel == 1 ? state.qualityCount + 1 : SUBTITLE_STYLE_FIELDS;
+   if (state.optionsLevel == 2) {   // (V3.0.3) RIGHT and X step a row's value on, LEFT back; the preview follows
+      int step = (isPadButtonPressed(PAD_BTN_RIGHT) || isPadButtonPressed(PAD_BTN_CROSS)) ? 1
+               : isPadButtonPressed(PAD_BTN_LEFT) ? -1 : 0;
+      if (step) {
+         SubtitleStyleField field = (SubtitleStyleField)state.optionsSelected;
+         int count = getSubtitleStyleChoiceCount(field);
+         setSubtitleStyleChoice(field, (getSubtitleStyleChoice(field) + step + count) % count);
+         if (field == SUBTITLE_STYLE_SIZE) makeSubtitleLabels(0);
+         setStyleLabels();
+         return;
+      }
+   }
    if (isPadButtonPressed(PAD_BTN_CROSS)) {
       if (state.optionsLevel == 1) {
          state.optionsVisible = 0;
@@ -1824,6 +1912,10 @@ static void handleOptionsInput(void)
       } else if (state.optionsSelected == OPTION_CHAPTERS) {
          state.optionsVisible = 0;
          openChapters();
+      } else if (state.optionsSelected == OPTION_SUBTITLES) {   // (V3.0.3)
+         setStyleLabels();
+         state.optionsLevel = 2;
+         state.optionsSelected = 0;
       } else {
          setAutoplay(!getAutoplay());
          setOptionLabels();
@@ -2171,11 +2263,26 @@ static void updatePlay(void)
    }
 
    // subtitles: reap a finished fetch (stale if the pick moved mid-fetch), then start one whenever
-   // the pick and the fetched track disagree
+   // the pick and the fetched track disagree. (V3.0.3) A translation goes on after its cues are published: they are
+   // read from then on; a pick that moved cancels it, and a translation Google broke off is said once.
+   if (state.subThreadActive && !state.subWorkerDone) {
+      if (state.subtitleFetched != state.subtitlePick) state.subtitleTranslation.cancel = 1;
+      if (state.subtitleTranslation.cancel) state.subtitlesReady = 0;   // a cancelled translation is never shown
+      else if (state.subtitleTranslation.published && !state.subtitlesReady) {
+         __sync_synchronize();   // the worker's cues before this thread reads them
+         state.subtitlesReady = 1;
+      }
+   }
+   if (state.subtitlesReady && state.subtitleTranslation.stopped && !state.subtitleStoppedShown &&
+       state.subtitleFetched == state.subtitlePick) {
+      state.subtitleStoppedShown = 1;
+      showToast("Translation stopped - the rest in the original language");
+   }
    if (state.subWorkerDone && state.subThreadActive) {
       joinThread(state.subWorkerTid);
       state.subThreadActive = 0;
-      state.subtitlesReady = (state.subtitleFetched == state.subtitlePick);
+      // (V3.0.3) a cancelled translation is stale even when the pick came back to its track: the rest of it never came
+      state.subtitlesReady = (state.subtitleFetched == state.subtitlePick) && !state.subtitleTranslation.cancel;
       if (!state.subtitlesReady) state.subtitleFetched = -1;   // pick moved mid-fetch: re-picking must refetch
       else if (state.subtitleTrack->count == 0) {   // fetch failed or empty track: drop to Off, visibly
          int failed = state.subtitleFetched;
@@ -2186,7 +2293,7 @@ static void updatePlay(void)
          if (failed >= 0 && failed < state.captionCount && state.captionTracks[failed].translated) {
             for (int i = failed + 1; i < state.captionCount; i++) state.captionTracks[i - 1] = state.captionTracks[i];
             state.captionCount--;
-            showToast(state.subtitleFetchRc == -429 ? "YouTube refused the translated subtitles"
+            showToast(state.subtitleFetchRc == -429 ? "Google Translate refused the subtitles - try later"
                                                     : "Translated subtitles unavailable");
          } else {
             showToast("Subtitles unavailable");
@@ -2199,6 +2306,9 @@ static void updatePlay(void)
          state.subtitlesReady = 0;
          state.subtitleScanFrom = 0;
          state.subWorkerDone = 0;
+         memset(&state.subtitleTranslation, 0, sizeof state.subtitleTranslation);
+         if (state.player) state.subtitleTranslation.position = getVideoPositionSeconds(state.player);
+         state.subtitleStoppedShown = 0;
          state.subtitleFetched = state.subtitlePick;
          state.subThreadActive = (spawnJoinableThread(&state.subWorkerTid, subtitleWorker, 0,
                                   THREAD_PRIORITY_DEFAULT, THREAD_STACK_SIZE_64KB, "yt-subs") == 0);
@@ -2207,9 +2317,10 @@ static void updatePlay(void)
    }
 
    // feed the cue covering the current position into the label; setLabelText only rasterises on change
+   if (state.subThreadActive && state.player)   // (V3.0.3) where a translation goes on from
+      state.subtitleTranslation.position = getVideoPositionSeconds(state.player);
    if (state.subtitlesReady && state.subtitlePick >= 0 && state.stage == STAGE_PLAYING && state.player)
-      uiSetTextLabel(&subtitleLabel, SUBTITLE_WEIGHT,   // Manrope, or FONT_POP for a cue Manrope cannot draw
-                     getSubtitleCueText(state.subtitleTrack, getVideoPositionSeconds(state.player), &state.subtitleScanFrom));
+      setSubtitleText(getSubtitleCueText(state.subtitleTrack, getVideoPositionSeconds(state.player), &state.subtitleScanFrom));
 
    // The manual offer is recomputed BEFORE input is read, not after. Computing it afterwards left Triangle
    // judged against the previous frame's answer: on the first frame after the playhead left an "ask"
@@ -2567,6 +2678,36 @@ static int controlsVisible(void)
    return state.controlsShownUs != 0 && sys_time_get_system_time() - state.controlsShownUs < CONTROLS_VISIBLE_US;
 }
 
+// (V3.0.3) a white-rasterised label drawn in one colour
+static void drawLabelTinted(const Label *label, int x, int y, uint32_t tint)
+{
+   drawGfxTexture(x, y, label->tt.tex.w, label->tt.tex.h, label->tt.tex, 0.0f, 0.0f, 1.0f, 1.0f, tint, GFX_FILTER_NEAREST);
+}
+
+// (V3.0.3) a subtitle in the style set (START > Subtitle style): the plate in its colour and opacity, an edge drawn as
+// the text in black (white under black text) offset beneath it - a shadow down and right, an outline all round,
+// since the font renderer has no outline of its own - and the text in its colour on top
+static void drawStyledSubtitle(const Label *label, int x, int y)
+{
+   int w = label->tt.tex.w, h = label->tt.tex.h;
+   uint32_t plate = getSubtitleBackgroundColor();
+   if (plate >> 24)
+      uiFillRounded(x - SUBTITLE_PAD_X, y - SUBTITLE_PAD_Y, w + 2 * SUBTITLE_PAD_X, h + 2 * SUBTITLE_PAD_Y, SUBTITLE_RADIUS,
+                    plate);
+   uint32_t color = getSubtitleTextColor();
+   uint32_t edgeColor = (color & 0x00FFFFFFu) == 0 ? 0xFFFFFFFFu : 0xFF000000u;
+   int offset = getSubtitleTextSize() >= 45 ? 3 : 2;
+   SubtitleEdge edge = getSubtitleEdge();
+   if (edge == SUBTITLE_EDGE_SHADOW) {
+      drawLabelTinted(label, x + offset, y + offset, edgeColor);
+   } else if (edge == SUBTITLE_EDGE_OUTLINE) {
+      for (int dy = -offset; dy <= offset; dy += offset)
+         for (int dx = -offset; dx <= offset; dx += offset)
+            if (dx || dy) drawLabelTinted(label, x + dx, y + dy, edgeColor);
+   }
+   drawLabelTinted(label, x, y, color);
+}
+
 // The active subtitle cue, centred low on the picture on a dark plate. While the HUD is up it moves above
 // the bottom block - and above the skip offer as well when that stands, as a wide cue would run into it.
 static void drawSubtitle(int hudUp)
@@ -2579,9 +2720,7 @@ static void drawSubtitle(int hudUp)
    }
    int w = subtitleLabel.tt.tex.w, h = subtitleLabel.tt.tex.h;
    int x = state.screenW / 2 - w / 2, y = bottom - h;
-   uiFillRounded(x - SUBTITLE_PAD_X, y - SUBTITLE_PAD_Y, w + 2 * SUBTITLE_PAD_X, h + 2 * SUBTITLE_PAD_Y, SUBTITLE_RADIUS,
-                 activeTheme->panelOnVideo);
-   uiDrawLabelAt(&subtitleLabel, x, y);
+   drawStyledSubtitle(&subtitleLabel, x, y);   // (V3.0.3) in the style set
 }
 
 // ---- the overlays ----
@@ -2718,9 +2857,37 @@ static void drawAudioPicker(void)
 }
 
 // The options menu on a panel like the chapter picker's: its page's rows, the selected one on an accent plate.
+// (V3.0.3) the subtitle style page: the sample in the style set on a stand-in for the picture, the rows under it
+static void drawSubtitleStyle(void)
+{
+   int panelW = STYLE_PANEL_W;
+   int panelH = PANEL_HEADER_H + CHAPTER_LIST_PAD_TOP + STYLE_PREVIEW_H + STYLE_PREVIEW_GAP +
+                SUBTITLE_STYLE_FIELDS * CHAPTER_ROW_HEIGHT + CHAPTER_LIST_PAD_BOTTOM;
+   int panelX = state.screenW / 2 - panelW / 2, panelY = state.screenH / 2 - panelH / 2;
+   drawOverlayPanel(panelX, panelY, panelW, panelH, &styleHeading, &styleHints);
+
+   int previewX = panelX + PANEL_PAD_X, previewY = panelY + PANEL_HEADER_H + CHAPTER_LIST_PAD_TOP;
+   int previewW = panelW - 2 * PANEL_PAD_X;
+   uiFillRounded(previewX, previewY, previewW, STYLE_PREVIEW_H, UI_RADIUS_ROW, STYLE_PREVIEW_BACKDROP);
+   if (stylePreviewLabel.tt.tex.w > 0)
+      drawStyledSubtitle(&stylePreviewLabel, previewX + previewW / 2 - stylePreviewLabel.tt.tex.w / 2,
+                         previewY + STYLE_PREVIEW_H / 2 - stylePreviewLabel.tt.tex.h / 2);
+
+   int topY   = previewY + STYLE_PREVIEW_H + STYLE_PREVIEW_GAP;
+   int plateX = panelX + PANEL_PAD_X - CHAPTER_ROW_INSET;
+   int plateW = panelW - 2 * (PANEL_PAD_X - CHAPTER_ROW_INSET);
+   for (int row = 0; row < SUBTITLE_STYLE_FIELDS; row++) {
+      int rowY = topY + row * CHAPTER_ROW_HEIGHT;
+      if (row == state.optionsSelected)
+         uiFillRounded(plateX, rowY + 4, plateW, CHAPTER_ROW_HEIGHT - 8, UI_RADIUS_ROW, activeTheme->rowHighlight);
+      uiDrawLabelAt(&styleLabels[row], panelX + PANEL_PAD_X, uiLabelYForCenter(&styleLabels[row], rowY, CHAPTER_ROW_HEIGHT));
+   }
+}
+
 static void drawOptions(void)
 {
    fillGfxRectangle(0, 0, state.screenW, state.screenH, activeTheme->scrim);
+   if (state.optionsLevel == 2) { drawSubtitleStyle(); return; }
 
    int level = state.optionsLevel;
    int rows = level == 0 ? OPTION_ROWS : state.qualityCount + 1;
@@ -2879,7 +3046,11 @@ static void termPlay(void)
 {
    if (state.threadActive) { joinThread(state.workerTid); state.threadActive = 0; }
    if (state.sbThreadActive) { joinThread(state.sbWorkerTid); state.sbThreadActive = 0; }   // usually already done
-   if (state.subThreadActive) { joinThread(state.subWorkerTid); state.subThreadActive = 0; }
+   if (state.subThreadActive) {   // (V3.0.3) a translation would go on to the end of the track: stop it
+      state.subtitleTranslation.cancel = 1;
+      joinThread(state.subWorkerTid);
+      state.subThreadActive = 0;
+   }
    if (state.chThreadActive) { joinThread(state.chWorkerTid); state.chThreadActive = 0; }
    free(state.subtitleTrack);
    state.subtitleTrack = NULL;
@@ -2908,6 +3079,12 @@ static void termPlay(void)
    freeLabel(&audioNameLabel);
    freeLabel(&audioCountLabel);
    freeLabel(&subtitleLabel);
+   freeLabel(&stylePreviewLabel);   // (V3.0.3) and the style page's
+   freeLabel(&styleHeading);
+   for (int i = 0; i < SUBTITLE_STYLE_FIELDS; i++) freeLabel(&styleLabels[i]);
+   uiTermHints(&styleHints);
+   subtitleLabelSize = 0;
+   saveSubtitleStyle();             // a style page left by the player closing: saved all the same
    freeLabel(&subsHudLabel);
    freeLabel(&chapterNameLabel);
    freeLabel(&chapterInfoLabel);

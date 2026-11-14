@@ -43,13 +43,15 @@ static const char *NOTES[] = {
    BULLET "1440p30 videos are very likely to play stable all the way, without dropping back.",
 };
 static const char *CHANGES[] = {
+   BULLET "Subtitles in your language: the app translates a video's own with Google Translate - and START > Subtitle style "
+   "sets color, edge and size.",
    BULLET "Audio tracks: AI-dubbed videos play their original sound, in 1440p too - Square lists every track.",
    BULLET "List view: DOWN on Home, every search and every channel page list the whole feed - each video's best "
    "quality (1440p60, 1080p60 ...), its details and description on the right, Subscribe right there.",
    BULLET "Downloads: 1440p or 1080p60 into the app's own Downloads page, or an MP4 into the XMB - progress in the "
    "rail, a note when one is in or failed, unfinished ones found at the next start.",
-   BULLET "Subscriptions with every channel's picture; subtitles in Czech, Polish, Turkish, Greek, Cyrillic and more.",
-   BULLET "A new blue look, the BD Remote Control - PREV/NEXT step chapter by chapter - and a note when a new version is out.",
+   BULLET "Subscriptions with every channel's picture, the BD Remote Control, a new blue look and a note when a new version "
+   "is out.",
 };
 #define NOTE_COUNT   ((int)(sizeof NOTES / sizeof NOTES[0]))
 #define CHANGE_COUNT ((int)(sizeof CHANGES / sizeof CHANGES[0]))
