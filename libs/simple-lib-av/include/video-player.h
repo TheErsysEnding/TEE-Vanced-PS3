@@ -47,6 +47,10 @@ void  seekVideoPlayer(VideoPlayer *player, float seconds);
 // span (e.g. a sponsor segment) instead of resuming on the keyframe before it and replaying the tail.
 void  seekVideoPlayerPast(VideoPlayer *player, float seconds);
 int   isVideoEnded(const VideoPlayer *player);       // decode reached end of stream and the ring drained
+// (V3.0.4) the decoder stopped with an error it does not come back from (TEE VP9 on a frame it cannot take): the
+// picture stands, isVideoEnded says 1 - the app had better build the player anew, in a quality that plays. A seek
+// starts it over.
+int   hasVideoPlayerFailed(const VideoPlayer *player);
 float getVideoPositionSeconds(const VideoPlayer *player);
 // the same in nanoseconds, exact: a live stream's pts count from its broadcast's start, and after months on air
 // (sq 4174810, 241 days, seen 2026-11-07) a float second has whole seconds of step

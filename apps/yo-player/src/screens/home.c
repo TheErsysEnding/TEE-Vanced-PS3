@@ -11,6 +11,7 @@
 #include "storage.h"
 #include "settings.h"           // the content region: a new one makes the Trending and Live lists stale
 #include "account.h"            // signed in: For you, and Subscriptions / Watch Later / History from the account
+#include "ui-toast.h"           // (V3.0.4) the word bottom left when Square files a video for later
 #include "screens/account-screen.h"   // Login in the rail while signed out: the sign-in
 #include "screens/account-page.h"     // Account in the rail while signed in: the account's page
 #include "downloads.h"
@@ -1229,12 +1230,15 @@ static void updateHome(void)
          char videoId[sizeof selected->videoId];
          strCopy(videoId, sizeof videoId, selected->videoId);
          setAccountWatchLater(videoId, !inList);
+         uiShowWatchLaterToast(inList, !inList);   // (V3.0.4)
          accountChangesSeen = getAccountChangesRevision();   // handled here, not by a reload on the way back
          if (inList && home.category == HOME_WATCHLATER) dropFromPage(videoId);
          else categoryCached[HOME_WATCHLATER] = 0;
          return;
       }
+      int wasIn = isWatchLater(selected->videoId);
       toggleWatchLater(selected);
+      uiShowWatchLaterToast(wasIn, isWatchLater(selected->videoId));   // (V3.0.4) before the page reloads under selected
       watchLaterRevisionSeen = getWatchLaterRevision();
       categoryCached[HOME_WATCHLATER] = 0;
       if (home.category == HOME_WATCHLATER) {   // reflect the add/remove immediately, where the selection was
@@ -1399,6 +1403,7 @@ static void drawHome(void)
    // (V3.0.0) a download is in, or failed: a few seconds under the top hints, right, clear of the hero's title
    drawDownloadResultAt(UI_SAFE_RIGHT, HEADER_HINTS_Y + UI_HINT_GLYPH_H + 12, UI_ALIGN_RIGHT);
    // (V3.0.0) the download shows in the rail now (sidebar.c): the old chip bottom right would lie over the cards
+   uiDrawToast();   // (V3.0.4) Square's word on Watch Later, bottom left
 
    drawSidebar(home.screenH);
 

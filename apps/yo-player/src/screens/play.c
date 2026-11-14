@@ -1822,6 +1822,49 @@ static void setQualityLabels(void)
    }
 }
 
+// quality `index` (state.qualities) as the stream to build the player on: its url, the sound that goes with it (Opus
+// for VP9, on the PPU; AAC for H.264), the chip
+static void setPlayingQuality(int index)
+{
+   const QualityChoice *quality = &state.qualities[index];
+   strCopy(state.videoUrl, sizeof state.videoUrl, quality->url);
+   if (state.audioTrackCount > 1)   // (V3.0.1) the track playing, in the codec that goes with the new picture
+      strCopy(state.audioUrl, sizeof state.audioUrl, trackAudioUrl(state.audioTrackPick, quality->isVp9));
+   else if (state.aacUrl[0] || state.opusUrl[0])
+      strCopy(state.audioUrl, sizeof state.audioUrl, quality->isVp9 && state.opusUrl[0] ? state.opusUrl : state.aacUrl);
+   state.videoIsVp9 = quality->isVp9;
+   state.vidItag = quality->itag; state.vidW = quality->width; state.vidH = quality->height; state.vidFps = quality->fps;
+   state.qualityPick = index;
+   setQualityChip();
+}
+
+// (V3.0.4) TEE VP9 stopped on a frame it cannot take - "its records do not go into superblock-row order", a 2560x1350
+// video at 1:47 (TEE, 2026-11-14) - and the picture stood still to the end, with no change to 1080p: a stopped
+// decoder takes no flush, so the player's own change of stream cannot help it. The player is built anew at the
+// picture's position in the best quality that is not VP9 - 1080p60 on the TEE Decoder - for the rest of the video.
+// The quality saved for the next videos stays as it is.
+static void fallBackFromVp9(void)
+{
+   int index = -1;
+   for (int i = 0; i < state.qualityCount && index < 0; i++) if (!state.qualities[i].isVp9) index = i;   // best first
+   float at = getVideoPositionSeconds(state.player);
+   if (index < 0) {
+      logError("[yt] TEE VP9 stopped at %d s and the video has no quality besides VP9\n", (int)at);
+      state.videoIsVp9 = 0;   // said once
+      showToast("VP9 stopped - no other quality to go on with");
+      return;
+   }
+   const QualityChoice *quality = &state.qualities[index];
+   char name[24], text[64];
+   qualityName(name, sizeof name, quality->height, quality->fps);
+   logWarn("[yt] TEE VP9 stopped at %d s: going on in itag %d %dx%d %dfps\n", (int)at, quality->itag, quality->width,
+           quality->height, quality->fps);
+   setPlayingQuality(index);
+   snprintf(text, sizeof text, "VP9 stopped - going on in %s", name);
+   showToast(text);
+   reopenAt(at);
+}
+
 // a quality from the list (choice -1 = Auto): saved as the cap for the videos after this one too, and the player
 // rebuilt on it at the position - the way an audio-track switch does, "Loading..." meanwhile
 static void chooseQuality(int choice)
@@ -1843,16 +1886,7 @@ static void chooseQuality(int choice)
    }
    float at = state.seeking ? state.seekTarget : getVideoPositionSeconds(state.player);
    if (state.firstFrameSeen && !state.isLive) setWatchedPosition(requestedInput, (int)at);
-   strCopy(state.videoUrl, sizeof state.videoUrl, quality->url);
-   // (V3.0.0) the sound that goes with it: Opus for VP9 (on the PPU), AAC for H.264
-   if (state.audioTrackCount > 1)   // (V3.0.1) the track playing, in the codec that goes with the new picture
-      strCopy(state.audioUrl, sizeof state.audioUrl, trackAudioUrl(state.audioTrackPick, quality->isVp9));
-   else if (state.aacUrl[0] || state.opusUrl[0])
-      strCopy(state.audioUrl, sizeof state.audioUrl, quality->isVp9 && state.opusUrl[0] ? state.opusUrl : state.aacUrl);
-   state.videoIsVp9 = quality->isVp9;
-   state.vidItag = quality->itag; state.vidW = quality->width; state.vidH = quality->height; state.vidFps = quality->fps;
-   state.qualityPick = index;
-   setQualityChip();
+   setPlayingQuality(index);   // (V3.0.0) with the sound that goes with it: Opus for VP9 (on the PPU), AAC for H.264
    if (state.isLive) {
       state.seeking = 0;
       logInfo("[yt] quality: itag %d %dx%d %dfps, live from sq %ld\n", quality->itag, quality->width, quality->height,
@@ -2133,6 +2167,13 @@ static void updateHud(void)
 
 static void updatePlay(void)
 {
+   // (V3.0.4) a 1440p VP9 stream whose decoder stopped goes on in 1080p60 (fallBackFromVp9) - before the autoplay below
+   // takes the stopped player for a finished video
+   if (state.stage == STAGE_PLAYING && state.player && state.videoIsVp9 && !state.threadActive &&
+       hasVideoPlayerFailed(state.player)) {
+      fallBackFromVp9();
+      return;
+   }
    // autoplay gets first refusal: a finished video hands the screen over before anything else runs
    if (state.stage == STAGE_PLAYING && state.player && !state.descriptionVisible && !state.chaptersVisible &&
        !state.optionsVisible && !state.audioPickerVisible && isVideoEnded(state.player) && advanceAutoplay()) return;

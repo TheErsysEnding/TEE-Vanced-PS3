@@ -13,6 +13,7 @@
 #include "screens/download-choice.h"   // R3: in which form to download
 #include "screens/playlist-screen.h"
 #include "screens/play.h"
+#include "ui-toast.h"           // (V3.0.4) the word bottom left when Square files a video for later
 #include "screens/home.h"       // the rail over this screen (updateRailOverScreen)
 #include "account.h"            // signed in: Square and Triangle act on the YouTube account
 #include "video-grid.h"
@@ -626,9 +627,16 @@ static void updateSearch(void)
          return;
       }
    }
-   if (isPadButtonPressed(PAD_BTN_SQUARE)) {
-      if (isAccountSignedIn()) setAccountWatchLater(selected->videoId, !isInAccountWatchLater(selected->videoId));
-      else toggleWatchLater(selected);
+   if (isPadButtonPressed(PAD_BTN_SQUARE)) {   // (V3.0.4) with a word bottom left that it was done
+      if (isAccountSignedIn()) {
+         int inList = isInAccountWatchLater(selected->videoId);
+         setAccountWatchLater(selected->videoId, !inList);
+         uiShowWatchLaterToast(inList, !inList);
+      } else {
+         int wasIn = isWatchLater(selected->videoId);
+         toggleWatchLater(selected);
+         uiShowWatchLaterToast(wasIn, isWatchLater(selected->videoId));
+      }
       return;
    }
    if (isPadButtonPressed(PAD_BTN_R3)) { if (!selected->isLive) openDownloadChoice(selected); return; }
@@ -785,6 +793,7 @@ static void drawSearch(void)
 
    if (!isSidebarFocused()) drawSidebarPassive(search.screenH, SIDE_SEARCH);
    uiDrawHints(&hints, UI_SAFE_RIGHT, UI_HINTS_BOTTOM_Y, UI_ALIGN_RIGHT);
+   uiDrawToast();   // (V3.0.4) Square's word on Watch Later, bottom left
    // The rail, open, goes over everything - the hints included: with eleven of them the row reaches in under the
    // open panel, and drawn over it they would run into its names. Its scrim dims them with the rest.
    if (isSidebarFocused()) drawSidebar(search.screenH);

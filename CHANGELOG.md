@@ -3,6 +3,29 @@
 Every release listed here was installed and used on a real PS3 (EVILNAT 4.92 DEX)
 before it was tagged. Anything that had not been is said so plainly.
 
+## v3.0.4 — not released yet
+
+### The test builds
+
+**V3.0.4 Test 1 Smooth** (2026-11-14): 1440p gives way without a stutter, a stopped VP9 decoder goes on in 1080p60,
+and Square says what it did.
+- A 1440p60 nature video at 13 Mbit/s (LXb3EKWsInQ, from 0:20) took the TEE VP9 decoder below 60 pictures a second:
+  the sound waited for the picture four times in ten seconds - the stutter TEE heard - and 1080p came 10 s after it
+  began. Falling behind is now seen by the pictures dropped as well (8 a second, two seconds in a row; not in the
+  first 6 s after a change of stream or a seek), seconds before the sound would have to wait. From the moment 1080p
+  is asked for until the picture has caught up in it, the sound runs on: it waits only for a picture 1.5 s behind,
+  and the picture drops what it is late for. The thresholds stay where they were (15 / 12 Mbit/s): TEE VP9 plays 15
+  to 18 Mbit/s in most videos.
+- A 2560x1350 video (LHGughAkidk) stopped TEE VP9 at the same frames every time ("its records do not go into
+  superblock-row order"): the picture stood still to the end while the sound ran on, the decoder was fed thousands
+  of blocks it refused, and nothing changed to 1080p - a stopped decoder takes no flush. The player now reports the
+  failure, feeds no more blocks, and the app builds it anew at the picture's position in the best quality that is
+  not VP9 - 1080p60 on the TEE Decoder - with a word on screen; the quality saved for the next videos stays.
+  Checked in RPCS3: the stop came at 0:54, 1080p60 played on from the key frame before it at 60 pictures a second.
+- Square on Home, a channel's page or the search results says what it did - "Added to Watch Later", "Removed from
+  Watch Later" - bottom left, for 2.5 s, in 34 px on a plate with an accent edge, big enough to be seen (TEE).
+  Checked in RPCS3.
+
 ## v3.0.3 — 2026-11-14
 
 Installed and used on real consoles before the tag: the translated subtitles (V3.0.3 Test 2) by the user who asked

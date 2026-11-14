@@ -62,6 +62,13 @@ typedef struct {
 #define VP9_BEHIND_NS      150000000ll      // the safety net: the picture this far behind its sound ...
 #define VP9_BEHIND_US      1000000ull       // ... for this long - or two holds of the sound within VP9_HOLDS_US
 #define VP9_HOLDS_US       6000000ull
+#define VP9_DROPS_PER_S    8                // (V3.0.4) ... or this many pictures a second dropped as late or missing
+#define VP9_DROP_SECONDS   2                //   for this many seconds in a row (one late a second is 60 fps on 59.94 Hz)
+#define VP9_SETTLE_NS      6000000000ull    // ... though not this soon after a change of stream: its first seconds drop
+                                            //   pictures of their own while the decoder takes the new size
+#define VP9_DROP_IGNORE    2                // ... nor in the first seconds after a seek
+#define AV_HOLD_CATCHUP_NS 1500000000ll     // (V3.0.4) while 1080p is on its way: the sound waits only this far behind
+#define VP9_CATCHUP_US     20000000ull      // ... for this long at most
 
 // (Test 2) what the decoder is opened with, the first that fits: picture buffers (its default 10 + 2 for the ring
 // above, 6.5 MB each at 1440p) and how much input it may hold before it says "full". YouTube's 1440p60 averages
@@ -113,6 +120,10 @@ struct VideoPlayer {
    volatile int     vp9SafetyBps;     // ... the bitrate of the section it fell behind in
    uint64_t         vp9BehindSinceUs; // UI: since when the picture has been more than VP9_BEHIND_NS behind (0 = it is not)
    uint64_t         vp9LastHoldUs;    // UI: when the sound's last hold began (two close together: the safety net)
+   int              vp9DropSeconds;   // (V3.0.4) UI: seconds in a row in which VP9_DROPS_PER_S pictures were dropped or missing
+   int              vp9DropIgnore;    // ... stats seconds still to pass over (a seek's)
+   int              vp9CatchingUp;    // (V3.0.4) UI: 1080p is asked for - the sound runs on until the picture caught up
+   uint64_t         vp9CatchingUpUs;  // ... since when
    int              vp9RsxOn;         // the decoder's rsx_frames grew: the RSX thresholds apply
    int              vp9RsxFrames;     // ... its value at the last stats line
    uint64_t     vp9StatsUs;       // when the decoder's numbers last went to the log
@@ -130,6 +141,7 @@ struct VideoPlayer {
    volatile int     running;      // decode thread runs while set
    volatile int     decodeExited; // the decode thread has left (destroyVideoPlayer waits for this, bounded)
    volatile int     ended;        // demux hit end of stream
+   volatile int     failed;       // (V3.0.4) ... or the decoder stopped with an error (hasVideoPlayerFailed)
 
    // audio pipeline (absent for files without an AAC track: video plays silent)
    AacDecoder      *aacDecoder;
@@ -472,7 +484,17 @@ static int feedVp9(VideoPlayer *player, int *startedAtKeyframe)
       }
       int result = tvp9_feed(player->vp9, player->pendingAu.data, (size_t)player->pendingAu.size, (int64_t)player->pendingAu.pts);
       if (result == 0) break;            // the decoder has enough: retry this block later
-      if (result < 0) logWarn("[video-player] the VP9 decoder refused a block of %d bytes\n", player->pendingAu.size);
+      if (result < 0) {
+         // (V3.0.4) a decoder that stopped refuses every block: 12870 lines of it in one log (TEE, 2026-11-14). Fed no
+         // more until a seek starts it over (it clears vp9FeedError).
+         if (tvp9_error(player->vp9)) {
+            logWarn("[video-player] TEE VP9 stopped: no more blocks fed until a seek\n");
+            player->hasPendingAu = 0;
+            player->vp9FeedError = 1;
+            return fed;
+         }
+         logWarn("[video-player] the VP9 decoder refused a block of %d bytes\n", player->pendingAu.size);
+      }
       player->hasPendingAu = 0;
       player->vp9Fed++;
       fed++;
@@ -717,6 +739,7 @@ static void performSeek(VideoPlayer *player)
    player->hasPendingAu = 0;
    player->inputEnded = 0;
    player->vp9FeedError = 0;   // (V3.0.0 Test 12) a seek is a fresh try at the stream
+   player->failed = 0;         // (V3.0.4)
    // land on the fragment keyframe covering the target - or, for a sponsor skip, the next keyframe at/after it
    uint64_t landedNs = player->hasLowDemuxer ? vp9SeekTrack(player, targetNs, player->seekLandAfter)   // (Test 14)
                                              : seekVideoDemuxer(&player->demuxer, targetNs, player->seekLandAfter);
@@ -738,6 +761,9 @@ static void performSeek(VideoPlayer *player)
                                          // else a stale timer trips instantly and video starts on the wall clock
    player->statsSecondUs = 0;            // the stutter statistics start over with the new position
    player->statsShown = player->statsLate = player->statsRepeats = player->statsStarved = 0;
+   player->vp9DropSeconds = 0;           // (V3.0.4) and the safety net's count of seconds with pictures dropped,
+   player->vp9DropIgnore = VP9_DROP_IGNORE;   // the pre-roll's own seconds passed over
+   player->vp9CatchingUp = 0;            // the pre-roll below holds and releases the sound itself
    // hold the audio feed until the first post-seek frame actually presents (getVideoFrame releases it), so
    // audio can't drain ahead and then race the video to catch up (the "speedup"). (Test 13) In the same locked step
    // that restarts the pre-roll, so nothing decided before it can start the sound again.
@@ -832,7 +858,10 @@ static void decodeThread(uint64_t arg)
          unlock(&player->lock);
       } else {
          player->slots[slot].state = SLOT_EMPTY;
-         if (player->seekRequestNs < 0) player->ended = 1;
+         if (player->seekRequestNs < 0) {
+            player->ended = 1;
+            if (got < 0) player->failed = 1;   // (V3.0.4) an error, not the end: hasVideoPlayerFailed
+         }
          unlock(&player->lock);
          // idle at end of stream (or after a hard error) until a seek restarts decode
          while (player->running && player->ended && player->seekRequestNs < 0) sleepMs(10);
@@ -1579,8 +1608,16 @@ const uint8_t *getVideoFrame(VideoPlayer *player, int *width, int *height)
       int64_t behindNs = (int64_t)clock - (int64_t)player->currentPts;   // > 0: the picture is behind the sound
       int readyAfter = 0;
       for (int i = 0; i < FRAME_SLOTS; i++) if (player->slots[i].state == SLOT_READY) readyAfter++;
+      // (V3.0.4) While 1080p is on its way - from the safety net's word until the picture has caught up after the
+      // change - the sound waits only for a picture more than AV_HOLD_CATCHUP_NS behind. Each wait of the sound is a
+      // stutter, and the frames already fed to the decoder still come in 1440p: four in ten seconds in a busy 1440p60
+      // scene (TEE, 2026-11-14, LXb3EKWsInQ at 0:23). The picture drops what it is late for and catches up in 1080p.
+      if (player->vp9CatchingUp &&
+          ((player->vp9OnLow && behindNs < AV_HOLD_ENGAGE_NS / 2) || nowUs - player->vp9CatchingUpUs > VP9_CATCHUP_US))
+         player->vp9CatchingUp = 0;
+      int64_t holdAtNs = player->vp9CatchingUp ? AV_HOLD_CATCHUP_NS : AV_HOLD_ENGAGE_NS;
       if (!player->audioHeld) {
-         if (behindNs > AV_HOLD_ENGAGE_NS && !player->ended) {
+         if (behindNs > holdAtNs && !player->ended) {
             player->audioHeld = 1;
             player->audioHeldSinceUs = nowUs;
             holdAction = 1;
@@ -1589,7 +1626,8 @@ const uint8_t *getVideoFrame(VideoPlayer *player, int *width, int *height)
          }
       } else {
          uint64_t heldUs = nowUs - player->audioHeldSinceUs;
-         if (player->ended || (behindNs <= 0 && (readyAfter >= AV_HOLD_READY || heldUs >= AV_HOLD_MAX_US))) {
+         if (player->ended || (behindNs <= 0 && (readyAfter >= AV_HOLD_READY || heldUs >= AV_HOLD_MAX_US)) ||
+             (player->vp9CatchingUp && behindNs < holdAtNs / 2)) {   // (V3.0.4) 1080p is on its way: the sound goes on
             player->audioHeld = 0;
             holdAction = 2;
             snprintf(holdLine, sizeof holdLine, "[video-player] the sound runs on after %d ms, %d pictures decoded ahead\n",
@@ -1600,26 +1638,33 @@ const uint8_t *getVideoFrame(VideoPlayer *player, int *width, int *height)
       // VP9_BEHIND_US, or the sound held twice within VP9_HOLDS_US. Then 1080p from the next cue, and T_down for the
       // rest of the video at 90 % of the bitrate where it happened (the feeder does both)
       if (player->hasLowDemuxer && !player->vp9OnLow && !player->vp9SafetyRequest) {
-         int ask = 0;
+         const char *sign = NULL;
          if (behindNs > VP9_BEHIND_NS) {
             if (!player->vp9BehindSinceUs) player->vp9BehindSinceUs = nowUs;
-            else if (nowUs - player->vp9BehindSinceUs > VP9_BEHIND_US) ask = 1;
+            else if (nowUs - player->vp9BehindSinceUs > VP9_BEHIND_US) sign = "the picture behind for a second";
          } else {
             player->vp9BehindSinceUs = 0;
          }
          if (holdAction == 1) {
-            if (player->vp9LastHoldUs && nowUs - player->vp9LastHoldUs < VP9_HOLDS_US) ask = 1;
+            if (player->vp9LastHoldUs && nowUs - player->vp9LastHoldUs < VP9_HOLDS_US) sign = "the sound waited twice";
             player->vp9LastHoldUs = nowUs;
          }
-         if (ask) {
+         // (V3.0.4) the earliest sign, seconds before the sound has to wait: pictures dropped as late or missing,
+         // VP9_DROP_SECONDS seconds in a row (counted with the stutter statistics below)
+         if (player->vp9DropSeconds >= VP9_DROP_SECONDS) sign = "pictures dropped";
+         if (sign) {
             const MkvDemuxer *high = &player->demuxer.container.mkv;
             int bps = (int)vp9SectionBps(high, vp9CueAtOrBefore(high, player->currentPts));
             player->vp9SafetyBps = bps;
             __sync_synchronize();
             player->vp9SafetyRequest = 1;
             player->vp9BehindSinceUs = player->vp9LastHoldUs = 0;
-            snprintf(safetyLine, sizeof safetyLine, "[video-player] VP9: 1440p falls behind at %d s (%d.%d Mbit/s there): "
-                     "1080p from the next cue\n", (int)(player->currentPts / 1000000000ull), VP9_MBIT(bps));
+            player->vp9DropSeconds = 0;
+            player->vp9CatchingUp = 1;   // (V3.0.4) the sound runs on from here until 1080p has caught up
+            player->vp9CatchingUpUs = nowUs;
+            snprintf(safetyLine, sizeof safetyLine, "[video-player] VP9: 1440p falls behind at %d s (%d.%d Mbit/s there, %s): "
+                     "1080p from the next cue, the sound runs on meanwhile\n", (int)(player->currentPts / 1000000000ull),
+                     VP9_MBIT(bps), sign);
          }
       }
    }
@@ -1635,6 +1680,18 @@ const uint8_t *getVideoFrame(VideoPlayer *player, int *width, int *height)
       player->statsLate += late;
       if (readyCount < player->statsReadyMin) player->statsReadyMin = readyCount;
       if (nowUs - player->statsSecondUs >= 1000000ull) {
+         // (V3.0.4) the safety net's earliest sign: a second in which 1440p dropped or missed VP9_DROPS_PER_S pictures -
+         // not in the seconds after a change of stream, when the decoder takes the new size, nor right after a seek
+         if (player->vp9DropIgnore > 0) {
+            player->vp9DropIgnore--;
+            player->vp9DropSeconds = 0;
+         } else if (player->vp9 && player->hasLowDemuxer && !player->vp9OnLow && !player->ended &&
+                    player->currentPts >= player->vp9LastSwitchNs + VP9_SETTLE_NS &&
+                    player->statsLate + player->statsStarved >= VP9_DROPS_PER_S) {
+            player->vp9DropSeconds++;
+         } else {
+            player->vp9DropSeconds = 0;
+         }
          if (player->statsLate || player->statsStarved)
             snprintf(statsLine, sizeof statsLine, "[video-player] 1 s: %d pictures shown, %d dropped as late, %d presents "
                      "without a new one (%d with none ready), fewest ready %d of %d\n", player->statsShown, player->statsLate,
@@ -1719,6 +1776,8 @@ float getVideoPositionSeconds(const VideoPlayer *player)
 }
 
 uint64_t getVideoPositionNs(const VideoPlayer *player) { return player->currentPts; }
+
+int hasVideoPlayerFailed(const VideoPlayer *player) { return player && player->failed; }
 
 float getVideoDurationSeconds(const VideoPlayer *player)
 {
