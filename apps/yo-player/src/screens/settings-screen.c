@@ -267,22 +267,22 @@ static void initSettings(void)
    // Fonts are shared app-wide (ui-fonts.h): nothing is opened here and nothing may be closed in term.
    // All of this screen's text is written in the code, so it is Manrope throughout.
    uiInitLabel(&titleLabel, UI_PAGE_TITLE_WEIGHT, CONTENT_X, 0, AUTO, UI_PAGE_TITLE_SIZE, activeTheme->textPrimary,
-               TEXT_NOWRAP, "Settings");
+               TEXT_NOWRAP, "Ajustes");
    // (V3.0.0 Test 12) with a newer release out, the line says so (update-check.h)
-   char version[96], newer[16];
-   if (getNewerRelease(newer, sizeof newer)) snprintf(version, sizeof version, "TEE Vanced %s  \xC2\xB7  v%s is out on GitHub",
+   char version[160], newer[16];
+   if (getNewerRelease(newer, sizeof newer)) snprintf(version, sizeof version, "TEE Vanced %s  \xC2\xB7  ya salió la v%s en GitHub  \xC2\xB7  Traducido al español By JuAnKLiMoN",
                                                        APP_VERSION, newer);
-   else snprintf(version, sizeof version, "TEE Vanced %s", APP_VERSION);
+   else snprintf(version, sizeof version, "TEE Vanced %s  \xC2\xB7  Traducido al español By JuAnKLiMoN", APP_VERSION);
    uiInitLabel(&versionLabel, UI_META_WEIGHT, CONTENT_X, 0, AUTO, UI_META_SIZE, activeTheme->textTertiary,
                TEXT_NOWRAP, version);
 
-   uiInitLabel(&aboutLabel,    HEADING_WEIGHT, 0, 0, AUTO, HEADING_SIZE, activeTheme->textPrimary, TEXT_NOWRAP, "About");
-   uiInitLabel(&playbackLabel, HEADING_WEIGHT, 0, 0, AUTO, HEADING_SIZE, activeTheme->textPrimary, TEXT_NOWRAP, "Playback");
+   uiInitLabel(&aboutLabel,    HEADING_WEIGHT, 0, 0, AUTO, HEADING_SIZE, activeTheme->textPrimary, TEXT_NOWRAP, "Acerca de");
+   uiInitLabel(&playbackLabel, HEADING_WEIGHT, 0, 0, AUTO, HEADING_SIZE, activeTheme->textPrimary, TEXT_NOWRAP, "Reproducción");
    uiInitLabel(&sponsorLabel,  HEADING_WEIGHT, 0, 0, AUTO, HEADING_SIZE, activeTheme->textPrimary, TEXT_NOWRAP, "SponsorBlock");
    // one line across the panel (about 1050 px of the 1116 there are); wrapped rather than cut should a font
    // ever draw it wider, and the rows under it follow its height (layOut)
    uiInitLabel(&explainLabel, UI_BODY_WEIGHT, 0, 0, TEXT_RIGHT - TEXT_X, UI_BODY_SIZE, activeTheme->textSecondary,
-               TEXT_WRAP, "What happens when a marked segment starts. Ask shows a skip button for as long as the segment runs.");
+               TEXT_WRAP, "Qué pasa cuando empieza un segmento marcado. Avisar muestra un botón para saltarlo mientras dura el segmento.");
 
    // the card: raw labels, because the URL is literal text, not markup (it is ASCII, so uiInitTextLabel keeps
    // it in Manrope). The note is about 335 px, wider than the code, so it takes two lines - broken by hand,
@@ -291,7 +291,7 @@ static void initSettings(void)
    uiInitTextLabel(&linkLabel, UI_WEIGHT_BOLD, 0, 0, cardTextW, LINK_SIZE, activeTheme->textPrimary,
                    TEXT_NOWRAP_ELLIPSIS, QR_URL);
    uiInitTextLabel(&noteLabel, UI_META_WEIGHT, 0, 0, cardTextW, UI_META_SIZE, activeTheme->textSecondary,
-                   TEXT_WRAP, "Scan for links, streams\nand contact");
+                   TEXT_WRAP, "Escanea para ver enlaces,\nstreams y contacto");
 
    // The names end short of the segment group, so even "Interaction reminder" (about 270 px at 26/800) never
    // meets it - it has some 660 px. Autoplay's, without a dot, starts 30 px further left, far from its switch.
@@ -301,29 +301,29 @@ static void initSettings(void)
    int nameW = GROUP_X - NAME_GAP - (TEXT_X + DOT_SIZE + DOT_GAP);
    for (int row = 0; row < ROW_SKIP_END; row++) {
       const char *name;
-      if      (row == ROW_AUTOPLAY) name = "Autoplay next video";
-      else if (row == ROW_REGION)   name = "Region";
+      if      (row == ROW_AUTOPLAY) name = "Reproducir el siguiente video";
+      else if (row == ROW_REGION)   name = "Región";
       else                          name = getSponsorCategoryName((SponsorCategory)skipCategory(row));
       uiInitLabel(&rowLabels[row][0], ROW_WEIGHT,       0, 0, nameW, ROW_TEXT, activeTheme->textPrimary, TEXT_NOWRAP_ELLIPSIS, name);
       uiInitLabel(&rowLabels[row][1], ROW_FOCUS_WEIGHT, 0, 0, nameW, ROW_TEXT, activeTheme->textPrimary, TEXT_NOWRAP_ELLIPSIS, name);
    }
 
    // a segment's word: onAccent on the accent, textPrimary when chosen, textSecondary otherwise (drawSegments)
-   static const char *SEGMENT_WORDS[SEG_COUNT] = { "Skip", "Ask", "Keep" };
+   static const char *SEGMENT_WORDS[SEG_COUNT] = { "Saltar", "Avisar", "Dejar" };
    for (int k = 0; k < SEG_COUNT; k++) {
       uiInitLabel(&segmentLabels[k][0], ROW_WEIGHT,       0, 0, AUTO, SEG_TEXT, TEXT_TINTABLE, TEXT_NOWRAP, SEGMENT_WORDS[k]);
       uiInitLabel(&segmentLabels[k][1], ROW_FOCUS_WEIGHT, 0, 0, AUTO, SEG_TEXT, TEXT_TINTABLE, TEXT_NOWRAP, SEGMENT_WORDS[k]);
    }
-   uiInitLabel(&switchLabels[0], ROW_WEIGHT, 0, 0, AUTO, SEG_TEXT, TEXT_TINTABLE, TEXT_NOWRAP, "Off");
-   uiInitLabel(&switchLabels[1], ROW_WEIGHT, 0, 0, AUTO, SEG_TEXT, TEXT_TINTABLE, TEXT_NOWRAP, "On");
+   uiInitLabel(&switchLabels[0], ROW_WEIGHT, 0, 0, AUTO, SEG_TEXT, TEXT_TINTABLE, TEXT_NOWRAP, "No");
+   uiInitLabel(&switchLabels[1], ROW_WEIGHT, 0, 0, AUTO, SEG_TEXT, TEXT_TINTABLE, TEXT_NOWRAP, "Sí");
    // the country names are the app's own (English, ASCII): Manrope, like every other word on this page
    uiInitLabel(&regionLabel, ROW_FOCUS_WEIGHT, 0, 0, AUTO, SEG_TEXT, TEXT_TINTABLE, TEXT_NOWRAP, regionName());
    state.regionSegW = measureRegionSegment();
 
    uiInitHints(&hints);
-   uiAddHint(&hints, GLYPH_CROSS,  "Change");
-   uiAddHint(&hints, GLYPH_CIRCLE, "Back");
-   uiAddHint(&hints, GLYPH_DPAD_LEFT, "Menu");   // the rail opens here as on Home
+   uiAddHint(&hints, GLYPH_CROSS,  "Cambiar");
+   uiAddHint(&hints, GLYPH_CIRCLE, "Atrás");
+   uiAddHint(&hints, GLYPH_DPAD_LEFT, "Menú");   // the rail opens here as on Home
 
    memset(&navigateRepeat, 0, sizeof navigateRepeat);
    layOut();

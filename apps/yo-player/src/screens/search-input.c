@@ -1,6 +1,6 @@
 // search-input screen - the app's own search field plus the search history (see search-input.h).
 //
-// The page is the top of Bild 5 (Ember): the search field across the top and, under "Recent searches", the
+// The page is the top of Bild 5 (Ember): the search field across the top and, under "Búsquedas recientes", the
 // history - as rows, one query each, not as Bild 5's chips: the history is walked with UP/DOWN, and a row of
 // chips would make DOWN mean "the next one to the right". The collapsed rail sits at the left edge, drawn
 // passive: this screen is pushed and Circle is Back here, so the rail only says where you are.
@@ -49,7 +49,7 @@
 #define TEXT_W          (CONTENT_RIGHT - FIELD_PAD - TEXT_X)
 #define FIELD_TEXT      34
 #define FIELD_WEIGHT    UI_WEIGHT_BOLD
-#define PLACEHOLDER_GAP 10      // "Press" - the cross - "to type"
+#define PLACEHOLDER_GAP 10      // "Pulsa" - the cross - "para escribir"
 #define RECENT_BASELINE 201     // capitals centred on the band where the results screen has its sort segment
                                 // (y 166..221), Bild 5's row of "Recent" and the segment
 #define RECENT_TEXT     20      // "Recent" in Bild 5: 20/700 in text-3
@@ -132,7 +132,7 @@ static void onTyped(const char *text)
 static void updateRowHints(void)
 {
    int onQuery = state.selected != ROW_FIELD;
-   uiSetHintCaption(&hints, CROSS_HINT, onQuery ? "Search" : "Type");
+   uiSetHintCaption(&hints, CROSS_HINT, onQuery ? "Buscar" : "Escribir");
    uiSetHintShown(&hints, SQUARE_HINT, onQuery);
 }
 
@@ -160,22 +160,22 @@ static void initSearchInput(void)
    // when they are drawn, by their measured capitals: a query may come out in FONT_POP, which sits at another
    // height in its texture than Manrope.
    uiInitTextLabel(&fieldLabel,  FIELD_WEIGHT, 0, 0, TEXT_W, FIELD_TEXT, activeTheme->textPrimary, TEXT_NOWRAP_ELLIPSIS, "");
-   uiInitLabel(&pressLabel,      FIELD_WEIGHT, 0, 0, AUTO, FIELD_TEXT, activeTheme->textTertiary, TEXT_NOWRAP, "Press");
-   uiInitLabel(&toTypeLabel,     FIELD_WEIGHT, 0, 0, AUTO, FIELD_TEXT, activeTheme->textTertiary, TEXT_NOWRAP, "to type");
-   uiInitLabel(&idleLabel,       FIELD_WEIGHT, 0, 0, AUTO, FIELD_TEXT, activeTheme->textTertiary, TEXT_NOWRAP, "Search YouTube");
-   uiInitLabel(&recentLabel,     UI_WEIGHT_BOLD, 0, 0, AUTO, RECENT_TEXT, activeTheme->textTertiary, TEXT_NOWRAP, "Recent searches");
-   uiInitLabel(&emptyLabel,      UI_BODY_WEIGHT, 0, 0, AUTO, UI_BODY_SIZE, activeTheme->textSecondary, TEXT_NOWRAP, "Nothing yet - your searches will be listed here");
+   uiInitLabel(&pressLabel,      FIELD_WEIGHT, 0, 0, AUTO, FIELD_TEXT, activeTheme->textTertiary, TEXT_NOWRAP, "Pulsa");
+   uiInitLabel(&toTypeLabel,     FIELD_WEIGHT, 0, 0, AUTO, FIELD_TEXT, activeTheme->textTertiary, TEXT_NOWRAP, "para escribir");
+   uiInitLabel(&idleLabel,       FIELD_WEIGHT, 0, 0, AUTO, FIELD_TEXT, activeTheme->textTertiary, TEXT_NOWRAP, "Buscar en YouTube");
+   uiInitLabel(&recentLabel,     UI_WEIGHT_BOLD, 0, 0, AUTO, RECENT_TEXT, activeTheme->textTertiary, TEXT_NOWRAP, "Búsquedas recientes");
+   uiInitLabel(&emptyLabel,      UI_BODY_WEIGHT, 0, 0, AUTO, UI_BODY_SIZE, activeTheme->textSecondary, TEXT_NOWRAP, "Aún nada: tus búsquedas aparecerán aquí");
    for (int i = 0; i < MAX_SEARCH_HISTORY; i++)
       uiInitTextLabel(&rowLabels[i], ROW_WEIGHT, 0, 0, TEXT_W, ROW_TEXT, activeTheme->textPrimary, TEXT_NOWRAP_ELLIPSIS, "");
    initIcon(&fieldIcon, ICON_SEARCH, FIELD_ICON_SIZE);
    initIcon(&rowIcon,   ICON_CLOCK,  ROW_ICON_SIZE);
 
    uiInitHints(&hints);
-   uiAddHint(&hints, GLYPH_CROSS,  "Type");     // CROSS_HINT: "Search" on a remembered query (updateRowHints)
-   uiAddHint(&hints, GLYPH_CIRCLE, "Back");
-   uiAddHint(&hints, GLYPH_SQUARE, "Delete");   // SQUARE_HINT: only on a remembered query (updateRowHints)
-   uiAddHint(&hints, GLYPH_START,  "Type");
-   uiAddHint(&hints, GLYPH_DPAD_LEFT, "Menu");   // the rail opens here as on Home
+   uiAddHint(&hints, GLYPH_CROSS,  "Escribir");     // CROSS_HINT: "Search" on a remembered query (updateRowHints)
+   uiAddHint(&hints, GLYPH_CIRCLE, "Atrás");
+   uiAddHint(&hints, GLYPH_SQUARE, "Eliminar");   // SQUARE_HINT: only on a remembered query (updateRowHints)
+   uiAddHint(&hints, GLYPH_START,  "Escribir");
+   uiAddHint(&hints, GLYPH_DPAD_LEFT, "Menú");   // the rail opens here as on Home
 
    setFieldText(pendingInitial);
    reloadHistory();
@@ -196,7 +196,7 @@ static void updateSearchInput(void)
    }
 
    if (isPadButtonPressed(PAD_BTN_CIRCLE)) { popScreen(); return; }
-   if (isPadButtonPressed(PAD_BTN_START))  { oskInputBegin("Search YouTube", state.query, onTyped); return; }
+   if (isPadButtonPressed(PAD_BTN_START))  { oskInputBegin("Buscar en YouTube", state.query, onTyped); return; }
 
    int last = state.historyCount;   // row index of the last entry (0 when there is no history)
    if      (isRepeatDue(&navigateRepeat, getPadButtonState(PAD_BTN_DOWN))) state.selected++;
@@ -207,7 +207,7 @@ static void updateSearchInput(void)
 
    if (isPadButtonPressed(PAD_BTN_CROSS)) {
       // on the field: type. on a remembered query: search it straight away.
-      if (state.selected == ROW_FIELD) oskInputBegin("Search YouTube", state.query, onTyped);
+      if (state.selected == ROW_FIELD) oskInputBegin("Buscar en YouTube", state.query, onTyped);
       else                             confirm(state.history[state.selected - 1]);
       return;
    }

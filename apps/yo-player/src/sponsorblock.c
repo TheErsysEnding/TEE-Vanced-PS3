@@ -26,8 +26,8 @@ static const char *CATEGORY_API_NAMES[SPONSOR_CATEGORY_COUNT] = {
 // category is named: the settings rows, the "Skip ..." offer and the "Skipped ..." toast. The short forms
 // ("Interaction", "Outro") did not say what actually gets skipped.
 static const char *CATEGORY_LABELS[SPONSOR_CATEGORY_COUNT] = {
-   "Sponsor", "Self-promotion", "Interaction reminder", "Intro", "Outro and end cards", "Off-topic music",
-   "Filler and tangents"
+   "Patrocinador", "Autopromoción", "Recordatorio de interacción", "Introducción", "Final y tarjetas finales", "Música fuera de tema",
+   "Relleno y divagaciones"
 };
 // The Ember design's category colours (UEBERGABE 3.1). These are the one set of colours that does not come
 // from the theme - they identify a category wherever it appears (timeline, settings, legend), so a theme
@@ -54,7 +54,7 @@ unsigned getSponsorCategoryColor(SponsorCategory category)
 
 const char *getSponsorCategoryName(SponsorCategory category)
 {
-   return ((int)category >= 0 && category < SPONSOR_CATEGORY_COUNT) ? CATEGORY_LABELS[category] : "Segment";
+   return ((int)category >= 0 && category < SPONSOR_CATEGORY_COUNT) ? CATEGORY_LABELS[category] : "Segmento";
 }
 
 // the category enum for a "category":"..." within [from,end), or -1 if it's one we don't handle.

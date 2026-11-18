@@ -121,14 +121,14 @@ typedef enum { ROW_FOR_YOU, ROW_SUBS, ROW_CHANNELS, ROW_LATER, ROW_HISTORY, ROW_
                MENU_ROWS } MenuRow;
 
 static const struct { IconId icon; const char *name; } MENU[MENU_ROWS] = {
-   { ICON_HAND_POINTER_O, "For you" },
-   { ICON_STAR,           "Subscriptions" },
-   { ICON_SORT,           "All channels" },
-   { ICON_CLOCK,          "Watch Later" },
-   { ICON_HISTORY,        "History" },
-   { ICON_OK,             "Liked videos" },
-   { ICON_DOCS,           "Playlists" },
-   { ICON_LOCK_OPEN,      "Sign out" },
+   { ICON_HAND_POINTER_O, "Para ti" },
+   { ICON_STAR,           "Suscripciones" },
+   { ICON_SORT,           "Todos los canales" },
+   { ICON_CLOCK,          "Ver más tarde" },
+   { ICON_HISTORY,        "Historial" },
+   { ICON_OK,             "Videos que me gustan" },
+   { ICON_DOCS,           "Listas" },
+   { ICON_LOCK_OPEN,      "Cerrar sesión" },
 };
 
 static Label   menuTitle, menuNote;
@@ -150,22 +150,22 @@ static void setMenuDetails(void)
 {
    char text[64];
    int channels = getAccountFollowingCount(), later = getAccountWatchLaterCount();
-   setLabelText(&menuDetails[ROW_FOR_YOU], "Recommended for you");
-   setLabelText(&menuDetails[ROW_SUBS], "Newest uploads first");
-   if (channels > 0) snprintf(text, sizeof text, "%d channels, A to Z", channels); else snprintf(text, sizeof text, "A to Z");
+   setLabelText(&menuDetails[ROW_FOR_YOU], "Recomendados para ti");
+   setLabelText(&menuDetails[ROW_SUBS], "Lo más reciente primero");
+   if (channels > 0) snprintf(text, sizeof text, "%d canales, de la A a la Z", channels); else snprintf(text, sizeof text, "De la A a la Z");
    setLabelText(&menuDetails[ROW_CHANNELS], text);
    if (later >= 0) snprintf(text, sizeof text, later == 1 ? "1 video" : "%d videos", later); else text[0] = 0;
    setLabelText(&menuDetails[ROW_LATER], text);
-   setLabelText(&menuDetails[ROW_HISTORY], "What you watched on YouTube");
+   setLabelText(&menuDetails[ROW_HISTORY], "Lo que viste en YouTube");
    text[0] = 0;
    AccountPlaylistInfo list;
    for (int i = 0; i < getAccountPlaylistCount(); i++)
       if (getAccountPlaylistAt(i, &list) && strcmp(list.id, "LL") == 0) { strCopy(text, sizeof text, list.count); break; }
    setLabelText(&menuDetails[ROW_LIKED], text);
    int playlists = getAccountPlaylistCount();
-   if (playlists > 0) snprintf(text, sizeof text, "On YouTube and on this PS3"); else snprintf(text, sizeof text, "On this PS3");
+   if (playlists > 0) snprintf(text, sizeof text, "En YouTube y en esta PS3"); else snprintf(text, sizeof text, "En esta PS3");
    setLabelText(&menuDetails[ROW_PLAYLISTS], text);
-   setLabelText(&menuDetails[ROW_SIGN_OUT], "Withdraws this console's sign-in at Google");
+   setLabelText(&menuDetails[ROW_SIGN_OUT], "Retira el inicio de sesión de esta consola en Google");
    menu.listsSeen = getAccountListsRevision();
 }
 
@@ -176,11 +176,11 @@ static void initAccountPage(void)
    menu.selected = 0;
    menu.plate = plateFill();
    uiInitLabel(&menuTitle, UI_PAGE_TITLE_WEIGHT, CONTENT_X, 0, AUTO, UI_PAGE_TITLE_SIZE, activeTheme->textPrimary,
-               TEXT_NOWRAP, "Account");
+               TEXT_NOWRAP, "Cuenta");
    uiInitLabel(&menuNote, UI_BODY_WEIGHT, CONTENT_X, 0, UI_SAFE_RIGHT - CONTENT_X, UI_BODY_SIZE,
                activeTheme->textSecondary, TEXT_WRAP,
-               "Signed in to YouTube. These lists come from your account - so do Subscriptions, Watch Later, "
-               "History and Playlists in the menu.");
+               "Sesión iniciada en YouTube. Estas listas vienen de tu cuenta, igual que Suscripciones, Ver más tarde, Historial y Listas del menú."
+               "");
    int nameW = LIST_W / 2;
    for (int i = 0; i < MENU_ROWS; i++) {
       uiInitLabel(&menuNames[i], ROW_WEIGHT, 0, 0, nameW, ROW_TEXT, TEXT_TINTABLE, TEXT_NOWRAP_ELLIPSIS, MENU[i].name);
@@ -190,9 +190,9 @@ static void initAccountPage(void)
    }
    setMenuDetails();
    uiInitHints(&menuHints);
-   uiAddHint(&menuHints, GLYPH_CROSS, "Open");
-   uiAddHint(&menuHints, GLYPH_CIRCLE, "Back");
-   uiAddHint(&menuHints, GLYPH_DPAD_LEFT, "Menu");
+   uiAddHint(&menuHints, GLYPH_CROSS, "Abrir");
+   uiAddHint(&menuHints, GLYPH_CIRCLE, "Atrás");
+   uiAddHint(&menuHints, GLYPH_DPAD_LEFT, "Menú");
    layOutHeader(&menu.header, &menuTitle, &menuNote);
    uint64_t now = sys_time_get_system_time();
    menuRepeat.timer = now; menuRepeat.repeats = 0;
@@ -361,8 +361,8 @@ static int slotFor(int row)
 static void setChannelNote(void)
 {
    char text[160];
-   if (listState == 0) snprintf(text, sizeof text, "Every channel your account follows, A to Z.");
-   else snprintf(text, sizeof text, "%d channels your account follows, A to Z. X opens a channel, Triangle unsubscribes.",
+   if (listState == 0) snprintf(text, sizeof text, "Todos los canales que sigue tu cuenta, de la A a la Z.");
+   else snprintf(text, sizeof text, "%d canales que sigue tu cuenta, de la A a la Z. X abre un canal, Triángulo cancela la suscripción.",
                  chan.count);
    uiSetTextLabel(&chanNote, UI_BODY_WEIGHT, text);
 }
@@ -378,10 +378,10 @@ static void initChannelList(void)
    for (int i = 0; i < SLOTS; i++) slotRow[i] = -1;
 
    uiInitLabel(&chanTitle, UI_PAGE_TITLE_WEIGHT, CONTENT_X, 0, AUTO, UI_PAGE_TITLE_SIZE, activeTheme->textPrimary,
-               TEXT_NOWRAP, "All channels");
+               TEXT_NOWRAP, "Todos los canales");
    uiInitTextLabel(&chanNote, UI_BODY_WEIGHT, CONTENT_X, 0, UI_SAFE_RIGHT - CONTENT_X, UI_BODY_SIZE,
                    activeTheme->textSecondary, TEXT_WRAP, "");
-   uiInitLabel(&chanStatus, UI_WEIGHT_BOLD, 0, 0, AUTO, 24, activeTheme->textSecondary, TEXT_NOWRAP, "Loading...");
+   uiInitLabel(&chanStatus, UI_WEIGHT_BOLD, 0, 0, AUTO, 24, activeTheme->textSecondary, TEXT_NOWRAP, "Cargando...");
    int nameW = LIST_W - 2 * ROW_PAD - ICON_SIZE - ICON_GAP - 260;
    for (int i = 0; i < SLOTS; i++) {
       uiInitTextLabel(&chanNames[i], ROW_WEIGHT, 0, 0, nameW, ROW_TEXT, activeTheme->textPrimary, TEXT_NOWRAP_ELLIPSIS, "");
@@ -392,14 +392,14 @@ static void initChannelList(void)
    initIcon(&chanIcon, ICON_STAR, ICON_SIZE);
    uiInitDigits(&posDigits, POS_WEIGHT, POS_SIZE);
    uiInitHints(&chanHints);
-   uiAddHint(&chanHints, GLYPH_CROSS, "Open channel");
-   uiAddHint(&chanHints, GLYPH_TRIANGLE, "Unsubscribe");
-   uiAddHint(&chanHints, GLYPH_CIRCLE, "Back");
+   uiAddHint(&chanHints, GLYPH_CROSS, "Abrir canal");
+   uiAddHint(&chanHints, GLYPH_TRIANGLE, "Cancelar suscripción");
+   uiAddHint(&chanHints, GLYPH_CIRCLE, "Atrás");
    uiAddHint(&chanHints, GLYPH_L2, "");
-   uiAddHint(&chanHints, GLYPH_R2, "Page");
+   uiAddHint(&chanHints, GLYPH_R2, "Página");
    uiInitHints(&confirmHints);
-   uiAddHint(&confirmHints, GLYPH_CROSS, "Unsubscribe");
-   uiAddHint(&confirmHints, GLYPH_CIRCLE, "Cancel");
+   uiAddHint(&confirmHints, GLYPH_CROSS, "Cancelar suscripción");
+   uiAddHint(&confirmHints, GLYPH_CIRCLE, "Cancelar");
 
    lock(&listLock);
    unsigned mine = ++listAttempt;
@@ -430,7 +430,7 @@ static void askUnsubscribe(void)
    strCopy(chan.pendingId, sizeof chan.pendingId, item->channelId);
    strCopy(chan.pendingName, sizeof chan.pendingName, item->title);
    char message[224];
-   snprintf(message, sizeof message, "Unsubscribe from %s?", item->title[0] ? item->title : "this channel");
+   snprintf(message, sizeof message, "¿Cancelar la suscripción a %s?", item->title[0] ? item->title : "este canal");
    uiSetTextLabel(&noticeLabel, UI_BODY_WEIGHT, message);
    chan.noticeVisible = 1;
 }
@@ -459,9 +459,9 @@ static void updateChannelList(void)
       unlock(&listLock);
       chan.count = channels ? channels->count : 0;
       setChannelNote();
-      if (!chan.count) setLabelText(&chanStatus, "Your account follows no channels.");
+      if (!chan.count) setLabelText(&chanStatus, "Tu cuenta no sigue ningún canal.");
    }
-   if (listState == -1 && !channels) setLabelText(&chanStatus, "The channel list could not be loaded. O goes back.");
+   if (listState == -1 && !channels) setLabelText(&chanStatus, "No se pudo cargar la lista de canales. O vuelve atrás.");
 
    if (chan.noticeVisible) {
       if (isPadButtonPressed(PAD_BTN_CROSS)) { chan.noticeVisible = 0; unsubscribeConfirmed(); return; }

@@ -88,39 +88,39 @@ static int updateCheck = 1;                  // (V3.0.0 Test 12) update-check=: 
 // Korea stays only while its Hangul titles prove legible on the console; deleting its line is the whole change -
 // nothing else refers to a position in this table.
 static const ContentRegion REGIONS[] = {
-   { "DE", "Germany", "de" },
+   { "DE", "Alemania", "de" },
    { "AT", "Austria", "de" },
-   { "CH", "Switzerland", "de" },
+   { "CH", "Suiza", "de" },
    { "AU", "Australia", "en" },
-   { "BE", "Belgium", "nl" },
-   { "BR", "Brazil", "pt" },
+   { "BE", "Bélgica", "nl" },
+   { "BR", "Brasil", "pt" },
    { "BG", "Bulgaria", "bg" },
-   { "CA", "Canada", "en" },
-   { "HR", "Croatia", "hr" },
-   { "CZ", "Czechia", "cs" },
-   { "DK", "Denmark", "da" },
-   { "FI", "Finland", "fi" },
-   { "FR", "France", "fr" },
-   { "GR", "Greece", "el" },
-   { "HU", "Hungary", "hu" },
-   { "IE", "Ireland", "en" },
-   { "IT", "Italy", "it" },
-   { "JP", "Japan", "ja" },
-   { "MX", "Mexico", "es" },
-   { "NL", "Netherlands", "nl" },
-   { "NO", "Norway", "no" },
-   { "PL", "Poland", "pl" },
+   { "CA", "Canadá", "en" },
+   { "HR", "Croacia", "hr" },
+   { "CZ", "Chequia", "cs" },
+   { "DK", "Dinamarca", "da" },
+   { "FI", "Finlandia", "fi" },
+   { "FR", "Francia", "fr" },
+   { "GR", "Grecia", "el" },
+   { "HU", "Hungría", "hu" },
+   { "IE", "Irlanda", "en" },
+   { "IT", "Italia", "it" },
+   { "JP", "Japón", "ja" },
+   { "MX", "México", "es" },
+   { "NL", "Países Bajos", "nl" },
+   { "NO", "Noruega", "no" },
+   { "PL", "Polonia", "pl" },
    { "PT", "Portugal", "pt" },
-   { "RO", "Romania", "ro" },
-   { "RU", "Russia", "ru" },
+   { "RO", "Rumanía", "ro" },
+   { "RU", "Rusia", "ru" },
    { "RS", "Serbia", "sr" },
-   { "KR", "South Korea", "ko" },
-   { "ES", "Spain", "es" },
-   { "SE", "Sweden", "sv" },
-   { "TR", "Turkey", "tr" },
-   { "UA", "Ukraine", "uk" },
-   { "GB", "United Kingdom", "en" },
-   { "US", "United States", "en" },   // the default: what every earlier build sent
+   { "KR", "Corea del Sur", "ko" },
+   { "ES", "España", "es" },
+   { "SE", "Suecia", "sv" },
+   { "TR", "Turquía", "tr" },
+   { "UA", "Ucrania", "uk" },
+   { "GB", "Reino Unido", "en" },
+   { "US", "Estados Unidos", "en" },   // the default: what every earlier build sent
 };
 #define REGION_COUNT ((int)(sizeof REGIONS / sizeof REGIONS[0]))
 
@@ -202,22 +202,22 @@ static void migrateSubtitleSetting(const char *path, char *text, int cap, int le
 
 typedef struct { const char *name, *value; uint32_t number; } StyleChoice;   // shown, saved, what it is
 static const StyleChoice STYLE_COLORS[] = {          // the eight YouTube offers, for the text and its background
-   { "White", "white", 0xFFFFFF }, { "Yellow", "yellow", 0xFFFF00 }, { "Green", "green", 0x00FF00 },
-   { "Cyan", "cyan", 0x00FFFF }, { "Blue", "blue", 0x0000FF }, { "Magenta", "magenta", 0xFF00FF },
-   { "Red", "red", 0xFF0000 }, { "Black", "black", 0x000000 },
+   { "Blanco", "white", 0xFFFFFF }, { "Amarillo", "yellow", 0xFFFF00 }, { "Verde", "green", 0x00FF00 },
+   { "Cian", "cyan", 0x00FFFF }, { "Azul", "blue", 0x0000FF }, { "Magenta", "magenta", 0xFF00FF },
+   { "Rojo", "red", 0xFF0000 }, { "Negro", "black", 0x000000 },
 };
 static const StyleChoice STYLE_BACKGROUNDS[] = {
-   { "Black", "black", 0x000000 }, { "White", "white", 0xFFFFFF }, { "Yellow", "yellow", 0xFFFF00 },
-   { "Green", "green", 0x00FF00 }, { "Cyan", "cyan", 0x00FFFF }, { "Blue", "blue", 0x0000FF },
-   { "Magenta", "magenta", 0xFF00FF }, { "Red", "red", 0xFF0000 },
+   { "Negro", "black", 0x000000 }, { "Blanco", "white", 0xFFFFFF }, { "Amarillo", "yellow", 0xFFFF00 },
+   { "Verde", "green", 0x00FF00 }, { "Cian", "cyan", 0x00FFFF }, { "Azul", "blue", 0x0000FF },
+   { "Magenta", "magenta", 0xFF00FF }, { "Rojo", "red", 0xFF0000 },
 };
 static const StyleChoice STYLE_OPACITIES[] = {       // the alpha: 80% is near the plate subtitles always had
    { "0%", "0", 0 }, { "20%", "20", 51 }, { "40%", "40", 102 }, { "60%", "60", 153 }, { "80%", "80", 204 },
    { "100%", "100", 255 },
 };
 static const StyleChoice STYLE_EDGES[] = {
-   { "None", "none", SUBTITLE_EDGE_NONE }, { "Shadow", "shadow", SUBTITLE_EDGE_SHADOW },
-   { "Outline", "outline", SUBTITLE_EDGE_OUTLINE },
+   { "Ninguno", "none", SUBTITLE_EDGE_NONE }, { "Sombra", "shadow", SUBTITLE_EDGE_SHADOW },
+   { "Contorno", "outline", SUBTITLE_EDGE_OUTLINE },
 };
 static const StyleChoice STYLE_SIZES[] = {           // per cent of the 30 px subtitles always had
    { "75%", "75", 22 }, { "100%", "100", 30 }, { "125%", "125", 38 }, { "150%", "150", 45 }, { "200%", "200", 60 },

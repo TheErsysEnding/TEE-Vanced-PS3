@@ -1,8 +1,8 @@
 // welcome-screen - a new version's changes and the support page, once per version (see welcome-screen.h).
 //
-// Two pages on the app's ground, inside the safe area. Page 1: the version, "1440p 60 FPS SUPPORT" as large as the
+// Two pages on the app's ground, inside the safe area. Page 1: the version, "SOPORTE 1440p A 60 FPS" as large as the
 // screen allows - nobody had played 1440p60 natively on a PS3 before - two notes on what to expect of it, and the
-// version's other changes. Page 2: "Support TheErsysEnding:" with the link and the QR code the About card shows.
+// version's other changes. Page 2: "Apoya a TheErsysEnding:" with the link and the QR code the About card shows.
 // X goes on (and closes the last page), O closes at once. All text is the app's own, in English.
 
 #include "screens/welcome-screen.h"
@@ -24,7 +24,7 @@
 #define LEFT_X        176                  // where every Ember page's content starts
 #define TEXT_W        (UI_SAFE_RIGHT - LEFT_X)
 #define VERSION_Y     110                  // the version line's baseline
-#define TITLE_SIZE    104                  // "1440p 60 FPS SUPPORT"
+#define TITLE_SIZE    104                  // "SOPORTE 1440p A 60 FPS"
 #define TITLE_GAP     118                  // version baseline -> the title's baseline
 #define LEAD_SIZE     30
 #define NOTE_SIZE     26
@@ -38,20 +38,20 @@
 
 // one label each: a label holds 255 bytes of text
 static const char *NOTES[] = {
-   BULLET "In the busiest moments a 1440p60 video can drop back to 1080p60 for a few seconds - on its own, at the "
-   "next key frame - and come back after them: the picture keeps 60 frames a second, the sound never stutters.",
-   BULLET "1440p30 videos are very likely to play stable all the way, without dropping back.",
+   BULLET "En los momentos más exigentes, un video 1440p60 puede bajar a 1080p60 unos segundos (solo, en el siguiente fotograma clave) y luego vuelve: la imagen mantiene los 60 fps y el sonido nunca se corta."
+   "",
+   BULLET "Los videos 1440p30 muy probablemente se reproducen estables todo el tiempo, sin bajar de calidad.",
 };
 static const char *CHANGES[] = {
-   BULLET "Subtitles in your language: the app translates a video's own with Google Translate - and START > Subtitle style "
-   "sets color, edge and size.",
-   BULLET "Audio tracks: AI-dubbed videos play their original sound, in 1440p too - Square lists every track.",
-   BULLET "List view: DOWN on Home, every search and every channel page list the whole feed - each video's best "
-   "quality (1440p60, 1080p60 ...), its details and description on the right, Subscribe right there.",
-   BULLET "Downloads: 1440p or 1080p60 into the app's own Downloads page, or an MP4 into the XMB - progress in the "
-   "rail, a note when one is in or failed, unfinished ones found at the next start.",
-   BULLET "Subscriptions with every channel's picture, the BD Remote Control, a new blue look and a note when a new version "
-   "is out.",
+   BULLET "Subtítulos en tu idioma: la app traduce los del video con Google Translate; START > Estilo de subtítulos cambia color, borde y tamaño."
+   "",
+   BULLET "Pistas de audio: los videos doblados con IA reproducen su sonido original, también en 1440p; Cuadrado lista todas las pistas.",
+   BULLET "Vista de lista: ABAJO en Inicio, en cada búsqueda y en cada canal lista todo el feed, con la mejor calidad de cada video, sus detalles y descripción a la derecha, y Suscribirse ahí mismo."
+   "",
+   BULLET "Descargas: 1440p o 1080p60 en la página Descargas de la app, o un MP4 en el XMB; progreso en la barra lateral, aviso al terminar o fallar, y las incompletas se retoman en el siguiente inicio."
+   "",
+   BULLET "Suscripciones con la imagen de cada canal, el mando BD Remote Control, un nuevo aspecto azul y un aviso cuando sale una versión nueva."
+   "",
 };
 #define NOTE_COUNT   ((int)(sizeof NOTES / sizeof NOTES[0]))
 #define CHANGE_COUNT ((int)(sizeof CHANGES / sizeof CHANGES[0]))
@@ -102,10 +102,10 @@ static void initWelcome(void)
    snprintf(version, sizeof version, "TEE Vanced " APP_VERSION "  \xC2\xB7  what's new");
    uiInitLabel(&versionLabel, UI_WEIGHT_BOLD, 0, 0, TEXT_W, 26, activeTheme->textSecondary, TEXT_NOWRAP_ELLIPSIS, version);
    uiInitLabel(&titleLabel, UI_WEIGHT_EXTRABOLD, 0, 0, TEXT_W, TITLE_SIZE, activeTheme->accent, TEXT_NOWRAP,
-               "1440p 60 FPS SUPPORT");
+               "SOPORTE 1440p A 60 FPS");
    uiInitLabel(&leadLabel, UI_WEIGHT_SEMIBOLD, 0, 0, TEXT_W, LEAD_SIZE, activeTheme->textPrimary, TEXT_WRAP,
-               "Native 1440p at 60 frames a second on the PS3: VP9, decoded on the SPEs by the TEE VP9 decoder, with "
-               "Opus sound.");
+               "1440p nativo a 60 fotogramas por segundo en la PS3: VP9, decodificado en las SPE por el decodificador TEE VP9, con sonido Opus."
+               "");
    for (int i = 0; i < NOTE_COUNT; i++)
       uiInitLabel(&notesLabels[i], UI_WEIGHT_SEMIBOLD, 0, 0, TEXT_W - 2 * NOTE_PAD, NOTE_SIZE, activeTheme->textPrimary,
                   TEXT_WRAP, NOTES[i]);
@@ -114,14 +114,14 @@ static void initWelcome(void)
                   CHANGES[i]);
 
    uiInitLabel(&supportLabel, UI_WEIGHT_EXTRABOLD, 0, 0, TEXT_W, 72, activeTheme->textPrimary, TEXT_NOWRAP,
-               "Support TheErsysEnding:");
+               "Apoya a TheErsysEnding:");
    uiInitLabel(&linkLabel, UI_WEIGHT_EXTRABOLD, 0, 0, TEXT_W, 40, activeTheme->accent, TEXT_NOWRAP, QR_URL);
    uiInitLabel(&scanLabel, UI_WEIGHT_SEMIBOLD, 0, 0, 760, LEAD_SIZE, activeTheme->textSecondary, TEXT_WRAP,
-               "Scan the code with your phone: links, streams and contact.");
+               "Escanea el código con tu móvil: enlaces, streams y contacto.\nTraducido al español By JuAnKLiMoN");
    uiInitHints(&nextHints);
-   uiAddHint(&nextHints, GLYPH_CROSS, "Continue");
+   uiAddHint(&nextHints, GLYPH_CROSS, "Continuar");
    uiInitHints(&closeHints);
-   uiAddHint(&closeHints, GLYPH_CROSS, "Close");
+   uiAddHint(&closeHints, GLYPH_CROSS, "Cerrar");
 }
 
 static void updateWelcome(void)

@@ -53,8 +53,8 @@
 // The names are rendered once in white and tinted when drawn: the country in use is in the accent's text
 // colour, every other one in text-1, and re-colouring a rendered label means rasterising it again.
 #define TEXT_TINTABLE  0xFFFFFFFFu
-#define NOTE_TEXT      "Trending and Live come from this country's YouTube; Search and Sports change only partly. " \
-                       "The app stays in English."
+#define NOTE_TEXT      "Tendencias y En vivo vienen del YouTube de este país; Buscar y Deportes cambian solo en parte. " \
+                       "La app queda en español."
 
 static Label        titleLabel, noteLabel;
 static Label        nameLabels[MAX_ROWS], codeLabels[MAX_ROWS];
@@ -151,7 +151,7 @@ static void initRegionScreen(void)
    // Fonts are shared app-wide (ui-fonts.h): nothing is opened here and nothing may be closed in term. Every
    // text here is the app's own - the country names are English and ASCII - so it is Manrope throughout.
    uiInitLabel(&titleLabel, UI_PAGE_TITLE_WEIGHT, CONTENT_X, 0, AUTO, UI_PAGE_TITLE_SIZE, activeTheme->textPrimary,
-               TEXT_NOWRAP, "Region");
+               TEXT_NOWRAP, "Región");
    // one line (about 1180 px of the 1648 there are); wrapped rather than cut should a font ever draw it
    // wider, and the list starts under its last line
    uiInitLabel(&noteLabel, UI_BODY_WEIGHT, CONTENT_X, 0, UI_SAFE_RIGHT - CONTENT_X, UI_BODY_SIZE,
@@ -170,12 +170,12 @@ static void initRegionScreen(void)
    uiInitDigits(&positionDigits, POS_WEIGHT, POS_SIZE);
 
    uiInitHints(&hints);
-   uiAddHint(&hints, GLYPH_CROSS,     "Choose");
-   uiAddHint(&hints, GLYPH_CIRCLE,    "Back");
+   uiAddHint(&hints, GLYPH_CROSS,     "Elegir");
+   uiAddHint(&hints, GLYPH_CIRCLE,    "Atrás");
    uiAddHint(&hints, GLYPH_DPAD_UP,   "");
-   uiAddHint(&hints, GLYPH_DPAD_DOWN, "Move");
+   uiAddHint(&hints, GLYPH_DPAD_DOWN, "Mover");
    uiAddHint(&hints, GLYPH_L2,        "");
-   uiAddHint(&hints, GLYPH_R2,        "Page");
+   uiAddHint(&hints, GLYPH_R2,        "Página");
 
    // The layout hangs off the title, as Settings' does; the note's measured height places the list.
    state.titleY       = uiLabelYForCenter(&titleLabel, HEADER_Y, HEADER_H);

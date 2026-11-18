@@ -137,12 +137,12 @@ static void startAttempt(void)
 static const char *statusText(Stage stage)
 {
    switch (stage) {
-   case STAGE_ASKING:    return "Getting a code from Google...";
-   case STAGE_SHOWING:   return "Waiting for you to sign in. This page goes on by itself.";
-   case STAGE_SIGNED_IN: return "Signed in. Your lists now come from your YouTube account.";
-   case STAGE_EXPIRED:   return "This code has run out. Press X for a new one.";
-   case STAGE_DENIED:    return "Access was not allowed on Google's page. Press X to try again.";
-   default:              return "Google could not be reached. Press X to try again.";
+   case STAGE_ASKING:    return "Obteniendo un código de Google...";
+   case STAGE_SHOWING:   return "Esperando a que inicies sesión. Esta página avanza sola.";
+   case STAGE_SIGNED_IN: return "Sesión iniciada. Tus listas ahora vienen de tu cuenta de YouTube.";
+   case STAGE_EXPIRED:   return "Este código caducó. Pulsa X para obtener uno nuevo.";
+   case STAGE_DENIED:    return "No se permitió el acceso en la página de Google. Pulsa X para intentarlo de nuevo.";
+   default:              return "No se pudo conectar con Google. Pulsa X para intentarlo de nuevo.";
    }
 }
 
@@ -162,15 +162,15 @@ static void initAccountScreen(void)
    if (!workerLockReady && createLock(&workerLock) == 0) workerLockReady = 1;
 
    uiInitLabel(&titleLabel, UI_PAGE_TITLE_WEIGHT, CONTENT_X, 0, AUTO, UI_PAGE_TITLE_SIZE, activeTheme->textPrimary,
-               TEXT_NOWRAP, "Sign in to YouTube");
+               TEXT_NOWRAP, "Iniciar sesión en YouTube");
    uiInitLabel(&noteLabel, UI_BODY_WEIGHT, CONTENT_X, 0, UI_SAFE_RIGHT - CONTENT_X, UI_BODY_SIZE,
                activeTheme->textSecondary, TEXT_WRAP,
-               "Your subscriptions, Watch Later, history and recommendations then come from your YouTube account. "
-               "Your password is only ever typed on Google's own page.");
+               "Tus suscripciones, Ver más tarde, historial y recomendaciones vendrán entonces de tu cuenta de YouTube. Tu contraseña solo se escribe en la página de Google."
+               "");
    uiInitTextLabel(&linkLabel, UI_WEIGHT_BOLD, 0, 0, AUTO, UI_BODY_SIZE, activeTheme->textSecondary, TEXT_NOWRAP,
-                   "Scan with your phone");
-   static const char *STEPS[3] = { "On your phone or computer, open", "Enter this code",
-                                   "Choose your Google account and allow access" };
+                   "Escanea con tu móvil");
+   static const char *STEPS[3] = { "En tu móvil o computadora, abre", "Introduce este código",
+                                   "Elige tu cuenta de Google y permite el acceso" };
    for (int i = 0; i < 3; i++) {
       char number[4];
       snprintf(number, sizeof number, "%d", i + 1);
@@ -184,8 +184,8 @@ static void initAccountScreen(void)
                    statusText(STAGE_ASKING));
 
    uiInitHints(&hints);
-   uiAddHint(&hints, GLYPH_CROSS,  "New code");   // HINT_NEW_CODE: only once a code has run out or failed
-   uiAddHint(&hints, GLYPH_CIRCLE, "Back");       // HINT_BACK
+   uiAddHint(&hints, GLYPH_CROSS,  "Código nuevo");   // HINT_NEW_CODE: only once a code has run out or failed
+   uiAddHint(&hints, GLYPH_CIRCLE, "Atrás");       // HINT_BACK
 
    state.titleY       = uiLabelYForCenter(&titleLabel, HEADER_Y, HEADER_H);
    state.noteBaseline = state.titleY + uiGetTextMetrics(titleLabel.font, titleLabel.size).baseline + NOTE_DY;
@@ -237,7 +237,7 @@ static void updateAccountScreen(void)
       if (stage == STAGE_ASKING) setLabelText(&codeLabel, "...");
       if (stage == STAGE_SIGNED_IN) state.signedInAtUs = sys_time_get_system_time();
       uiSetHintShown(&hints, HINT_NEW_CODE, stage == STAGE_EXPIRED || stage == STAGE_DENIED || stage == STAGE_FAILED);
-      uiSetHintCaption(&hints, HINT_BACK, stage == STAGE_SIGNED_IN ? "Done" : "Back");
+      uiSetHintCaption(&hints, HINT_BACK, stage == STAGE_SIGNED_IN ? "Listo" : "Atrás");
    }
 
    if (isPadButtonPressed(PAD_BTN_CIRCLE)) { closeScreen(); return; }

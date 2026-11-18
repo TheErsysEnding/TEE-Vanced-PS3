@@ -529,7 +529,7 @@ int listDownloads(SearchResults *out)
          if (states[p] == 1 && activeFormat[0]) strCopy(item->views, sizeof item->views, activeFormat);
          else strCopy(item->views, sizeof item->views, pending[p].quality == DOWNLOAD_1440P ? "1440p60 \xC2\xB7 VP9"
                                                                                        : "1080p60 \xC2\xB7 H.264");
-         strCopy(item->published, sizeof item->published, states[p] == 1 ? "Downloading" : "Waiting");
+         strCopy(item->published, sizeof item->published, states[p] == 1 ? "Descargando" : "En espera");
          item->downloadState = states[p];
       }
       out->count += pendingCount;
@@ -730,10 +730,10 @@ static void downloadWorker(uint64_t arg)
          const char *more = strcmp(title, item.title) != 0 ? "..." : "";
          int toXmb = item.quality == DOWNLOAD_XMB || item.fromGallery || item.remuxLocal;
          if (dl.outcome == OUTCOME_DONE)
-            snprintf(dl.resultText, sizeof dl.resultText, toXmb ? "In the XMB's Video column: \"%s%s\"" : "Downloaded \"%s%s\"",
+            snprintf(dl.resultText, sizeof dl.resultText, toXmb ? "En la columna Video del XMB: \"%s%s\"" : "Descargado: \"%s%s\"",
                      title, more);
          else
-            snprintf(dl.resultText, sizeof dl.resultText, "Download failed at %d%%: \"%s%s\"",
+            snprintf(dl.resultText, sizeof dl.resultText, "Falló la descarga al %d%%: \"%s%s\"",
                      dl.percent < 0 ? 0 : dl.percent > 99 ? 99 : dl.percent, title, more);
          dl.resultOk = dl.outcome == OUTCOME_DONE;
          dl.resultSeq++;
@@ -822,7 +822,7 @@ static void formatOverlay(char *out, int cap)
    truncateUtf8(clipped, DISPLAY_TITLE_MAX);
    int truncated = strcmp(clipped, dl.activeTitle) != 0;
 
-   snprintf(out, cap, "Downloading \"%s%s\"", clipped, truncated ? "..." : "");
+   snprintf(out, cap, "Descargando \"%s%s\"", clipped, truncated ? "..." : "");
 }
 
 void updateDownloadOverlay(void)

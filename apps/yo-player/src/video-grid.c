@@ -541,7 +541,7 @@ static void materializeTile(VideoGrid *grid, int i)
       int indent = grid->avatarMeta[i] ? CARD_AVATAR + CARD_AVATAR_GAP : 0;
       setFittedText(&grid->metas[i], uiPickFont(META_WEIGHT, meta), grid->textW - indent, meta);
    }
-   uiSetTextLabel(&grid->durations[i], UI_BADGE_WEIGHT, item->isLive ? "LIVE" : item->duration);
+   uiSetTextLabel(&grid->durations[i], UI_BADGE_WEIGHT, item->isLive ? "EN VIVO" : item->duration);
 }
 
 // The thumbnail is retired rather than freed: a page turn in the list view moves the window by three rows,
@@ -732,8 +732,8 @@ void initVideoGrid(VideoGrid *grid, Font *font, int x, int y, int width, int hei
 
    computeGeometry(grid);
    layoutLabels(grid);
-   uiInitLabel(&grid->watchLaterBadge, UI_BADGE_WEIGHT, 0, 0, AUTO, UI_BADGE_SIZE, activeTheme->textPrimary, TEXT_NOWRAP, "Watch Later");
-   uiInitLabel(&grid->watchedBadge, UI_BADGE_WEIGHT, 0, 0, AUTO, UI_BADGE_SIZE, activeTheme->textSecondary, TEXT_NOWRAP, "WATCHED");
+   uiInitLabel(&grid->watchLaterBadge, UI_BADGE_WEIGHT, 0, 0, AUTO, UI_BADGE_SIZE, activeTheme->textPrimary, TEXT_NOWRAP, "Ver más tarde");
+   uiInitLabel(&grid->watchedBadge, UI_BADGE_WEIGHT, 0, 0, AUTO, UI_BADGE_SIZE, activeTheme->textSecondary, TEXT_NOWRAP, "VISTO");
 }
 
 // ---- the Home preview (V3.0.0) ----
@@ -833,8 +833,8 @@ static void heroDownloadText(const SearchResult *item, char *out, int cap)
 {
    int percent = 0;
    int state = getDownloadProgress(item->videoId, &percent);
-   if (state == 1) snprintf(out, cap, "Downloading \xC2\xB7 %d%%", percent);
-   else            snprintf(out, cap, "%s", state == 2 ? "Waiting" : "Downloading");
+   if (state == 1) snprintf(out, cap, "Descargando \xC2\xB7 %d%%", percent);
+   else            snprintf(out, cap, "%s", state == 2 ? "En espera" : "Descargando");
 }
 
 static void labelHero(VideoGrid *grid, int i)
@@ -862,15 +862,15 @@ static void labelHero(VideoGrid *grid, int i)
    int total = durationToSeconds(item->duration);
    int position = (grid->watchedPosition && !item->isLive) ? grid->watchedPosition(item->videoId) : 0;
    int watched = !(total > 0 && position > 0) && !item->isLive && grid->isWatched && grid->isWatched(item->videoId);
-   const char *badge = item->isLive ? "LIVE" : watched ? "Watched"
-                     : (grid->isWatchLater && grid->isWatchLater(item->videoId)) ? "Watch Later" : "";
+   const char *badge = item->isLive ? "EN VIVO" : watched ? "Visto"
+                     : (grid->isWatchLater && grid->isWatchLater(item->videoId)) ? "Ver más tarde" : "";
    setLabelText(&grid->heroBadge, item->downloadState ? "" : badge);
    char left[32];
    left[0] = 0;
    if (item->downloadState) heroDownloadText(item, left, sizeof left);   // (V3.0.0) its download, not its viewing
    else if (total > 0 && position > 0 && position < total) {
       int minutes = (total - position + 59) / 60;
-      snprintf(left, sizeof left, "%d min left", minutes);
+      snprintf(left, sizeof left, "faltan %d min", minutes);
    }
    setLabelText(&grid->heroLeft, left);
 }
@@ -1436,7 +1436,7 @@ void formatGridPage(const VideoGrid *grid, char *out, int cap)
 {
    // youtube's feeds are continuation-based and never state a total, so the count is what is loaded so far;
    // the trailing + says it is still a running figure rather than the end of the results.
-   snprintf(out, cap, "Page %d / %d%s", grid->page + 1, pageCount(grid), gridHasMorePages(grid) ? "+" : "");
+   snprintf(out, cap, "Página %d / %d%s", grid->page + 1, pageCount(grid), gridHasMorePages(grid) ? "+" : "");
 }
 
 GridStage            gridStage(const VideoGrid *grid)    { return grid->stage; }
