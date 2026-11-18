@@ -209,9 +209,9 @@ static void rowQuality(const SearchResult *item, char *out, int cap)
    const VideoDetails *details = findVideoDetails(item->videoId);
    char quality[16] = "";
    if (details && !details->failed) formatVideoQuality(quality, sizeof quality, details->bestHeight, details->bestFps);
-   if (item->isLive) snprintf(out, cap, quality[0] ? "LIVE" DOT "%s" : "LIVE", quality);
+   if (item->isLive) snprintf(out, cap, quality[0] ? "EN VIVO" DOT "%s" : "EN VIVO", quality);
    else if (quality[0]) snprintf(out, cap, "%s", quality);
-   else if (details) snprintf(out, cap, "%s", details->failed ? "Quality not known" : "Nothing it can play");
+   else if (details) snprintf(out, cap, "%s", details->failed ? "Calidad desconocida" : "Nada que se pueda reproducir");
    else snprintf(out, cap, "...");
 }
 
@@ -261,7 +261,7 @@ static void labelPanel(const SearchResult *item)
                item->published[0] ? DOT : "", item->published);
       uiSetTextLabel(&panelMeta, UI_WEIGHT_SEMIBOLD, meta);
       uiSetTextLabel(&durationChip, UI_WEIGHT_BOLD, item->isLive ? "" : item->duration);
-      setLabelText(&liveChip, item->isLive ? "LIVE" : "");
+      setLabelText(&liveChip, item->isLive ? "EN VIVO" : "");
       uiSetTextLabel(&channelName, UI_WEIGHT_BOLD, item->author[0] ? item->author : "");
       strCopy(panelChannelId, sizeof panelChannelId, item->channelId);
       panelFollowing = -1;
@@ -278,22 +278,22 @@ static void labelPanel(const SearchResult *item)
          char playing[16];
          formatVideoQuality(playing, sizeof playing, details->playHeight, details->playFps);
          if (!quality[0])
-            snprintf(note, sizeof note, "The PS3 has no stream of it that it can play.");
+            snprintf(note, sizeof note, "La PS3 no puede reproducir ninguna transmisión de este video.");
          else if (playing[0] && strcmp(playing, quality) != 0 && details->qualityCap == 0)
-            snprintf(note, sizeof note, "Auto plays it at %s - choose %dp in the player's options (START) for its "
-                     "best.", playing, details->bestHeight);
+            snprintf(note, sizeof note, "Auto lo reproduce a %s: elige %dp en las opciones del reproductor (START) para la mejor calidad."
+                     "", playing, details->bestHeight);
          else if (playing[0] && strcmp(playing, quality) != 0)
-            snprintf(note, sizeof note, "Plays at %s with your quality setting (%dp).", playing, details->qualityCap);
+            snprintf(note, sizeof note, "Se reproduce a %s con tu ajuste de calidad (%dp).", playing, details->qualityCap);
          else if (details->bestHeight >= 1440 && details->bestFps >= 50)
-            snprintf(note, sizeof note, "The best the PS3 plays. In its busiest moments it can drop to 1080p60 for a "
-                     "few seconds.");
+            snprintf(note, sizeof note, "Lo mejor que reproduce la PS3. En los momentos más exigentes puede bajar a 1080p60 unos segundos."
+                     "");
          else
-            snprintf(note, sizeof note, "The best the PS3 plays of it.");
+            snprintf(note, sizeof note, "Lo mejor que reproduce la PS3 de este video.");
          char text[16];
-         snprintf(text, sizeof text, "%d audio tracks", details->audioTracks);
+         snprintf(text, sizeof text, "%d pistas de audio", details->audioTracks);
          setLabelText(&audioChip, details->audioTracks > 1 ? text : "");
-         setLabelText(&subsChip, details->captions > 0 ? "Subtitles" : "");
-         setLabelText(&rewindChip, details->isLive && details->liveDvr ? "Rewind" : "");
+         setLabelText(&subsChip, details->captions > 0 ? "Subtítulos" : "");
+         setLabelText(&rewindChip, details->isLive && details->liveDvr ? "Rebobinar" : "");
 
          // the start of the description, wrapped to the panel; the draw shows as many whole lines as there is room
          static char description[DETAILS_DESCRIPTION_CAP + 8];
@@ -308,7 +308,7 @@ static void labelPanel(const SearchResult *item)
          setLabelText(&audioChip, "");
          setLabelText(&subsChip, "");
          setLabelText(&rewindChip, "");
-         if (details) snprintf(note, sizeof note, "Its details could not be fetched.");
+         if (details) snprintf(note, sizeof note, "No se pudieron obtener sus detalles.");
       }
       setLabelText(&qualityChip, quality);
       setLabelText(&noteLabel, note);
@@ -317,8 +317,8 @@ static void labelPanel(const SearchResult *item)
    int following = isFollowing(item->channelId);
    if (following != panelFollowing) {
       panelFollowing = following;
-      setLabelText(&subscribeButton, following ? "Unsubscribe" : "Subscribe");
-      setLabelText(&channelState, following ? "Subscribed" : "");
+      setLabelText(&subscribeButton, following ? "Cancelar suscripción" : "Suscribirse");
+      setLabelText(&channelState, following ? "Suscrito" : "");
    }
 }
 
@@ -348,12 +348,12 @@ void initHomeList(HomeList *list, int listTop, int embedded)
    uiInitLabel(&subsChip, UI_WEIGHT_BOLD, 0, 0, AUTO, PANEL_CHIP_SIZE, TINTABLE, TEXT_NOWRAP, "");
    uiInitLabel(&audioChip, UI_WEIGHT_BOLD, 0, 0, AUTO, PANEL_CHIP_SIZE, TINTABLE, TEXT_NOWRAP, "");
    uiInitLabel(&rewindChip, UI_WEIGHT_BOLD, 0, 0, AUTO, PANEL_CHIP_SIZE, TINTABLE, TEXT_NOWRAP, "");
-   uiInitLabel(&checkingLabel, UI_WEIGHT_SEMIBOLD, 0, 0, AUTO, PANEL_NOTE_SIZE, TINTABLE, TEXT_NOWRAP, "Checking the quality...");
+   uiInitLabel(&checkingLabel, UI_WEIGHT_SEMIBOLD, 0, 0, AUTO, PANEL_NOTE_SIZE, TINTABLE, TEXT_NOWRAP, "Comprobando la calidad...");
    uiInitLabel(&noteLabel, UI_WEIGHT_SEMIBOLD, 0, 0, PANEL_W, PANEL_NOTE_SIZE, TINTABLE, TEXT_WRAP, "");
    uiInitTextLabel(&channelName, UI_WEIGHT_BOLD, 0, 0, CHANNEL_NAME_W, 26, TINTABLE, TEXT_NOWRAP_ELLIPSIS, "");
    uiInitLabel(&channelState, UI_WEIGHT_SEMIBOLD, 0, 0, AUTO, 20, TINTABLE, TEXT_NOWRAP, "");
-   uiInitLabel(&channelButton, UI_WEIGHT_BOLD, 0, 0, AUTO, BUTTON_SIZE, TINTABLE, TEXT_NOWRAP, "Channel");
-   uiInitLabel(&subscribeButton, UI_WEIGHT_BOLD, 0, 0, AUTO, BUTTON_SIZE, TINTABLE, TEXT_NOWRAP, "Subscribe");
+   uiInitLabel(&channelButton, UI_WEIGHT_BOLD, 0, 0, AUTO, BUTTON_SIZE, TINTABLE, TEXT_NOWRAP, "Canal");
+   uiInitLabel(&subscribeButton, UI_WEIGHT_BOLD, 0, 0, AUTO, BUTTON_SIZE, TINTABLE, TEXT_NOWRAP, "Suscribirse");
    memset(&descTex, 0, sizeof descTex);
    panelVideoId[0] = 0;
 }
@@ -438,15 +438,15 @@ int toggleHomeListSubscription(const SearchResult *item, char *message, int cap)
    int rc = setSubscribed(item->channelId, item->author, wantOn);
    if (rc == SUBSCRIBE_OK) return 0;
    if (rc == SUBSCRIBE_ERR_FULL)
-      snprintf(message, cap, "Subscription list is full - %d channels is the maximum.", MAX_SUBSCRIPTIONS);
+      snprintf(message, cap, "La lista de suscripciones está llena: el máximo es de %d canales.", MAX_SUBSCRIPTIONS);
    else if (rc == SUBSCRIBE_ERR_WRITE && !isStorageWritable())
-      snprintf(message, cap, "The data folder could not be created or written at startup, so nothing can be saved.\n\n%s",
+      snprintf(message, cap, "No se pudo crear ni escribir la carpeta de datos al iniciar, así que no se puede guardar nada.\n\n%s",
                getSubscriptionsPath());
    else if (rc == SUBSCRIBE_ERR_WRITE)
-      snprintf(message, cap, "%s - but it could not be saved, so it will be gone after a restart.\n\n%s",
-               wantOn ? "Subscribed" : "Unsubscribed", getSubscriptionsPath());
+      snprintf(message, cap, "%s, pero no se pudo guardar y se perderá al reiniciar.\n\n%s",
+               wantOn ? "Suscrito" : "Suscripción cancelada", getSubscriptionsPath());
    else
-      snprintf(message, cap, "This channel has no usable id, so it cannot be subscribed to.");
+      snprintf(message, cap, "Este canal no tiene un ID válido, así que no se puede suscribir.");
    return 1;
 }
 

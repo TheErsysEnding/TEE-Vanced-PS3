@@ -581,14 +581,14 @@ static void applyChange(AccountAction action, const char *id, int undo)
 static void refuseChange(const AccountChange *change)
 {
    static const char *WHAT[] = {
-      "YouTube did not add the video to Watch Later.",
-      "YouTube did not remove the video from Watch Later.",
-      "YouTube did not take the subscription.",
-      "YouTube did not take the unsubscribe.",
+      "YouTube no añadió el video a Ver más tarde.",
+      "YouTube no quitó el video de Ver más tarde.",
+      "YouTube no aceptó la suscripción.",
+      "YouTube no aceptó la cancelación de la suscripción.",
    };
    lock(&listsLock);
    applyChange(change->action, change->id, 1);
-   snprintf(failureText, sizeof failureText, "%s Check the connection and try again.", WHAT[change->action]);
+   snprintf(failureText, sizeof failureText, "%s Revisa la conexión e inténtalo de nuevo.", WHAT[change->action]);
    failurePending = 1;
    unlock(&listsLock);
 }

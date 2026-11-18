@@ -35,7 +35,7 @@
 #define HEADER_Y       67
 #define HEADER_H       45
 #define LIST_TOP       160
-// The pitch is what CHOOSE mode's 13 rows (12 lists + "New playlist...") allow: the last plate ends at y 958 and
+// The pitch is what CHOOSE mode's 13 rows (12 lists + "Lista nueva...") allow: the last plate ends at y 958 and
 // its ring at 967, clear of the hint row at 998. The 54-px plate still keeps 24-px text and its descenders well
 // inside. Signed in, the account's playlists come on top, and a window of rows follows the selection.
 #define LIST_CLEAR     30       // the last plate ends at least this far above the hint row
@@ -61,7 +61,7 @@
 
 typedef enum { MODE_BROWSE, MODE_CHOOSE } PlaylistMode;
 
-// In CHOOSE mode row 0 is "New playlist..." and the lists follow; in BROWSE mode the lists start at row 0
+// In CHOOSE mode row 0 is "Lista nueva..." and the lists follow; in BROWSE mode the lists start at row 0
 // and START makes a new one. Keeping the extra row out of BROWSE means the common case - open a list - has
 // nothing in front of it.
 #define CHOOSE_NEW_ROW 0
@@ -170,7 +170,7 @@ static void onNameTyped(const char *text)
 {
    if (!text || !text[0]) return;
    int created = createPlaylist(text);
-   if (created < 0) { showNotice("That is as many playlists as this app keeps.", 0); return; }
+   if (created < 0) { showNotice("Ya tienes el máximo de listas que guarda esta app.", 0); return; }
 
    if (mode == MODE_CHOOSE) {
       addToPlaylist(created, &pendingItem);
@@ -184,7 +184,7 @@ static void onNameTyped(const char *text)
 static void activateRow(void)
 {
    if (mode == MODE_CHOOSE && state.selected == CHOOSE_NEW_ROW) {
-      oskInputBegin("Name the playlist", "", onNameTyped);
+      oskInputBegin("Nombre de la lista", "", onNameTyped);
       return;
    }
 
@@ -201,7 +201,7 @@ static void activateRow(void)
 
    if (mode == MODE_CHOOSE) {
       int rc = addToPlaylist(playlist, &pendingItem);
-      if (rc == PLAYLIST_FULL) { showNotice("That playlist is full.", 0); return; }
+      if (rc == PLAYLIST_FULL) { showNotice("Esa lista está llena.", 0); return; }
       popScreen();   // filed, silently: the list it went into is the confirmation
       return;
    }
@@ -236,14 +236,14 @@ static void initPlaylistScreen(void)
 
    uiInitLabel(&titleLabel, UI_PAGE_TITLE_WEIGHT, CONTENT_X, 0, UI_SAFE_RIGHT - CONTENT_X, UI_PAGE_TITLE_SIZE,
                activeTheme->textPrimary, TEXT_NOWRAP_ELLIPSIS,
-               mode == MODE_CHOOSE ? "Add to playlist" : "Playlists");
+               mode == MODE_CHOOSE ? "Añadir a lista" : "Listas");
    // one line at this size (about 930 px), but wrapped inside the safe area rather than clipped should a font
    // ever draw it wider - it was an unwrapped line that simply stopped at its width
    uiInitLabel(&emptyLabel, UI_BODY_WEIGHT, CONTENT_X, 0, UI_SAFE_RIGHT - CONTENT_X, UI_BODY_SIZE,
                activeTheme->textSecondary, TEXT_WRAP,
-               "No playlists yet - press START to make one, or L3 on any video to file it straight into a new list.");
+               "Aún no hay listas: pulsa START para crear una, o L3 en cualquier video para meterlo directo en una lista nueva.");
    // the one row that makes something rather than opens it, in the accent's text colour
-   uiInitLabel(&newLabel, ROW_WEIGHT, 0, 0, textW, ROW_TEXT, activeTheme->accentText, TEXT_NOWRAP_ELLIPSIS, "New playlist...");
+   uiInitLabel(&newLabel, ROW_WEIGHT, 0, 0, textW, ROW_TEXT, activeTheme->accentText, TEXT_NOWRAP_ELLIPSIS, "Lista nueva...");
 
    for (int i = 0; i < MAX_PLAYLISTS; i++) {
       uiInitTextLabel(&rowLabels[i], ROW_WEIGHT,     0, 0, textW, ROW_TEXT,     activeTheme->textPrimary,   TEXT_NOWRAP_ELLIPSIS, "");
@@ -261,21 +261,21 @@ static void initPlaylistScreen(void)
                    activeTheme->textPrimary, TEXT_WRAP, "");
    // the notice's own line: the console's buttons, where the old text spelled "Press X to close"
    uiInitHints(&closeHints);
-   uiAddHint(&closeHints, GLYPH_CROSS, "Close");
+   uiAddHint(&closeHints, GLYPH_CROSS, "Cerrar");
    uiInitHints(&confirmHints);
-   uiAddHint(&confirmHints, GLYPH_CROSS,  "Delete");
-   uiAddHint(&confirmHints, GLYPH_CIRCLE, "Cancel");
+   uiAddHint(&confirmHints, GLYPH_CROSS,  "Eliminar");
+   uiAddHint(&confirmHints, GLYPH_CIRCLE, "Cancelar");
 
    initIcon(&rowIcon, ICON_DOCS, ICON_SIZE);
    initIcon(&newIcon, ICON_PLUS_CIRCLED, ICON_SIZE);
 
    uiInitHints(&hints);
-   uiAddHint(&hints, GLYPH_CROSS,  mode == MODE_CHOOSE ? "Add here" : "Open");
-   uiAddHint(&hints, GLYPH_CIRCLE, "Back");
+   uiAddHint(&hints, GLYPH_CROSS,  mode == MODE_CHOOSE ? "Añadir aquí" : "Abrir");
+   uiAddHint(&hints, GLYPH_CIRCLE, "Atrás");
    if (mode == MODE_BROWSE) {
-      uiAddHint(&hints, GLYPH_START,  "New");
-      uiAddHint(&hints, GLYPH_SQUARE, "Delete");
-      uiAddHint(&hints, GLYPH_DPAD_LEFT, "Menu");   // opened from the rail, the rail opens here as on Home
+      uiAddHint(&hints, GLYPH_START,  "Nueva");
+      uiAddHint(&hints, GLYPH_SQUARE, "Eliminar");
+      uiAddHint(&hints, GLYPH_DPAD_LEFT, "Menú");   // opened from the rail, the rail opens here as on Home
    }
 
    memset(&navigateRepeat, 0, sizeof navigateRepeat);
@@ -331,7 +331,7 @@ static void updatePlaylistScreen(void)
    }
 
    if (mode == MODE_BROWSE && isPadButtonPressed(PAD_BTN_START)) {
-      oskInputBegin("Name the playlist", "", onNameTyped);
+      oskInputBegin("Nombre de la lista", "", onNameTyped);
       return;
    }
 
@@ -340,7 +340,7 @@ static void updatePlaylistScreen(void)
       int playlist = playlistForRow(state.selected);
       if (playlist >= 0 && playlist < getPlaylistCount()) {
          char message[160];
-         snprintf(message, sizeof message, "Delete the playlist %s and its %d video(s)?",
+         snprintf(message, sizeof message, "¿Eliminar la lista %s y sus %d video(s)?",
                   getPlaylistName(playlist), getPlaylistItemCount(playlist));
          state.deleteTarget = playlist;
          showNotice(message, 1);
@@ -352,7 +352,7 @@ static void updatePlaylistScreen(void)
 }
 
 // The baseline that centres row text in a plate starting at plateY, measured on Manrope. The name, its count
-// and "New playlist..." all sit on it, so a name that had to be drawn in FONT_POP (Japanese, emoji ...) still
+// and "Lista nueva..." all sit on it, so a name that had to be drawn in FONT_POP (Japanese, emoji ...) still
 // lines up with the Manrope count beside it - the two fonts put their glyphs at different heights in a texture.
 static int rowBaseline(int plateY)
 {

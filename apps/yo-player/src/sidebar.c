@@ -86,8 +86,8 @@ static const IconId ITEM_ICONS[SIDE_COUNT] = {
 };
 
 static const char *ITEM_NAMES[SIDE_COUNT] = {
-   "Search", "For you", "Trending", "Live", "Subscriptions", "Continue watching",
-   "Playlists", "Watch Later", "History", "Downloads", "Login", "Settings",
+   "Buscar", "Para ti", "Tendencias", "En vivo", "Suscripciones", "Seguir viendo",
+   "Listas", "Ver más tarde", "Historial", "Descargas", "Acceder", "Ajustes",
 };
 
 static Icon  icons[SIDE_COUNT];
@@ -106,7 +106,7 @@ static int   panelWidth = PANEL_MIN_W;   // PANEL_MIN_W, or wider when the longe
 int isSidebarItemEnabled(SidebarItem item) { (void)item; return 1; }   // every entry leads somewhere now
 const char *sidebarItemName(SidebarItem item)
 {
-   if (item == SIDE_ACCOUNT && isAccountSignedIn()) return "Account";
+   if (item == SIDE_ACCOUNT && isAccountSignedIn()) return "Cuenta";
    return (item >= 0 && item < SIDE_COUNT) ? ITEM_NAMES[item] : "";
 }
 
@@ -134,7 +134,7 @@ void initSidebar(void)
    initIcon(&dlIcon, ICON_DOWNLOAD, DL_ICON_SIZE);
    uiInitLabel(&dlCountLabel, UI_WEIGHT_EXTRABOLD, 0, 0, AUTO, DL_COUNT_SIZE, TEXT_TINTABLE, TEXT_NOWRAP, "");
    uiInitLabel(&dlTextLabel, LABEL_WEIGHT, 0, 0, AUTO, DL_TEXT_SIZE, TEXT_TINTABLE, TEXT_NOWRAP, "");
-   uiInitLabel(&accountLabel, LABEL_WEIGHT, 0, 0, AUTO, LABEL_SIZE, TEXT_TINTABLE, TEXT_NOWRAP, "Account");
+   uiInitLabel(&accountLabel, LABEL_WEIGHT, 0, 0, AUTO, LABEL_SIZE, TEXT_TINTABLE, TEXT_NOWRAP, "Cuenta");
 }
 
 void termSidebar(void)
