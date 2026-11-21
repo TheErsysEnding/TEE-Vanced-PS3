@@ -24,10 +24,12 @@ static int teeDecodableVideo(const StreamFormat *format)
 // (V3.0.0) VP9 1440p on the TEE VP9 building block: WebM, above 1080p, up to 2560 x 1440, not live (live plays its
 // DASH segments as mp4). It is played only when asked for - picked in the quality list, or a quality cap of 1440
 // saved by such a pick - never by Auto or for a download: with all 6 SPEs on the picture it has no sound.
+// (V3.1.0) 4K too: 2160p at 24 / 25 / 30 fps (itag 313) on TEE VP9 0.3.2, picked the same way
 static int vp9Video(const StreamFormat *format)
 {
-   return format->isVp9 && !format->isLiveSegmented && strcmp(format->container, "webm") == 0 &&
-          format->height > 1080 && format->height <= 1440 && format->width <= 2560;
+   return format->isVp9 && !format->isLiveSegmented && strcmp(format->container, "webm") == 0 && format->height > 1080 &&
+          ((format->height <= 1440 && format->width <= 2560) ||
+           (format->height <= 2160 && format->width <= 3840 && format->fps <= 30));
 }
 
 static int isLiveInfo(const StreamInfo *info)

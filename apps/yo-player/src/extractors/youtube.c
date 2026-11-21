@@ -409,8 +409,10 @@ static void parseFormatArray(const char *arrayStart, const char *regionEnd, int 
       // the TEE VP9 building block decodes on the SPEs. Profile 0 only - codecs="vp9" or "vp09.00..." - the HDR
       // ones (vp09.02, 10 bit) it refuses. Lower VP9 stays out: H.264 covers it, and every format kept takes an
       // array slot the AAC audio (listed after all the video) needs.
+      // (V3.1.0) and 4K at 24 / 25 / 30 fps (itag 313) on TEE VP9 0.3.2 - not 4K60 (315): too heavy for the SPEs
       int isVp9 = strstr(mimeType, "webm") && (strstr(mimeType, "\"vp9\"") || strstr(mimeType, "vp09.00.")) &&
-                  format->height > 1080 && format->height <= 1440 && format->width <= 2560;
+                  format->height > 1080 && ((format->height <= 1440 && format->width <= 2560) ||
+                                            (format->height <= 2160 && format->width <= 3840 && format->fps <= 30));
       // (Test 14) VP9 1080p - 303 at 60 fps, 248 at 30 - is kept after all, beside 1440p: the stream the player changes
       // to where 1440p is too heavy for the decoder (the VP9 session's measurement: 86 - 97 pictures a second in 1080p)
       int isVp9Low = strstr(mimeType, "webm") && (strstr(mimeType, "\"vp9\"") || strstr(mimeType, "vp09.00.")) &&

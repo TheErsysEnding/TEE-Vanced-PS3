@@ -389,7 +389,7 @@ static struct {
    char             opusUrl[MAX_STREAM_URL];    // ... and the Opus one (VP9's): a quality switch takes the right one
    // (Test 14) the 1080p VP9 stream beside each 1440p one of the video (303 beside 308, 248 beside 271): a player on
    // the 1440p one gets it beside, and changes over to it where 1440p is too heavy (createVideoPlayerVp9)
-   struct { char mainUrl[MAX_STREAM_URL], lowUrl[MAX_STREAM_URL]; int lowItag, lowW, lowH; } vp9Pairs[2];
+   struct { char mainUrl[MAX_STREAM_URL], lowUrl[MAX_STREAM_URL]; int lowItag, lowW, lowH; } vp9Pairs[3];   // (V3.1.0) 4K's too
    int              vp9PairCount;
    int              vp9LowItag, vp9LowW, vp9LowH;   // the pair of the player built last (the stats panel's 1080p line)
    int              reopenPending;     // the player is being rebuilt after the end (reopenAt)
@@ -559,16 +559,20 @@ static void addTranslatedSubtitles(const StreamInfo *info)
 
 // builds the player for a video and its audio; for an ended live stream picked up where it was left (playSq >= 0)
 // both descriptors begin at that segment
-// (Test 14) the 1440p VP9 streams of the video with the 1080p VP9 stream of the same frame rate beside each
+// (Test 14) the 1440p VP9 streams of the video with the 1080p VP9 stream of the same frame rate beside each.
+// (V3.1.0) A 4K stream gets the video's 1440p VP9 stream of its frame rate beside it (313 with 271)
 static void pairVp9Streams(const StreamInfo *info)
 {
    state.vp9PairCount = 0;
-   for (int i = 0; i < info->formatCount && state.vp9PairCount < 2; i++) {
+   for (int i = 0; i < info->formatCount && state.vp9PairCount < 3; i++) {
       const StreamFormat *high = &info->formats[i];
       if (!high->hasVideo || !high->isVp9 || high->height <= 1080 || !high->url[0]) continue;
       for (int j = 0; j < info->formatCount; j++) {
          const StreamFormat *low = &info->formats[j];
-         if (!low->vp9Fallback || !low->url[0] || low->needsCipher || (low->fps >= 50) != (high->fps >= 50)) continue;
+         int lowFits = high->height > 1440 ? low->hasVideo && low->isVp9 && !low->vp9Fallback && low->height > 1080 &&
+                                             low->height <= 1440
+                                           : low->vp9Fallback;
+         if (!lowFits || !low->url[0] || low->needsCipher || (low->fps >= 50) != (high->fps >= 50)) continue;
          strCopy(state.vp9Pairs[state.vp9PairCount].mainUrl, MAX_STREAM_URL, high->url);
          strCopy(state.vp9Pairs[state.vp9PairCount].lowUrl, MAX_STREAM_URL, low->url);
          state.vp9Pairs[state.vp9PairCount].lowItag = low->itag;
@@ -2409,9 +2413,9 @@ static void updateStatLabels(void)
    getAudioTrackInfo(state.player, &rate, &channels);
    float pos = getVideoPositionSeconds(state.player), duration = getVideoDurationSeconds(state.player);
 
-   if (isVideoOnLowTrack(state.player))   // (Test 14) the 1080p stream plays where 1440p is too heavy
-      snprintf(line, sizeof line, "Video  itag %d   %dx%d   VP9 (1440p too heavy)", state.vp9LowItag, state.vp9LowW,
-               state.vp9LowH);
+   if (isVideoOnLowTrack(state.player))   // (Test 14) the 1080p stream plays where 1440p is too heavy (V3.1.0: or 1440p for 4K)
+      snprintf(line, sizeof line, "Video  itag %d   %dx%d   VP9 (%dp too heavy)", state.vp9LowItag, state.vp9LowW,
+               state.vp9LowH, state.vidH);
    else
       snprintf(line, sizeof line, "Video  itag %d   %dx%d   %s", state.vidItag, state.vidW, state.vidH,
                isVideoVp9(state.player) ? "VP9" : "H.264");
