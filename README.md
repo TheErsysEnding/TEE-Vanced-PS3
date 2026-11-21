@@ -262,7 +262,10 @@ use it, in free or closed software, commercially too; changes to the decoder
 itself stay open. The TEE VP9 decoder (`libs/simple-lib-av/src/tee_vp9/`) and the
 TEE Opus building block (`libs/simple-lib-av/tee_opus/`) are TEE's own work and
 have no licence of their own yet; the code they contain from libvpx and libopus is
-under those projects' licences, reproduced in [NOTICE](NOTICE). The TEE name, logo
+under those projects' licences, reproduced in [NOTICE](NOTICE). Since V3.1.0 the TEE
+VP9 decoder's RSX part is in the program as well: its tables follow libvpx (the same
+licence), and its RSX command words (`rsx_emit.h`) are derived from PSL1GHT's librsx,
+under the MIT licence also reproduced in [NOTICE](NOTICE). The TEE name, logo
 and the artwork in `branding/` are not part of any of these licences.
 
 Contact: github@teebug.de · More from TEE: [linktr.ee/theersysending](https://linktr.ee/theersysending)

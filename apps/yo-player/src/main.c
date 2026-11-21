@@ -57,10 +57,22 @@ int main(int argc, char **argv)
    registerWithBridge("app", "yo-player");
    logBuildVersion();   // after registration, so the build line also reaches the bridge client's Logs tab
 
+   // (V3.1.0 Test 4) gfx-share= decides how initGfx sets the command buffer up, and loadSettings runs after initGfx: read
+   // here, from settings.txt, a bench job's global gfx-share= winning (one launch with it); rsx-test=small-cb shortens the buffer
+   char shareValue[8], rsxTest[16];
+   int gfxShare = readEarlySetting("gfx-share", shareValue, sizeof shareValue) && strcmp(shareValue, "on") == 0;
+   if (peekBenchGlobal("gfx-share", shareValue, sizeof shareValue)) {
+      gfxShare = strcmp(shareValue, "on") == 0;
+      logInfo("[yt] gfx-share %s for this launch (the bench job's)\n", gfxShare ? "on" : "off");
+   }
+   if (!readEarlySetting("rsx-test", rsxTest, sizeof rsxTest)) rsxTest[0] = 0;
+   setGfxShareMode(gfxShare, rsxTest);
    if (initGfx(GFX_VSYNC_ON) != 0) return 1;
    // (V3.1.0 Test 3) the player paces display sync by the screen's vblanks and flips, and gives a picture back once the
-   // flip after it has happened
-   static const VideoDisplayHooks displayHooks = { getGfxNextFlipId, getGfxFlipsDone, getGfxVblanksMissed };
+   // flip after it has happened. (V3.1.0 Test 4) ... and asks the display for TEE VP9's RSX part (gfx.h)
+   static const VideoDisplayHooks displayHooks = { getGfxNextFlipId, getGfxFlipsDone, getGfxVblanksMissed, isGfxRsxAllowed,
+                                                   isGfxRsxReadable, pauseGfxDrawing, resumeGfxDrawing, brakeGfxRsx,
+                                                   setGfxRsxActive };
    setVideoDisplayHooks(&displayHooks);
    if (initAudio() != 0) return 1;
    if (initFont() != 0) return 1;
@@ -75,6 +87,8 @@ int main(int argc, char **argv)
    // (V3.1.0 Test 3) the player's switches, and the log on a thread of its own (a job file may ask for log=sync)
    setVideoDisplaySync(getDisplaySyncByFlips());
    setVideoVp9ReleaseEarly(getVp9ReleaseEarly());
+   setVideoVp9Rsx(getVp9Rsx());            // (V3.1.0 Test 4) TEE VP9's RSX part - with gfx-share=on only
+   setVideoVp9RsxTest(getRsxTest());
    int logAsync = getLogAsync();
    char benchLog[8];
    if (peekBenchGlobal("log", benchLog, sizeof benchLog)) logAsync = strcmp(benchLog, "sync") != 0;

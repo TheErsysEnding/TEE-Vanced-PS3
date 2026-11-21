@@ -10,10 +10,14 @@
 
 #include <sys/timer.h>
 #include <sys/sys_time.h>
+#include <sys/synchronization.h>   // (V3.1.0 Test 4) the command buffer's lock, shared with TEE VP9's RSX part
+#include <sys/ppu_thread.h>        // ... and which thread draws (a pause from another one)
 #include <cell/gcm.h>
 #include <cell/codec/pngdec.h>
 #include <cell/sysmodule.h>
 #include <sysutil/sysutil_sysparam.h>
+
+#include "../../simple-lib-av/src/tee_vp9/tv9_rsx_host.h"   // (V3.1.0 Test 4) what TEE VP9's RSX part asks of this file
 
 #define CTX gCellGcmCurrentContext
 
@@ -21,6 +25,27 @@
 #define HOST_MEM_SIZE     (1 * 1024 * 1024)
 #define CMD_BUFFER_SIZE   (0x10000)
 #define BYTES_PER_PIXEL   4
+
+// (V3.1.0 Test 4) gfx-share=on, the command buffer shared with TEE VP9's RSX part (see "one command buffer" below)
+#define SHARED_CMD_BYTES     0xF0000         // in the same 1 MB host block: cellGcmInit wants the buffer at least 1 KB short of
+                                             // it (the RSX reads 1 KB ahead), and 64 KB stay mapped behind it
+#define SHARED_SLACK_BYTES   256             // end stays this far before the piece's real end: room for the restart's jump
+#define SHARED_SMALL_BYTES   (48 * 1024)     // rsx-test=small-cb: a piece this long, so that it starts over every frame or two
+#define BURST_BYTES          8192            // room made before every group of the app's commands (the largest is about 3 KB)
+#define DRAIN_LABEL          255             // the app's only label: 0 - 63 are the system's, 200 - 212 TEE VP9's
+#define UI_LOCK_US           3000000         // the UI waits this long for the lock at most - then the RSX part is given up
+#define BLOCK_LOCK_SLICE_US  2000000         // the block waits in slices of this (it cannot take a failure)
+#define APP_RESTART_US       1000000         // the app's restart of the piece waits this long for the RSX (the block's: 2 s)
+#define FLIP_WAIT_US         100000          // the wait for the flip before the next one; then this frame goes without one
+#define FLIP_STALL_US        2000000         // no flip for this long: the RSX part is given up
+#define DRAIN_US             2000000         // finishGfx, the end of a prediction
+#define DRAIN_EXIT_US        500000          // termGfx
+#define PAUSE_MAX_US         5000000         // a pause nobody ends is ended after this
+#define SHARED_STATS_US      10000000ull     // the "[gfx] shared:" line
+#define LOCAL_POOL_BYTES     (2u << 20)      // RSX memory for the block (1.3 MB at 1440p, 1.9 MB at 4K)
+#define LOCAL_BLOCKS         16              // ... in pieces (it takes 13)
+#define LAPS_LOGGED          20              // the first restarts of the piece get a line each
+#define RSX_MARKER           DBG_DIR "/rsx-active"
 
 // max quads per frame (6 verts each). the batch costs 24 bytes per vertex in two
 // buffers, so this is 4.5 MB of the console's ~250 MB of graphics memory - cheap
@@ -96,6 +121,7 @@ static int        frameDroppedCalls = 0;     // draw calls the frame could not a
 // textures handed back during a frame, released once that frame has been shown
 #define GFX_RETIRED_MAX 256
 static uint32_t   retired[GFX_RETIRED_MAX];
+static uint32_t   retiredFlip[GFX_RETIRED_MAX];   // (V3.1.0 Test 4, shared) the flip after which each one may go
 static int        retiredCount = 0;
 
 static void freeRetiredTextures(void);
@@ -294,11 +320,142 @@ uint64_t getGfxFlipWaitUs(void)
    return lastFlipWaitUs;
 }
 
-// Binds a linear (CELL_GCM_SURFACE_PITCH) RGBA color surface as the render target and sets
-// the viewport + scissor to its real w*h. logicalW/logicalH is the coordinate space draw
-// calls use on it: the virtual canvas for the display buffer, its own w*h for an offscreen
-// texture (offset/pitch 64-byte aligned).
-static void setSurface(uint32_t offset, uint32_t pitch, int w, int h, int logicalW, int logicalH)
+// ============================================================================
+// (V3.1.0 Test 4) one command buffer for the app and TEE VP9's RSX part
+// ============================================================================
+//
+// gfx-share=on (settings.txt, off by default and experimental: a mistake here hangs the console until it is switched off by
+// hand): TEE VP9 0.3.2 predicts on the RSX while the app draws the screen with it - one command buffer, one RSX state.
+// tee_vp9/tv9_rsx_host.h has the five rules; this is how gfx.c keeps them (the VP9 project's reference/gfx.c and vshow.c ran
+// them on the console with PSL1GHT):
+//  1. one lock, cmdLock (an lv2 mutex, FIFO, not recursive). The app holds it for one group of commands at a time - a burst,
+//     gfxBurstBegin .. gfxBurstEnd: lock, room, the target state if needed, the commands, the flush, unlock - and the block
+//     for one of its rows (tv9h_lock). Nothing but command writing happens under it: no log line, no other lock;
+//  2. one piece of 955 KB from offset 0x1000 instead of libgcm's 32 KB segments, whose switch hung the RSX in the VP9
+//     project's tests. Room is made before every burst; when it is short, the RSX reads everything, a jump takes it back to
+//     the beginning and the next commands start there (gfxCbRestart, for the app and the block). libgcm's callback is
+//     replaced by one that writes nothing (gfxCbOverflow): it is never meant to run;
+//  3. after a flip, a new target or the block's rows, the next burst first sets everything the app's draws depend on
+//     (emitTargetState), and every draw invalidates the vertex cache (the RSX may read a batch while the next is written);
+//  4. no cellGcmSetWaitFlip in the command stream - the block's rows behind it would wait for a vertical blank. The PPU waits
+//     for the flip before it queues the next one (never two pending) and meanwhile draws into the third buffer;
+//  5. (video-player.c) a picture goes back to the decoder once the flip after its draw has happened.
+// With gfx-share=off none of it runs: every command added here is behind gfxShareActive, and the app writes V3.1.0 Test 3's
+// command stream (64 KB with libgcm's segments, cellGcmSetWaitFlip, two flips in flight).
+
+static int gfxShareWanted, gfxSmallCb, gfxNoContextTest;   // setGfxShareMode (before initGfx)
+static int gfxShareActive;                    // the layout check passed: everything below is in use
+static sys_mutex_t cmdLock;                   // rule 1 - created once and never destroyed (tv9h_lock cannot do without it)
+static int cmdLockOk;
+static sys_ppu_thread_t uiThread;             // initGfx's thread: the one that draws
+static uint32_t *cbBegin, *cbEnd;             // the piece: from offset 0x1000 to SHARED_SLACK_BYTES before its end
+static uint32_t cbBeginOffset;
+static int cbParked;                          // a restart waits for the RSX: begin = current = end = cbBegin meanwhile
+static volatile unsigned stateGen;            // tv9h_state_gen: + 1 with every burst of the app's
+static volatile unsigned blockGen;            // tv9h_lock calls: the block may have changed the state since
+static unsigned blockGenSeen;
+static uint32_t targetOffset, targetPitch;    // the render target setSurface recorded (its size: surfaceW x surfaceH)
+static int frameStateValid;                   // emitTargetState ran since the last flip or change of target
+static int frameBroken;                       // a burst failed: the rest of the frame writes nothing and has no flip
+static int parkRetried;                       // a parked piece was tried in this frame (once a frame)
+static volatile int burstBroken;              // the burst under way cannot be written whole (the callback was reached, no target)
+static uint32_t *burstStart;
+static volatile int rsxBrake;                 // TEE VP9's RSX part given up for the run (tv9h_context NULL from here on)
+static const char *volatile brakeWhy;
+static volatile int brakeLogged;
+static int rsxCrashOff;                       // the last run ended while the RSX predicted: no RSX part in this one
+static volatile int pauseCount;               // pauseGfxDrawing from another thread: the UI writes nothing meanwhile
+static volatile uint64_t pauseSinceUs;
+static uint32_t drainSeq;                     // label 255's last value (written under the lock)
+static uint32_t flipsConfirmed;               // (UI thread) the flips known to have happened, by the handler or the status
+static uint64_t lastFlipTimeUs;               // ... the last one's time (cellGcmGetLastFlipTime)
+static int flipStallLogged;
+static uint32_t flipBurstBytes;               // a flip's commands, for one log line
+static int flipBurstLogged;
+static volatile int lockError;                // a lock call failed other than by its timeout: logged once
+static int lockErrorLogged;
+static uint64_t blockLockedAtUs;              // when the block took the lock (its hold time)
+
+// the 10-s line's counts, written by the UI thread and (laps, lock times) the block's - a count lost now and then is harmless
+static struct {
+   uint64_t sinceUs, bytes;
+   uint32_t flips, gapMaxUs, gaps25, gaps42, resyncs, skipped, bursts, burstMax, resends, appLaps, blockLaps;
+   uint32_t precheckTimeouts, restartTimeouts, drainTimeouts, overflows, uiWaits, uiWaitMaxUs, blockHoldMaxUs;
+} shared;
+typedef struct { uint32_t get, put, bytes; int byBlock; } LapRecord;
+static LapRecord lapRecords[LAPS_LOGGED];     // the first restarts of the piece: get and put at the jump, the lap's bytes
+static volatile int lapsRecorded;
+static int lapsLogged;
+
+// RSX memory for the block (tv9h_local_alloc): a pool of its own with a lock of its own - the UI's allocator above has none,
+// and the block allocates on the decoder's thread
+static uint8_t *localPool;
+static uint32_t localUsed;
+static int localLive;
+static void *localBlocks[LOCAL_BLOCKS];
+static sys_lwmutex_t localLock;
+
+static uint64_t gfxNowUs(void) { return sys_time_get_system_time(); }
+
+static sys_ppu_thread_t gfxThread(void)
+{
+   sys_ppu_thread_t id = 0;
+   sys_ppu_thread_get_id(&id);
+   return id;
+}
+
+// the RSX part given up for the run. Never a log line here - it can be under the lock; gfxLogBrake writes it outside
+static void gfxBrake(const char *why)
+{
+   if (rsxBrake) return;
+   brakeWhy = why;
+   __sync_synchronize();
+   rsxBrake = 1;
+}
+
+static void gfxLogBrake(void)
+{
+   if (!rsxBrake || brakeLogged || __sync_lock_test_and_set(&brakeLogged, 1)) return;
+   logWarn("[gfx] shared: TEE VP9's RSX part is off for the rest of this run (%s) - the RSX draws the screen alone\n",
+           brakeWhy ? brakeWhy : "no reason given");
+}
+
+// the lock for a burst of the UI's: at most UI_LOCK_US, then the RSX part is given up (the block holds it for a row, "well
+// under a millisecond as a rule")
+static int lockForUi(void)
+{
+   int rc = sys_mutex_trylock(cmdLock);
+   if (rc != CELL_OK) {
+      uint64_t startUs = gfxNowUs();
+      rc = sys_mutex_lock(cmdLock, UI_LOCK_US);
+      uint32_t waitedUs = (uint32_t)(gfxNowUs() - startUs);
+      shared.uiWaits++;
+      if (waitedUs > shared.uiWaitMaxUs) shared.uiWaitMaxUs = waitedUs;
+   }
+   if (rc == CELL_OK) return 1;
+   if (rc == ETIMEDOUT) gfxBrake("the UI waited 3 s for the command buffer's lock");
+   else if (!lockError) lockError = rc;
+   return 0;
+}
+
+// ... for a drain, from any thread
+static int lockForDrain(uint32_t timeoutUs)
+{
+   int rc = sys_mutex_lock(cmdLock, timeoutUs ? timeoutUs : 1);   // (0 would wait for ever)
+   if (rc == CELL_OK) return 1;
+   if (rc != ETIMEDOUT && !lockError) lockError = rc;
+   return 0;
+}
+
+static void unlockCmd(void)
+{
+   sys_mutex_unlock(cmdLock);
+}
+
+// Writes a linear (CELL_GCM_SURFACE_PITCH) RGBA color surface as the render target and sets the viewport + scissor to its
+// real w*h - the commands setSurface wrote until V3.1.0 Test 3, and still does with gfx-share=off (shared, emitTargetState
+// writes them)
+static void writeSurfaceState(uint32_t offset, uint32_t pitch, int w, int h)
 {
    CellGcmSurface sf;
    memset(&sf, 0, sizeof(sf));
@@ -332,21 +489,416 @@ static void setSurface(uint32_t offset, uint32_t pitch, int w, int h, int logica
 
    cellGcmSetSurface(CTX, &sf);
 
-   targetW  = logicalW;
-   targetH  = logicalH;
-   surfaceW = w;
-   surfaceH = h;
-
    float scale[4]  = { w * 0.5f,  h * -0.5f, 0.5f, 0.0f };
    float offs[4]   = { w * 0.5f,  h *  0.5f, 0.5f, 0.0f };
    cellGcmSetViewport(CTX, 0, 0, w, h, 0.0f, 1.0f, scale, offs);
    cellGcmSetScissor(CTX, 0, 0, w, h);
 }
 
+// Binds a linear (CELL_GCM_SURFACE_PITCH) RGBA color surface as the render target and sets
+// the viewport + scissor to its real w*h. logicalW/logicalH is the coordinate space draw
+// calls use on it: the virtual canvas for the display buffer, its own w*h for an offscreen
+// texture (offset/pitch 64-byte aligned).
+static void setSurface(uint32_t offset, uint32_t pitch, int w, int h, int logicalW, int logicalH)
+{
+   targetW  = logicalW;
+   targetH  = logicalH;
+   surfaceW = w;
+   surfaceH = h;
+   // (V3.1.0 Test 4) shared: only recorded - the next burst writes it with the rest of the target state (emitTargetState)
+   targetOffset = offset;
+   targetPitch  = pitch;
+   if (gfxShareActive) { frameStateValid = 0; return; }
+   writeSurfaceState(offset, pitch, w, h);
+}
+
 static void setRenderTarget(void)
 {
    setSurface(frameOffset[backBuffer], framePitch, screenW, screenH, VIRTUAL_W, VIRTUAL_H);
    targetIsDisplay = 1;
+}
+
+// ---- (V3.1.0 Test 4) the shared piece: restart, room, the callback, the target state, bursts, drains, the flip ----
+
+// with the lock held: the next commands from the piece's beginning, once the RSX has read everything up to here (rule 2).
+// The flush first; then a wait while get is still at the beginning - after the jump, get there means "back", so the RSX
+// must have left the lap's first word before (a lap it had not started would be lost); then one raw jump word (never
+// cellGcmSetJumpCommand: its room check could call the callback from in here), put to the beginning, and the context parked -
+// begin = current = end - until get is there. 0, or -1 when the RSX did not get that far within timeoutUs: then nothing was
+// written (the first wait), or the context stays parked, so that nothing is written until a later restart sees the RSX at the
+// beginning, and a flush meanwhile (the block flushes before its restart) can only set put to the beginning again - an old
+// lap is never read twice. The 4 KB before offset 0x1000, which every flip calls, are never written
+static int gfxCbRestart(uint32_t timeoutUs, int byBlock)
+{
+   CellGcmControl volatile *control = cellGcmGetControlRegister();
+   uint64_t startUs = gfxNowUs();
+   if (!cbParked) {
+      if (CTX->current == cbBegin) return 0;   // nothing written in this lap: nothing to wait for
+      cellGcmFlush(CTX);
+      while (control->get == cbBeginOffset) {   // (put lies past the beginning: the flush just set it there)
+         if (gfxNowUs() - startUs > timeoutUs) { shared.precheckTimeouts++; return -1; }
+         sys_timer_usleep(30);                  // (no more often: the libgcm reference's note on CellGcmControl)
+      }
+      uint32_t get = control->get, put = control->put;
+      uint32_t bytes = (uint32_t)((uint8_t *)CTX->current - (uint8_t *)cbBegin);
+      CTX->current[0] = CELL_GCM_JUMP(cbBeginOffset);   // (end lies SHARED_SLACK_BYTES before the piece's end: room for it)
+      CTX->current += 1;
+      __asm__ volatile("sync" ::: "memory");
+      control->put = cbBeginOffset;
+      CTX->begin = cbBegin;
+      CTX->current = cbBegin;
+      CTX->end = cbBegin;
+      cbParked = 1;
+      if (byBlock) shared.blockLaps++;
+      else         shared.appLaps++;
+      int n = lapsRecorded;
+      if (n < LAPS_LOGGED) {
+         LapRecord lap = { get, put, bytes, byBlock };
+         lapRecords[n] = lap;
+         __sync_synchronize();
+         lapsRecorded = n + 1;
+      }
+   }
+   while (control->get != cbBeginOffset) {
+      if (gfxNowUs() - startUs > timeoutUs) { shared.restartTimeouts++; return -1; }
+      sys_timer_usleep(30);
+   }
+   CTX->begin = cbBegin;
+   CTX->current = cbBegin;
+   CTX->end = cbEnd;
+   cbParked = 0;
+   return 0;
+}
+
+// with the lock held: room for `bytes` and the slack - else the piece starts over. A parked piece (the RSX was not back in
+// time, and the RSX part is off already) a UI burst tries once a frame and only looks: else every burst of a frame the RSX
+// stands still in would wait a whole timeout, and the UI would answer once a second. 0, or -1 (the RSX part braked)
+#define PARKED_LOOK_US 2000
+static int gfxEnsureRoom(uint32_t bytes, uint32_t timeoutUs, int uiBurst)
+{
+   if (!cbParked && (uint32_t)((uint8_t *)CTX->end - (uint8_t *)CTX->current) >= bytes + SHARED_SLACK_BYTES) return 0;
+   if (cbParked && uiBurst) {
+      if (parkRetried) return -1;
+      parkRetried = 1;
+      timeoutUs = PARKED_LOOK_US;
+   }
+   if (gfxCbRestart(timeoutUs, 0) == 0) return 0;
+   gfxBrake("the RSX did not read the command buffer to its end in time");
+   return -1;
+}
+
+// libgcm's callback, replaced (rule 2). With room made before every burst it is never reached. Should it be all the same,
+// it writes nothing and says no - libgcm then leaves that command out - and the burst goes back whole at its end
+// (gfxBurstEnd), so no half-written command (cellGcmSetDrawArrays reserves in parts) ever reaches the RSX. Never CELL_OK
+// without the room asked for. The RSX part goes off for the run
+static int32_t gfxCbOverflow(struct CellGcmContextData *context, uint32_t words)
+{
+   (void)context;
+   (void)words;
+   shared.overflows++;
+   burstBroken = 1;
+   gfxBrake("libgcm's command buffer callback was reached");
+   return CELL_GCM_ERROR_FAILURE;
+}
+
+// rule 3, in a burst (room made): at a frame's first, after a flip, a change of target or the block's rows. A flip brings back
+// cellGcmInit's state (libgcm overview, "Resetting the RSX Context"); the block's rows leave a B8 target, a viewport of 4096,
+// the 8 window clips at its surfaces' size (aw x 280: the app's frame would end 280 lines down), dither off, z-clamp on,
+// texture units 0 and 1 on, and vertex arrays 0, 8, 9 and 10 pointing at its memory - 9 and 10 at its vertex ring, which is
+// unmapped once it closes (only size 0 stops a fetch). About 0.6 KB
+static void emitTargetState(void)
+{
+   if (surfaceW <= 0 || surfaceH <= 0) {   // (no target recorded yet - a burst before the first frame: nothing to set it to)
+      burstBroken = 1;
+      return;
+   }
+   writeSurfaceState(targetOffset, targetPitch, surfaceW, surfaceH);   // the surface, the viewport with the y flip, the scissor
+   if (CTX->end - CTX->current >= 24) {   // the window clips: libgcm has only their register numbers (the room is always there)
+      for (uint32_t i = 0; i < 8; i++) {
+         CTX->current[0] = CELL_GCM_METHOD(CELL_GCM_NV4097_SET_WINDOW_CLIP_HORIZONTAL + 8 * i, 2);
+         CTX->current[1] = (uint32_t)(surfaceW - 1) << 16;   // from 0 to w - 1, then the vertical one
+         CTX->current[2] = (uint32_t)(surfaceH - 1) << 16;
+         CTX->current += 3;
+      }
+   } else {
+      burstBroken = 1;
+   }
+   cellGcmSetColorMask(CTX, CELL_GCM_COLOR_MASK_R | CELL_GCM_COLOR_MASK_G | CELL_GCM_COLOR_MASK_B | CELL_GCM_COLOR_MASK_A);
+   cellGcmSetColorMaskMrt(CTX, 0);
+   cellGcmSetDepthTestEnable(CTX, CELL_GCM_FALSE);
+   cellGcmSetDepthMask(CTX, CELL_GCM_FALSE);
+   cellGcmSetStencilTestEnable(CTX, CELL_GCM_FALSE);
+   cellGcmSetAlphaTestEnable(CTX, CELL_GCM_FALSE);
+   cellGcmSetLogicOpEnable(CTX, CELL_GCM_FALSE);
+   cellGcmSetDitherEnable(CTX, CELL_GCM_TRUE);                                    // (a flip's: what the app's frames had)
+   cellGcmSetZMinMaxControl(CTX, CELL_GCM_TRUE, CELL_GCM_FALSE, CELL_GCM_FALSE);   // (... likewise)
+   cellGcmSetFragmentProgramGammaEnable(CTX, CELL_GCM_FALSE);
+   for (uint32_t unit = 0; unit < 2; unit++)
+      cellGcmSetTextureControl(CTX, unit, CELL_GCM_FALSE, 0, 12 << 8, CELL_GCM_TEXTURE_MAX_ANISO_1);
+   for (uint32_t index = 0; index < 16; index++)   // (each draw of the app's sets its three itself)
+      if (index != shaderPosIdx && index != shaderColIdx && index != shaderUvIdx)
+         cellGcmSetVertexDataArray(CTX, index, 0, 0, 0, CELL_GCM_VERTEX_F, CELL_GCM_LOCATION_LOCAL, 0);
+}
+
+// one group of the app's commands (rule 1): the lock, room, the target state when a flip, a new target or the block's rows
+// may have changed it. 0: write nothing (paused, the frame broken, no lock, no room). Share off: 1, and nothing done
+static int gfxBurstBegin(void)
+{
+   if (!gfxShareActive) return 1;
+   if (frameBroken || pauseCount > 0) return 0;
+   if (!lockForUi()) { frameBroken = 1; return 0; }
+   if (pauseCount > 0) { unlockCmd(); return 0; }   // (a pause began meanwhile: it took the lock and let it go just now)
+   if (gfxEnsureRoom(BURST_BYTES, APP_RESTART_US, 1) != 0) { unlockCmd(); frameBroken = 1; return 0; }
+   burstStart = CTX->current;
+   burstBroken = 0;
+   if (!frameStateValid || blockGen != blockGenSeen) {
+      emitTargetState();
+      frameStateValid = 1;
+      blockGenSeen = blockGen;
+      shared.resends++;
+   }
+   return 1;
+}
+
+// ... its end. drew: 0 nothing drawn, 1 the batch, 2 a YUV picture. After a draw the app's vertex arrays go off again (the
+// block's draws would fetch them), after a picture its texture units too (left on, they would point the block's rows at a
+// picture block that may be unmapped by then - vshow.c does the same). Then the state count and the flush. A burst the
+// callback was reached in goes back whole - nothing of it was flushed - and the frame writes nothing more. 1, or 0
+static int gfxBurstEnd(int drew)
+{
+   if (!gfxShareActive) return 1;
+   if (drew && !burstBroken) {
+      cellGcmSetVertexDataArray(CTX, shaderPosIdx, 0, 0, 0, CELL_GCM_VERTEX_F, CELL_GCM_LOCATION_LOCAL, 0);
+      cellGcmSetVertexDataArray(CTX, shaderColIdx, 0, 0, 0, CELL_GCM_VERTEX_F, CELL_GCM_LOCATION_LOCAL, 0);
+      cellGcmSetVertexDataArray(CTX, shaderUvIdx, 0, 0, 0, CELL_GCM_VERTEX_F, CELL_GCM_LOCATION_LOCAL, 0);
+      if (drew == 2)
+         for (int i = 0; i < 3; i++)
+            cellGcmSetTextureControl(CTX, shaderYuvTexUnit[i], CELL_GCM_FALSE, 0, 12 << 8, CELL_GCM_TEXTURE_MAX_ANISO_1);
+   }
+   if (burstBroken) {
+      CTX->current = burstStart;
+      frameBroken = 1;
+      frameStateValid = 0;
+      unlockCmd();
+      return 0;
+   }
+   uint32_t bytes = (uint32_t)((uint8_t *)CTX->current - (uint8_t *)burstStart);
+   shared.bursts++;
+   shared.bytes += bytes;
+   if (bytes > shared.burstMax) shared.burstMax = bytes;
+   stateGen++;
+   cellGcmFlush(CTX);
+   unlockCmd();
+   return 1;
+}
+
+// the RSX through with every command written so far: a back-end label (255) written under the lock and waited for without
+// it, timeoutUs at most. Not held up by a pause - a drain is what a pause waits for. 0, or -1
+static int gfxDrain(uint32_t timeoutUs)
+{
+   uint64_t startUs = gfxNowUs();
+   if (!lockForDrain(timeoutUs)) { shared.drainTimeouts++; return -1; }
+   if (gfxEnsureRoom(64, timeoutUs < APP_RESTART_US ? timeoutUs : APP_RESTART_US, 0) != 0) {
+      unlockCmd();
+      shared.drainTimeouts++;
+      return -1;
+   }
+   uint32_t seq = ++drainSeq;
+   cellGcmSetWriteBackEndLabel(CTX, DRAIN_LABEL, seq);
+   cellGcmFlush(CTX);
+   unlockCmd();
+   volatile uint32_t *label = (volatile uint32_t *)cellGcmGetLabelAddress(DRAIN_LABEL);
+   while ((int32_t)(*label - seq) < 0) {
+      if (gfxNowUs() - startUs > timeoutUs) { shared.drainTimeouts++; return -1; }
+      sys_timer_usleep(30);
+   }
+   return 0;
+}
+
+static uint64_t flipQueuedUs;                 // (UI thread) when the flip pending now was queued
+static uint32_t flipsCounted;                 // ... the confirmed flips the 10-s line has counted
+
+// rule 4, before a flip: the one before it has happened, at most timeoutUs. By the flip handler's count, cross-checked with
+// the flip status (reset before every flip): a handler that is late or missed a flip cannot stop the screen - the status says
+// the last flip is done, and the count goes on from there (no flip is pending then, so there can never be two). Counts the
+// flips and their gaps for the 10-s line. 1: none pending; 0: the last one still is
+static int gfxPreviousFlipDone(uint32_t timeoutUs)
+{
+   uint64_t startUs = gfxNowUs();
+   for (;;) {
+      uint32_t handled = flipsCompleted;
+      if ((int32_t)(handled - flipsConfirmed) > 0)
+         flipsConfirmed = (int32_t)(handled - flipsSubmitted) > 0 ? flipsSubmitted : handled;
+      if ((int32_t)(flipsSubmitted - flipsConfirmed) <= 0) break;
+      if (cellGcmGetFlipStatus() == CELL_GCM_DISPLAY_FLIP_STATUS_DONE) {   // the handler is late, or it missed one
+         flipsConfirmed = flipsSubmitted;
+         shared.resyncs++;
+         break;
+      }
+      if (gfxNowUs() - startUs >= timeoutUs) return 0;
+      sys_timer_usleep(100);
+   }
+   if (flipsConfirmed != flipsCounted) {
+      uint64_t at = (uint64_t)cellGcmGetLastFlipTime();
+      if (lastFlipTimeUs && at > lastFlipTimeUs) {
+         uint64_t gapUs = at - lastFlipTimeUs;
+         uint32_t gap = (uint32_t)(gapUs > 0xFFFFFFFFull ? 0xFFFFFFFFull : gapUs);
+         if (gap > shared.gapMaxUs) shared.gapMaxUs = gap;
+         if (gap > 25000) shared.gaps25++;
+         if (gap > 41700) shared.gaps42++;
+      }
+      if (at) lastFlipTimeUs = at;
+      shared.flips += flipsConfirmed - flipsCounted;
+      flipsCounted = flipsConfirmed;
+   }
+   return 1;
+}
+
+// a frame without a flip waits for the next vertical blank instead (1 ms steps, 20 ms at most): the UI loop, at priority 1001,
+// never spins over the block's threads and the player's
+static void sleepToNextVblank(void)
+{
+   uint64_t vblank = cellGcmGetVBlankCount();
+   for (int ms = 0; ms < 20 && cellGcmGetVBlankCount() == vblank; ms++) sys_timer_usleep(1000);
+}
+
+// the lines that could not be written where they arose (under the lock, or on another thread), and the 10-s line (UI thread)
+static void sharedHousekeeping(uint64_t nowUs)
+{
+   gfxLogBrake();
+   if (lockError && !lockErrorLogged) {
+      lockErrorLogged = 1;
+      logError("[gfx] shared: the command buffer's lock failed with 0x%08x\n", (unsigned)lockError);
+   }
+   while (lapsLogged < lapsRecorded) {
+      const LapRecord *lap = &lapRecords[lapsLogged++];
+      logInfo("[gfx] shared: lap %d of the command buffer, by the %s: %u KB, get 0x%x and put 0x%x at the jump\n", lapsLogged,
+              lap->byBlock ? "block" : "app", lap->bytes >> 10, lap->get, lap->put);
+   }
+   if (flipBurstBytes && !flipBurstLogged) {
+      flipBurstLogged = 1;
+      logInfo("[gfx] shared: a flip takes %u bytes of commands\n", flipBurstBytes);
+   }
+   if (!shared.sinceUs) { shared.sinceUs = nowUs; return; }
+   if (nowUs - shared.sinceUs < SHARED_STATS_US) return;
+   // integers only: this printf has no floating point
+   logInfo("[gfx] shared: %u flips in %u s (longest gap %u ms, %u over 25 ms, %u over 41.7 ms, %u by the flip status), %u frames "
+           "without one; %u bursts, %u KB, the largest %u bytes, %u with the state again; laps: %u by the app, %u by the block; "
+           "timeouts: %u pre-check, %u restart, %u drain; %u overflow calls; the UI waited %u times for the lock (at most %u us), "
+           "the block held it %u us at most%s%s\n", shared.flips, (unsigned)((nowUs - shared.sinceUs) / 1000000),
+           shared.gapMaxUs / 1000, shared.gaps25, shared.gaps42, shared.resyncs, shared.skipped, shared.bursts,
+           (unsigned)(shared.bytes >> 10), shared.burstMax, shared.resends, shared.appLaps, shared.blockLaps,
+           shared.precheckTimeouts, shared.restartTimeouts, shared.drainTimeouts, shared.overflows, shared.uiWaits,
+           shared.uiWaitMaxUs, shared.blockHoldMaxUs, cbParked ? "; parked" : "", rsxBrake ? "; the RSX part is off" : "");
+   memset(&shared, 0, sizeof shared);
+   shared.sinceUs = nowUs;
+}
+
+// endGfxFrame, shared (rule 4): the flip without a wait in the command stream. It waits until the flip before it has happened
+// (at most 100 ms - else this frame goes without one), the flip status is reset, the flip is one burst. A frame paused, broken
+// or without its flip waits for the next vertical blank instead. Then the log lines kept back, outside the lock
+static void endGfxFrameShared(void)
+{
+   uint64_t startUs = gfxNowUs();
+   if (pauseCount > 0 && startUs - pauseSinceUs > PAUSE_MAX_US) {
+      pauseCount = 0;
+      logWarn("[gfx] shared: drawing was paused for %d s and nothing let it go on - it goes on now\n", (int)(PAUSE_MAX_US / 1000000));
+   }
+   int flipped = 0;
+   if (pauseCount <= 0 && !frameBroken) {
+      if (gfxPreviousFlipDone(FLIP_WAIT_US)) {
+         cellGcmResetFlipStatus();   // (never while a flip may happen: none is pending now)
+         if (gfxBurstBegin()) {
+            uint32_t *before = CTX->current;
+            int32_t rc = cellGcmSetFlip(CTX, (uint8_t)backBuffer);
+            uint32_t bytes = (uint32_t)((uint8_t *)CTX->current - (uint8_t *)before);
+            if (gfxBurstEnd(0) && rc == CELL_OK && bytes) {
+               flipsSubmitted++;
+               flipQueuedUs = gfxNowUs();
+               backBuffer = (backBuffer + 1) % FRAME_COUNT;
+               if (!flipBurstBytes) flipBurstBytes = bytes;
+               flipped = 1;
+            }
+         }
+      } else if (!flipStallLogged && startUs - flipQueuedUs > FLIP_STALL_US) {
+         CellGcmControl volatile *control = cellGcmGetControlRegister();
+         flipStallLogged = 1;
+         logWarn("[gfx] shared: flip %u has not happened %u ms after it was queued - get 0x%x, put 0x%x, labels 200 %u, 210 %u, "
+                 "211 %u, 212 %u\n", flipsSubmitted, (unsigned)((startUs - flipQueuedUs) / 1000), control->get, control->put,
+                 *(volatile uint32_t *)cellGcmGetLabelAddress(200), *(volatile uint32_t *)cellGcmGetLabelAddress(210),
+                 *(volatile uint32_t *)cellGcmGetLabelAddress(211), *(volatile uint32_t *)cellGcmGetLabelAddress(212));
+         gfxBrake("a flip did not happen within 2 s");
+      }
+   }
+   frameStateValid = 0;   // (a flip brings back cellGcmInit's state; without one the next frame sets it again all the same)
+   if (!flipped) {
+      shared.skipped++;
+      sleepToNextVblank();
+   }
+   lastFlipWaitUs = gfxNowUs() - startUs;
+   sharedHousekeeping(gfxNowUs());
+}
+
+// rule 1's lock: an lv2 mutex, FIFO (SYS_SYNC_PRIORITY_INHERIT is "not implemented"), not recursive
+static int createCmdLock(void)
+{
+   sys_mutex_attribute_t attr;
+   sys_mutex_attribute_initialize(attr);
+   attr.attr_protocol = SYS_SYNC_FIFO;
+   attr.attr_recursive = SYS_SYNC_NOT_RECURSIVE;
+   memcpy(attr.name, "teegfx", 7);
+   int rc = sys_mutex_create(&cmdLock, &attr);
+   cmdLockOk = rc == CELL_OK;
+   if (!cmdLockOk) logError("[gfx] shared: no lock for the command buffer (0x%08x) - it is not shared\n", (unsigned)rc);
+   return cmdLockOk;
+}
+
+// rule 2, after cellGcmInit(SHARED_CMD_BYTES): libgcm's first segment has to begin at offset 0x1000 of the host block (behind
+// the 4 KB every flip calls), with its end inside the buffer. Then the end moves to the piece's end and the callback is ours,
+// so libgcm's segment switch never runs. Anything else, and libgcm's segments stay with the flip path of gfx-share=off
+static void setUpSharedBuffer(uint8_t *host)
+{
+   uint32_t *begin = CTX->begin, *current = CTX->current, *end = CTX->end;
+   uint32_t beginOffset = 0;
+   int fits = (uint8_t *)begin == host + CELL_GCM_INIT_STATE_OFFSET && cellGcmAddressToOffset(begin, &beginOffset) == CELL_OK &&
+              beginOffset == CELL_GCM_INIT_STATE_OFFSET && begin <= current && current < end &&
+              (uint8_t *)end <= host + SHARED_CMD_BYTES;
+   if (!fits) {
+      logWarn("[gfx] command buffer: libgcm left begin at +0x%x (offset 0x%x), current at +0x%x, end at +0x%x - not the layout "
+              "the sharing needs: libgcm's segments stay, the buffer is not shared\n", (unsigned)((uint8_t *)begin - host),
+              (unsigned)beginOffset, (unsigned)((uint8_t *)current - host), (unsigned)((uint8_t *)end - host));
+      return;
+   }
+   if (fileExists(RSX_MARKER)) {   // (setGfxRsxActive)
+      rsxCrashOff = 1;
+      deleteFile(RSX_MARKER);
+      logWarn("[gfx] shared: the last run ended while the RSX predicted for TEE VP9 (%s was there) - vp9-rsx is off for this "
+              "run\n", RSX_MARKER);
+   }
+   uiThread = gfxThread();
+   cbBegin = begin;
+   cbBeginOffset = beginOffset;
+   cbEnd = (uint32_t *)(host + (gfxSmallCb ? CELL_GCM_INIT_STATE_OFFSET + SHARED_SMALL_BYTES : SHARED_CMD_BYTES - SHARED_SLACK_BYTES));
+   CTX->end = cbEnd;
+   CTX->callback = gfxCbOverflow;
+   *(volatile uint32_t *)cellGcmGetLabelAddress(DRAIN_LABEL) = 0;
+   gfxShareActive = 1;
+   logInfo("[gfx] command buffer: one piece of %u KB from offset 0x%x (libgcm's first segment ended at +0x%x), shared%s; %u MB "
+           "of IO address space\n", (unsigned)(((uint8_t *)cbEnd - (uint8_t *)cbBegin) >> 10), (unsigned)cbBeginOffset,
+           (unsigned)((uint8_t *)end - host), gfxSmallCb ? " (rsx-test=small-cb)" : "", (unsigned)(cellGcmGetMaxIoMapSize() >> 20));
+}
+
+// the block's RSX memory (tv9h_local_alloc): 2 MB of the app's, taken once at the start, with a lock of its own
+static void setUpLocalPool(void)
+{
+   sys_lwmutex_attribute_t attr;
+   sys_lwmutex_attribute_initialize(attr);
+   localPool = (uint8_t *)allocateVram(LOCAL_POOL_BYTES, 128);
+   if (localPool && sys_lwmutex_create(&localLock, &attr) != CELL_OK) {
+      freeVram(localPool);
+      localPool = NULL;
+   }
+   if (!localPool) logWarn("[gfx] shared: no 2 MB of RSX memory for TEE VP9's RSX part - it stays off\n");
 }
 
 int initGfx(GfxVsync vsync)
@@ -367,11 +919,14 @@ int initGfx(GfxVsync vsync)
       return -1;
    }
 
-   ret = cellGcmInit(CMD_BUFFER_SIZE, HOST_MEM_SIZE, hostAddr);
+   // (V3.1.0 Test 4) gfx-share=on: the lock first, and the command buffer 960 KB of the same 1 MB (see "one command buffer")
+   int share = gfxShareWanted && createCmdLock();
+   ret = cellGcmInit(share ? SHARED_CMD_BYTES : CMD_BUFFER_SIZE, HOST_MEM_SIZE, hostAddr);
    if (ret < 0) {
       logError("[gfx] cellGcmInit failed: 0x%08x\n", ret);
       return ret;
    }
+   if (share) setUpSharedBuffer((uint8_t *)hostAddr);
 
    // read current video mode
    CellVideoOutState videoState;
@@ -507,6 +1062,7 @@ int initGfx(GfxVsync vsync)
       cellGcmAddressToOffset(&batchVerts[i][0].rgba, &batchColOffset[i]);
       cellGcmAddressToOffset(&batchVerts[i][0].u, &batchUvOffset[i]);
    }
+   if (gfxShareActive) setUpLocalPool();   // (V3.1.0 Test 4) the block's RSX memory
 
    logInfo("[gfx] ready: %d x %d (virtual %d x %d), pitch=%u, vram_used=%zu/%zu\n", screenW, screenH, VIRTUAL_W, VIRTUAL_H, framePitch, getUsedVram(), vramSize);
    return 0;
@@ -517,9 +1073,20 @@ void termGfx(void)
    if (!initialized) {
       return;
    }
-   // wait for last flip to complete
-   cellGcmSetWaitFlip(CTX);
-   cellGcmFinish(CTX, 1);
+   if (gfxShareActive) {
+      // (V3.1.0 Test 4) shared: no wait for the flip in the command stream and no cellGcmFinish without a bound - the RSX part
+      // off, at most 100 ms for the flip under way, a drain of at most 0.5 s
+      gfxLogBrake();     // (a brake from before, if its line is still due)
+      gfxBrake("the app ends");
+      brakeLogged = 1;   // (no line for this one)
+      gfxPreviousFlipDone(FLIP_WAIT_US);
+      if (gfxDrain(DRAIN_EXIT_US) != 0) logWarn("[gfx] shared: the RSX did not finish its commands within 0.5 s at the end\n");
+      localPool = NULL;   // (the VRAM goes with the allocator's list below)
+   } else {
+      // wait for last flip to complete
+      cellGcmSetWaitFlip(CTX);
+      cellGcmFinish(CTX, 1);
+   }
 
    // release all allocator metadata. The VRAM region itself is owned by libgcm;
    // dropping the block list (incl. the permanent frame/shader/batch blocks)
@@ -540,14 +1107,20 @@ void beginGfxFrame(void)
 {
    if (!initialized) return;
 
+   if (gfxShareActive) {   // (V3.1.0 Test 4) a new frame: it may write again, and try a parked piece once
+      frameBroken = 0;
+      parkRetried = 0;
+   }
    freeRetiredTextures();   // the frame that named them has been shown
    setRenderTarget();   // binds the display buffer + sets viewport/scissor to the screen
 
-   cellGcmSetColorMask(CTX, CELL_GCM_COLOR_MASK_R | CELL_GCM_COLOR_MASK_G | CELL_GCM_COLOR_MASK_B | CELL_GCM_COLOR_MASK_A);
-   cellGcmSetColorMaskMrt(CTX, 0);
+   if (!gfxShareActive) {   // (V3.1.0 Test 4) shared: emitTargetState sets these, in the frame's first burst
+      cellGcmSetColorMask(CTX, CELL_GCM_COLOR_MASK_R | CELL_GCM_COLOR_MASK_G | CELL_GCM_COLOR_MASK_B | CELL_GCM_COLOR_MASK_A);
+      cellGcmSetColorMaskMrt(CTX, 0);
 
-   cellGcmSetDepthTestEnable(CTX, CELL_GCM_FALSE);
-   cellGcmSetFragmentProgramGammaEnable(CTX, CELL_GCM_FALSE);
+      cellGcmSetDepthTestEnable(CTX, CELL_GCM_FALSE);
+      cellGcmSetFragmentProgramGammaEnable(CTX, CELL_GCM_FALSE);
+   }
 
    batchVertCount = 0;
    batchFlushStart = 0;
@@ -562,9 +1135,11 @@ void beginGfxFrame(void)
 void clearGfx(uint32_t argb)
 {
    if (!initialized) return;
+   if (!gfxBurstBegin()) return;   // (V3.1.0 Test 4) shared: one burst; share off: nothing more than before
    cellGcmSetScissor(CTX, 0, 0, surfaceW, surfaceH);
    cellGcmSetClearColor(CTX, argb);
    cellGcmSetClearSurface(CTX, CELL_GCM_CLEAR_R | CELL_GCM_CLEAR_G | CELL_GCM_CLEAR_B | CELL_GCM_CLEAR_A);
+   gfxBurstEnd(0);
 }
 
 static uint32_t argbToRgba(uint32_t argb)
@@ -767,6 +1342,8 @@ static void flushBatch(void)
 {
    int count = batchVertCount - batchFlushStart;
    if (count <= 0) return;
+   // (V3.1.0 Test 4) shared: one burst (never inside another one); one that cannot be written drops its draw
+   if (!gfxBurstBegin()) { batchFlushStart = batchVertCount; return; }
 
    cellGcmSetVertexProgram(CTX, shaderVp, shaderVpUcode);
    cellGcmSetFragmentProgram(CTX, shaderFp, shaderFpOffset);
@@ -804,9 +1381,13 @@ static void flushBatch(void)
    cellGcmSetBlendEnable(CTX, CELL_GCM_TRUE);
    cellGcmSetBlendFunc(CTX, CELL_GCM_SRC_ALPHA, CELL_GCM_ONE_MINUS_SRC_ALPHA, CELL_GCM_SRC_ALPHA, CELL_GCM_ONE_MINUS_SRC_ALPHA);
 
+   // (V3.1.0 Test 4) shared: the RSX may still draw the batch before while this one's vertices are written beside it - the
+   // draw itself only invalidates the vertex file, not the cache (gcm_implementation_sub.h SetDrawArrays)
+   if (gfxShareActive) cellGcmSetInvalidateVertexCache(CTX);
    cellGcmSetDrawArrays(CTX, CELL_GCM_PRIMITIVE_TRIANGLES, 0, count);
 
    cellGcmSetBlendEnable(CTX, CELL_GCM_FALSE);
+   gfxBurstEnd(1);
 
    batchFlushStart = batchVertCount;
 }
@@ -937,6 +1518,8 @@ void drawGfxYuvPlanes(int x, int y, int w, int h, const GfxYuvPlanes *p)
    v[4] = (GfxVertex){ x1, y1, 0.0f, white, u1, t1 };
    v[5] = (GfxVertex){ x0, y1, 0.0f, white, u0, t1 };
    batchVertCount += VERTS_PER_RECT;
+   // (V3.1.0 Test 4) shared: the picture's commands are one burst; one that cannot be written drops the picture
+   if (!gfxBurstBegin()) { batchFlushStart = batchVertCount; return; }
 
    // the chroma sample point for a luma one: a luma sample at s (counted from the plane's edge, the picture
    // starting at p->left) is the chroma sample at (s - left) / 2 + leftC. Normalised:
@@ -966,7 +1549,9 @@ void drawGfxYuvPlanes(int x, int y, int w, int h, const GfxYuvPlanes *p)
    cellGcmSetInvalidateTextureCache(CTX, CELL_GCM_INVALIDATE_TEXTURE);
    cellGcmSetCullFaceEnable(CTX, CELL_GCM_FALSE);
    cellGcmSetBlendEnable(CTX, CELL_GCM_FALSE);
+   if (gfxShareActive) cellGcmSetInvalidateVertexCache(CTX);   // (V3.1.0 Test 4, as in flushBatch)
    cellGcmSetDrawArrays(CTX, CELL_GCM_PRIMITIVE_TRIANGLES, 0, 6);
+   if (!gfxBurstEnd(2)) yuvChromaXfValid = 0;   // (taken back: the chroma parameter never reached the RSX)
 
    batchFlushStart = batchVertCount;
 }
@@ -982,6 +1567,7 @@ void endGfxFrame(void)
 
    flushBatch();
    reportFrameBudget();
+   if (gfxShareActive) { endGfxFrameShared(); return; }   // (V3.1.0 Test 4) no cellGcmSetWaitFlip there (rule 4)
 
    // queue this frame's flip without blocking the CPU on it. cellGcmSetWaitFlip is a gpu-side barrier:
    // the RSX won't draw into a buffer still on screen, so no tearing beyond what vsync-off already implies.
@@ -1009,6 +1595,12 @@ void finishGfx(void)
    if (!initialized) return;
    static uint32_t finishRef = 0;
    flushBatch();              // emit any pending quads first
+   // (V3.1.0 Test 4) shared: a drain of at most 2 s on label 255 - cellGcmFinish waits without a bound, and outside the lock
+   if (gfxShareActive) {
+      if (gfxDrain(DRAIN_US) != 0) gfxBrake("the RSX did not finish its commands within 2 s (finishGfx)");
+      gfxLogBrake();
+      return;
+   }
    cellGcmFinish(CTX, ++finishRef);  // block until the RSX drains the command buffer
 }
 
@@ -1065,6 +1657,23 @@ void retireGfxTexture(GfxTexture *tex)
 {
    if (!tex || tex->offset == 0) return;
 
+   if (gfxShareActive) {
+      // (V3.1.0 Test 4) shared: without a wait for the flip in the command stream the next frame does not mean the RSX is
+      // through with it - the flip of the frame drawing now does. A full list waits for the RSX (finishGfx) and frees all
+      if (retiredCount >= GFX_RETIRED_MAX) {
+         finishGfx();
+         for (int index = 0; index < retiredCount; index++) freeVram((uint8_t *)vramBase + retired[index]);
+         retiredCount = 0;
+         freeGfxTexture(tex);
+         return;
+      }
+      retired[retiredCount] = tex->offset;
+      retiredFlip[retiredCount] = getGfxNextFlipId();
+      retiredCount++;
+      memset(tex, 0, sizeof(*tex));
+      return;
+   }
+
    if (retiredCount < GFX_RETIRED_MAX) retired[retiredCount++] = tex->offset;
    else freeGfxTexture(tex);   // the list is full, so this one waits for the GPU the old way
 
@@ -1073,6 +1682,21 @@ void retireGfxTexture(GfxTexture *tex)
 
 static void freeRetiredTextures(void)
 {
+   if (gfxShareActive) {   // (V3.1.0 Test 4) the ones whose flip has happened
+      uint32_t done = flipsCompleted;
+      int kept = 0;
+      for (int index = 0; index < retiredCount; index++) {
+         if ((int32_t)(done - retiredFlip[index]) >= 0) {
+            freeVram((uint8_t *)vramBase + retired[index]);
+         } else {
+            retired[kept] = retired[index];
+            retiredFlip[kept] = retiredFlip[index];
+            kept++;
+         }
+      }
+      retiredCount = kept;
+      return;
+   }
    for (int index = 0; index < retiredCount; index++) freeVram((uint8_t *)vramBase + retired[index]);
    retiredCount = 0;
 }
@@ -1180,4 +1804,167 @@ void updateGfxTexture(uint32_t offset, const void *rgba, int w, int h, int srcPi
    if (h < slotH) {
       memset(dst + h * alignedPitch, 0, alignedPitch * (uint32_t)(slotH - h));
    }
+}
+
+// ============================================================================
+// (V3.1.0 Test 4) the shared RSX for the player (gfx.h) and for TEE VP9's RSX part (tv9_rsx_host.h)
+// ============================================================================
+
+void setGfxShareMode(int on, const char *test)
+{
+   if (initialized) return;   // (before initGfx: it decides how the command buffer is set up)
+   gfxShareWanted = on ? 1 : 0;
+   gfxSmallCb = test && strcmp(test, "small-cb") == 0;
+   gfxNoContextTest = test && strcmp(test, "fail-start") == 0;
+}
+
+int isGfxShared(void) { return gfxShareActive; }
+
+int isGfxRsxAllowed(void)
+{
+   return gfxShareActive && !rsxBrake && !rsxCrashOff && localPool != NULL;
+}
+
+int isGfxRsxReadable(const void *address)
+{
+   uint32_t offset;
+   return address && cellGcmAddressToOffset(address, &offset) == CELL_OK;
+}
+
+int pauseGfxDrawing(uint32_t timeoutUs)
+{
+   if (!gfxShareActive) return 0;
+   if (gfxThread() != uiThread) {
+      (void)__sync_fetch_and_add(&pauseCount, 1);
+      pauseSinceUs = gfxNowUs();
+      __sync_synchronize();
+      // a burst of the UI's under way is through after this; every later one sees the pause under the lock (gfxBurstBegin)
+      if (lockForDrain(timeoutUs)) unlockCmd();
+   }
+   if (gfxDrain(timeoutUs) == 0) return 0;
+   gfxBrake("the RSX did not finish its commands before a TEE VP9 decoder closed");
+   gfxLogBrake();
+   return -1;
+}
+
+void resumeGfxDrawing(void)
+{
+   if (!gfxShareActive || gfxThread() == uiThread) return;
+   for (;;) {   // (endGfxFrameShared may have ended the pause already, after PAUSE_MAX_US)
+      int count = pauseCount;
+      if (count <= 0 || __sync_bool_compare_and_swap(&pauseCount, count, count - 1)) return;
+   }
+}
+
+void brakeGfxRsx(const char *why)
+{
+   if (!gfxShareActive) return;
+   gfxBrake(why);
+   gfxLogBrake();   // (the player calls it outside every lock)
+}
+
+// the crash marker: written when a decoder's RSX part predicts (and pushed to the disk - a hang leaves no time), deleted at
+// its close. A start that finds it runs without the RSX part once (setUpSharedBuffer)
+void setGfxRsxActive(int on)
+{
+   if (!gfxShareActive) return;
+   if (!on) { deleteFile(RSX_MARKER); return; }
+   if (writeFile(RSX_MARKER, "1\n", 2) != 0 && makeDir(DBG_DIR) == 0) writeFile(RSX_MARKER, "1\n", 2);
+   syncPath(RSX_MARKER);
+}
+
+// ---- tv9_rsx_host.h. All nine are inert while the buffer is not shared: no context, no room, no restart, no RSX memory, so
+// the block's set-up says "no context" and its stream plays on the SPEs alone (the player does not ask for the RSX then) ----
+
+void *tv9h_context(void)
+{
+   return gfxShareActive && !rsxBrake && !rsxCrashOff && !gfxNoContextTest ? (void *)CTX : NULL;
+}
+
+// rule 1 for the block: in slices of 2 s until it has the lock - it cannot take a failure. Its rows count as a change of state
+void tv9h_lock(void)
+{
+   if (!cmdLockOk) return;
+   for (;;) {
+      int rc = sys_mutex_lock(cmdLock, BLOCK_LOCK_SLICE_US);
+      if (rc == CELL_OK) break;
+      if (rc != ETIMEDOUT) {
+         if (!lockError) lockError = rc;
+         sys_timer_usleep(1000);   // (an error that stays: no spin at the block's priority)
+      }
+   }
+   blockGen++;
+   blockLockedAtUs = gfxNowUs();
+}
+
+void tv9h_unlock(void)
+{
+   if (!cmdLockOk) return;
+   uint32_t heldUs = (uint32_t)(gfxNowUs() - blockLockedAtUs);
+   if (heldUs > shared.blockHoldMaxUs) shared.blockHoldMaxUs = heldUs;
+   sys_mutex_unlock(cmdLock);
+}
+
+int tv9h_cb_room(void)
+{
+   if (!gfxShareActive || rsxBrake) return 0;   // (parked: end = current, 0 as well)
+   return (int)((uint8_t *)CTX->end - (uint8_t *)CTX->current);
+}
+
+int tv9h_cb_restart(int timeout_us)
+{
+   if (!gfxShareActive || rsxBrake) return -1;
+   if (gfxCbRestart(timeout_us > 0 ? (uint32_t)timeout_us : 0, 1) == 0) return 0;
+   gfxBrake("the RSX did not read the command buffer to its end within the block's 2 s");
+   return -1;
+}
+
+unsigned tv9h_state_gen(void)
+{
+   return stateGen;
+}
+
+// the block starts (1) or ends (0) predicting. The app keeps rule 4, so the start asks nothing of it. The end comes after the
+// block's own waits and before it unmaps its memory (rsx_mc_stop, and rsx_mc_start's failures): everything the block and the
+// app wrote until then is drained, bounded, the pause or no pause - an RSX that reads unmapped memory hangs
+void tv9h_predicting(int on)
+{
+   if (!gfxShareActive || on) return;
+   if (gfxDrain(DRAIN_US) != 0) gfxBrake("the RSX did not finish its commands within 2 s after TEE VP9's RSX part stopped");
+   gfxLogBrake();   // (the block calls this outside the lock)
+}
+
+// RSX memory for the block from the pool: one piece after the other, given back together - rsx_mc_release frees all 13 it
+// takes at once, so the pool starts over when nothing is out
+void *tv9h_local_alloc(uint32_t align, uint32_t bytes)
+{
+   if (!gfxShareActive || !localPool || (align & (align - 1))) return NULL;
+   if (!align) align = 1;
+   void *block = NULL;
+   sys_lwmutex_lock(&localLock, 0);
+   uintptr_t at = ((uintptr_t)localPool + localUsed + align - 1) & ~(uintptr_t)(align - 1);
+   uint32_t used = (uint32_t)(at - (uintptr_t)localPool);
+   int slot = -1;
+   for (int i = 0; i < LOCAL_BLOCKS && slot < 0; i++) if (!localBlocks[i]) slot = i;
+   if (slot >= 0 && used <= LOCAL_POOL_BYTES && bytes <= LOCAL_POOL_BYTES - used) {
+      block = (void *)at;
+      localBlocks[slot] = block;
+      localUsed = used + bytes;
+      localLive++;
+   }
+   sys_lwmutex_unlock(&localLock);
+   return block;
+}
+
+void tv9h_local_free(void *p)
+{
+   if (!p || !localPool) return;
+   sys_lwmutex_lock(&localLock, 0);
+   for (int i = 0; i < LOCAL_BLOCKS; i++)
+      if (localBlocks[i] == p) {
+         localBlocks[i] = NULL;
+         if (--localLive == 0) localUsed = 0;
+         break;
+      }
+   sys_lwmutex_unlock(&localLock);
 }

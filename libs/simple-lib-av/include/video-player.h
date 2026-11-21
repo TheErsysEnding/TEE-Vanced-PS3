@@ -95,8 +95,24 @@ typedef struct {
    uint32_t (*nextFlipId)(void);   // the number the flip of the frame being drawn will have (flips queued + 1)
    uint32_t (*flipsDone)(void);    // flips the screen has shown so far
    uint32_t (*vblanksMissed)(void);   // vertical blanks the screen showed a frame again for (by the flips' times)
+   // (V3.1.0 Test 4) TEE VP9's RSX part (gfx.h): may it run now; can the RSX read this memory; around the close of a decoder
+   // with it, the screen paused and the RSX drained (0 drained), and going on; the RSX part off for the run; the crash marker
+   // on or off. NULL (or the first one 0): never the RSX part
+   int  (*rsxAllowed)(void);
+   int  (*isMapped)(const void *address);
+   int  (*pause)(uint32_t timeoutUs);
+   void (*resume)(void);
+   void (*brake)(const char *why);
+   void (*rsxActive)(int on);
 } VideoDisplayHooks;
 void setVideoDisplayHooks(const VideoDisplayHooks *hooks);
+// (V3.1.0 Test 4) settings.txt vp9-rsx=off|1440|on (0 / 1 / 2): TEE VP9 opened with its RSX part (rsx = 1) - up to 1440p, or
+// 4K too - when the display shares the RSX (gfx-share=on, hooks.rsxAllowed). Its pictures are drawn only once it predicts
+// and has mapped them (else after 30 pictures the player fails with didVideoPlayerFailOnRsx, and the RSX part is off for the
+// run: the app builds the player anew where it was). test: settings.txt rsx-test= ("brake-after-30", "stall-3000"), "" none
+void setVideoVp9Rsx(int mode);
+void setVideoVp9RsxTest(const char *test);
+int  didVideoPlayerFailOnRsx(const VideoPlayer *player);
 // settings.txt display-sync=flips|wall: display sync advances the picture by one per present plus the vertical blanks the
 // screen showed the last frame again for (1, the default), or by the wall time between two presents, rounded (0: V3.1.0
 // Test 2 - a present that ran late but still made its vblank counted 2 and the next one 0: a dropped and a repeated

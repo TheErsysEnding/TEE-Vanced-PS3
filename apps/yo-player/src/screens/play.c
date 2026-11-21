@@ -2186,6 +2186,13 @@ static void updateHud(void)
 
 static void updatePlay(void)
 {
+   // (V3.1.0 Test 4) TEE VP9's RSX part did not start (the player said so after 30 pictures and turned it off for the run):
+   // the same video again where it was, on the SPEs alone - before the fall-back below takes it for a decoder that stopped
+   if (state.stage == STAGE_PLAYING && state.player && state.videoIsVp9 && !state.threadActive &&
+       hasVideoPlayerFailed(state.player) && didVideoPlayerFailOnRsx(state.player)) {
+      reopenAt(getVideoPositionSeconds(state.player));
+      return;
+   }
    // (V3.0.4) a VP9 stream whose decoder stopped for good goes on in 1080p60 H.264 (fallBackFromVp9) - before the
    // autoplay below takes the stopped player for a finished video
    if (state.stage == STAGE_PLAYING && state.player && state.videoIsVp9 && !state.threadActive &&

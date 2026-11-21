@@ -11,6 +11,7 @@
 #include "decode-h264.h"
 #include "decode-aac.h"
 #include "tee_vp9/tee_vp9.h"   // TEE's VP9 decoder on the SPEs (vendored unchanged, see tee_vp9.sha256)
+#include "tee_vp9/rsx_mc.h"    // (V3.1.0 Test 4) its RSX part: rsx_mc_drop_prealloc, rsx_mc_test_inject
 #include "../tee_opus/tee_opus.h"   // TEE's Opus decoder on the PPU: VP9's sound (vendored unchanged)
 #include "audio.h"
 #include "thread.h"
@@ -105,12 +106,20 @@ typedef struct {
 // about 10 Mbit/s but runs at 27 - 37 Mbit/s for half a minute in a busy scene (Elden Ring DLC at 17:11, Test 1):
 // more than the PS3 downloads. The input is the cushion that rides such a stretch out: 20 MB is its queue of
 // 256 frames (about 4 s) at the peak rate, the module's default 6 MB a little over 1 s of it.
-typedef struct { int pictures, tasks; uint32_t inputMb; } Vp9Setup;   // tasks 0: the decoder's own (5)
-static const Vp9Setup VP9_SETUPS[] = { { 12, 0, 20 }, { 10, 0, 20 }, { 10, 0, 6 } };
+// (V3.1.0 Test 4) and the sizes of its pools of records in MB (0: the decoder's own)
+typedef struct { int pictures, tasks; uint32_t inputMb, entropyPoolMb, recordsPoolMb; } Vp9Setup;   // tasks 0: the decoder's own (5)
+static const Vp9Setup VP9_SETUPS[] = { { 12, 0, 20, 0, 0 }, { 10, 0, 20, 0, 0 }, { 10, 0, 6, 0, 0 } };
 // (V3.1.0) 4K, with the decoder's tasks (frames in its pixel stage, their records in its pool): 8 pictures of 13.5 MB
 // and 10 MB of input are 159 MB - about what 1440p's first setup takes (154 MB; 18 MB stayed free beside it on TEE's
 // console, Test 3) -, then the VP9 project's measured ones (7 pictures and 4 tasks 142 MB, 6 and 3 126 MB with 6 MB)
-static const Vp9Setup VP9_SETUPS_4K[] = { { 8, 4, 10 }, { 7, 4, 10 }, { 7, 4, 6 }, { 6, 3, 6 } };
+static const Vp9Setup VP9_SETUPS_4K[] = { { 8, 4, 10, 0, 0 }, { 7, 4, 10, 0, 0 }, { 7, 4, 6, 0, 0 }, { 6, 3, 6, 0, 0 } };
+// (V3.1.0 Test 4) with the RSX part (vp9-rsx=): it takes 20 - 29 MB beside the decoder's own (prediction surfaces in
+// tvp9_open; at the first key frame a 3 MB vertex ring and 1 MB of rows a slot), so less input and a picture less. 1440p
+// (MB = 2^20, from tee_vp9.c's and rsx_mc.c's sizes): 11 pictures and 8 MB of input 158 MB in all, 10 and 8 MB 152, 10 and
+// 6 MB 150 - the VP9 project's measured one; the first setup above would need 177. 4K: 7 pictures, 3 tasks, 3 MB of input and
+// pools of 6 / 12 MB 156 MB (not measured), then the VP9 project's recommendation, 6 pictures and 3 tasks (152 MB)
+static const Vp9Setup VP9_SETUPS_RSX[] = { { 11, 0, 8, 0, 0 }, { 10, 0, 8, 0, 0 }, { 10, 0, 6, 0, 0 } };
+static const Vp9Setup VP9_SETUPS_4K_RSX[] = { { 7, 3, 3, 6, 12 }, { 6, 3, 3, 0, 0 } };
 
 static int vp9Spes = 6;           // see setVideoVp9Spes
 // (V3.1.0 Test 3) the display's counters (setVideoDisplayHooks) and the switches of display-sync= and vp9-release=
@@ -119,6 +128,17 @@ static int haveDisplayHooks;
 static int syncByFlips = 1;
 static int releaseEarly = 1;
 #define RETIRE_FENCE_MAX_US 250000ull   // a flip that has not happened by then (the flip handler stopped?) holds no picture
+// (V3.1.0 Test 4) TEE VP9's RSX part (setVideoVp9Rsx). Its state in the block is file-static (rsx_mc.c), so at most one
+// decoder has it at a time, and a player left behind turns it off for the run
+static int vp9RsxMode;                     // 0 off, 1 up to 1440p, 2 4K too
+static const char *vp9RsxTest = "";        // settings.txt rsx-test=
+static volatile int vp9RsxSessionOff;      // off for the rest of the run (disableVp9RsxForSession)
+static volatile int vp9RsxLive;            // decoders open with rsx = 1
+static int vp9RsxRingTaken;                // an RSX part started once: the block keeps its 3 MB vertex ring from here on
+#define VP9_RSX_TRUST_PICTURES 30          // pictures an rsx = 1 decoder has to get its RSX part going in, else built anew
+#define VP9_RSX_FREE_MB        8           // what has to stay free once the RSX part has what it takes at the first key frame
+#define VP9_RSX_PAUSE_US       2000000     // the screen's pause and the RSX's drain around tvp9_close
+#define VP9_RSX_STALL_ROWS     1500        // rsx-test=stall-3000: the RSX stands still 3 s after this many rows (about 1 s)
 static uint32_t vp9KeyFrameLimit = VP9_KEY_FRAME_BYTES;   // (V3.0.4 Test 2) lowered for the rest of the run by a stop
 static uint32_t vp9KeyFrameLimit4k = VP9_KEY_FRAME_BYTES_4K;   // (V3.1.0) ... the same for 4K's key frames
 
@@ -174,6 +194,14 @@ struct VideoPlayer {
    int              vp9Restarts;      // ... how often it was opened anew
    int              vp9RsxOn;         // the decoder's rsx_frames grew: the RSX thresholds apply
    int              vp9RsxFrames;     // ... its value at the last stats line
+   int              vp9FramesAtStats; // (V3.1.0 Test 4) ... and the frames' (rsx_frames stood still while they grew: given up)
+   int              vp9Rsx;           // ... TEE VP9 is open with its RSX part (rsx = 1)
+   int              vp9MemoryAppMapped;   // ... vp9Memory came from the UI's allocator (freeFrame); rsx = 1: memalign, free()
+   volatile int     vp9RsxTrusted;    // ... its RSX part predicts and the block has mapped the pictures: they are drawn
+   int              vp9RsxUntrusted;  // ... pictures before that (VP9_RSX_TRUST_PICTURES: the player fails, built anew)
+   int              vp9RsxShown;      // ... pictures since (rsx-test=brake-after-30)
+   int              vp9RsxMemLogged;  // ... the memory line after its first picture
+   volatile int     failedOnRsx;      // ... the player failed because its RSX part did not start (didVideoPlayerFailOnRsx)
    int              vp9Is4k;          // (V3.1.0) the main stream is 4K: its thresholds, key-frame limit and ring
    int              vp9Slots;         // ... the slots the ring may fill (VP9_SLOTS, VP9_SLOTS_4K)
    const char      *vp9HighName, *vp9LowName;   // ... "1440p" and "1080p", or "2160p" and "1440p" (the log's words)
@@ -377,6 +405,14 @@ static void retireFlippedSlots(VideoPlayer *player, uint64_t nowUs)
       if (player->slots[i].state == SLOT_RETIRING && slotFlipDone(&player->slots[i], nowUs)) retireSlot(player, i);
 }
 
+// (V3.1.0 Test 4) a picture of a decoder with the RSX part goes back only after the flip of its last draw, whatever
+// vp9-release says: with the RSX shared there is no wait for the flip in the command stream, and the RSX may still read the
+// picture as a texture until that flip (rule 5)
+static int releaseByFlip(const VideoPlayer *player)
+{
+   return releaseEarly || player->vp9Rsx;
+}
+
 // what a slot shows: its YUV buffer, or a VP9 picture's luma (non-NULL is all getVideoFrame's callers ask)
 static const uint8_t *slotPicture(const FrameSlot *slot)
 {
@@ -452,10 +488,16 @@ static uint32_t *vp9KeyLimit(const VideoPlayer *player)
    return player->vp9Is4k ? &vp9KeyFrameLimit4k : &vp9KeyFrameLimit;
 }
 
+// (V3.1.0 Test 4) the RSX's thresholds are 1440p's: 4K keeps those of the SPEs alone until it is measured with the RSX
+static int vp9RsxThresholds(const VideoPlayer *player)
+{
+   return player->vp9RsxOn && !player->vp9Lowered && !player->vp9Is4k;
+}
+
 static void vp9Thresholds(const VideoPlayer *player, double *down, double *up)
 {
-   if (player->vp9RsxOn && !player->vp9Lowered) { *down = VP9_DOWN_BPS_RSX; *up = VP9_UP_BPS_RSX; }
-   else                                          { *down = player->vp9DownBps; *up = player->vp9UpBps; }
+   if (vp9RsxThresholds(player)) { *down = VP9_DOWN_BPS_RSX; *up = VP9_UP_BPS_RSX; }
+   else                          { *down = player->vp9DownBps; *up = player->vp9UpBps; }
 }
 
 // Mbit/s with one decimal, as two ints for the log (its printf has no floating point)
@@ -564,7 +606,7 @@ static int vp9ConsiderChange(VideoPlayer *player, const VideoAu *au)
            toLow ? player->vp9HighName : player->vp9LowName, toLow ? player->vp9LowName : player->vp9HighName,
            (int)(landed / 1000000000ull), (int)(landed / 1000000ull % 1000),
            player->vp9SwitchWhy, VP9_MBIT(player->vp9SwitchBps), VP9_MBIT(down), VP9_MBIT(up),
-           player->vp9RsxOn && !player->vp9Lowered ? ", the RSX's" : player->vp9Lowered ? ", lowered" : "");
+           vp9RsxThresholds(player) ? ", the RSX's" : player->vp9Lowered ? ", lowered" : "");
    return 1;
 }
 
@@ -695,7 +737,7 @@ static int decodeNextVp9(VideoPlayer *player, tvp9_picture *pic)
       if (player->vp9Fed != fedSeen) { fedSeen = player->vp9Fed; stalledMs = 0; }
       // (V3.1.0 Test 3) a picture the screen let go of goes back while the decoder waits - it may be the buffer the next
       // picture needs (until Test 2 only claimEmptySlot handed them back, after the next picture had come out)
-      if (releaseEarly) {
+      if (releaseByFlip(player)) {
          int any = 0;
          for (int i = 0; i < FRAME_SLOTS; i++) if (player->slots[i].state == SLOT_RELEASE) any = 1;
          if (any) { lock(&player->lock); releaseVp9Slots(player); unlock(&player->lock); }
@@ -707,6 +749,69 @@ static int decodeNextVp9(VideoPlayer *player, tvp9_picture *pic)
       logError("[video-player] TEE VP9: no picture and no input for %d ms\n", VP9_STALL_MS);
       return -1;
    }
+   return 0;
+}
+
+// (V3.1.0 Test 4) TEE VP9's RSX part off for the rest of the run: later players open the decoder without it
+static void disableVp9RsxForSession(const char *why)
+{
+   if (vp9RsxSessionOff) return;
+   vp9RsxSessionOff = 1;
+   logWarn("[video-player] TEE VP9's RSX part is off for the rest of this run: %s\n", why);
+}
+
+// ... a decoder with it opened anew (or closed): none of its pictures drawn, nor its thresholds used, until the latch trusts it
+static void vp9RsxLatchReset(VideoPlayer *player)
+{
+   lock(&player->lock);
+   player->vp9RsxTrusted = 0;
+   player->vp9RsxOn = 0;
+   unlock(&player->lock);
+   player->vp9RsxUntrusted = 0;
+   player->vp9RsxShown = 0;
+   player->vp9RsxMemLogged = 0;
+}
+
+// ... after tvp9_close of a decoder with it: one less, and the crash marker goes if it was set
+static void vp9RsxClosed(VideoPlayer *player)
+{
+   (void)__sync_fetch_and_sub(&vp9RsxLive, 1);
+   if (player->vp9RsxTrusted && displayHooks.rsxActive) displayHooks.rsxActive(0);
+   vp9RsxLatchReset(player);
+}
+
+// ... the trust latch, after each picture until it trusts the decoder (decode thread, no lock held). Its pictures are drawn
+// only once the RSX part predicts (rsx_frames > 0 counts only frames that got an RSX slot) and the block has mapped the
+// picture block for the RSX: the first key frame's set-up maps it (rsx_mc_init), and a set-up run again would unmap it under
+// a picture being drawn - a started RSX part never runs it again. 1: go on; 0: VP9_RSX_TRUST_PICTURES pictures and it did
+// not start - the player fails, and play.c builds it anew without the RSX part
+static int vp9RsxTrust(VideoPlayer *player)
+{
+   tvp9_stats stats;
+   tvp9_get_stats(player->vp9, &stats);
+   if (!player->vp9RsxMemLogged) {
+      sys_memory_info_t memory;
+      player->vp9RsxMemLogged = 1;
+      if (sys_memory_get_user_memory_size(&memory) == CELL_OK)
+         logInfo("[video-player] user memory at TEE VP9's first picture with rsx = 1: %u MB free of %u MB (heap not counted)\n",
+                 (unsigned)(memory.available_user_memory >> 20), (unsigned)(memory.total_user_memory >> 20));
+   }
+   int mapped = displayHooks.isMapped && displayHooks.isMapped(player->vp9Memory);
+   if (stats.rsx_frames > 0 && mapped) {
+      lock(&player->lock);
+      player->vp9RsxTrusted = 1;
+      player->vp9RsxOn = 1;
+      unlock(&player->lock);
+      vp9RsxRingTaken = 1;
+      if (displayHooks.rsxActive) displayHooks.rsxActive(1);   // the crash marker: a run that ends now, the next goes without
+      logInfo("[video-player] TEE VP9: RSX part predicts (rsx_frames %d after %d pictures) - its pictures are drawn from here on\n",
+              stats.rsx_frames, player->vp9RsxUntrusted + 1);
+      return 1;
+   }
+   if (++player->vp9RsxUntrusted < VP9_RSX_TRUST_PICTURES) return 1;
+   logWarn("[video-player] TEE VP9: %d pictures and its RSX part did not predict (rsx_frames %d, the pictures %smapped) - the "
+           "player is built anew without it\n", player->vp9RsxUntrusted, stats.rsx_frames, mapped ? "" : "not ");
+   disableVp9RsxForSession("its RSX part did not start");
    return 0;
 }
 
@@ -735,7 +840,10 @@ static void afterVp9Picture(VideoPlayer *player, const tvp9_picture *pic)
       tvp9_get_stats(player->vp9, &stats);
       // integers only: this printf has no floating point
       if (stats.rsx_frames > player->vp9RsxFrames) player->vp9RsxOn = 1;   // (Test 14) the RSX part predicts
+      // (V3.1.0 Test 4) ... and no more: frames grew and rsx_frames did not - the block gave the RSX up (or found it no faster)
+      else if (player->vp9RsxOn && stats.frames > player->vp9FramesAtStats) player->vp9RsxOn = 0;
       player->vp9RsxFrames = stats.rsx_frames;
+      player->vp9FramesAtStats = stats.frames;
       // (V3.1.0) the frames 0.3.2 left out, and those that waited for room in its pools of records (0.3.1)
       logInfo("[video-player] TEE VP9: %d frames, %d pictures, %d.%d pictures/s while busy, entropy %d us, pixel %d us a frame, "
               "%s %s, rsx_frames %d, %d left out, %d + %d waited for room\n", stats.frames, stats.pictures, (int)stats.fps,
@@ -956,7 +1064,15 @@ static int restartVp9OnLow(VideoPlayer *player)
    } else {
       sleepMs(40);
    }
+   // (V3.1.0 Test 4) with the RSX part, tvp9_close unmaps the picture block, the prediction surfaces and the vertex ring - and
+   // an unmap wants the RSX idle (libgcm reference, cellGcmUnmapEaIoAddress): the screen pauses (the UI writes no commands)
+   // and the RSX is drained first, and drawing goes on right after the close. The new decoder has the same configuration,
+   // the RSX part again, its pictures drawn once the latch trusts it
+   int rsx = player->vp9Rsx, paused = rsx && displayHooks.pause && displayHooks.resume;
+   if (paused) displayHooks.pause(VP9_RSX_PAUSE_US);
    tvp9_close(player->vp9);
+   if (paused) displayHooks.resume();
+   if (rsx) vp9RsxClosed(player);
    char err[160];
    err[0] = 0;
    player->vp9 = tvp9_open(&player->vp9Config, err, sizeof err);
@@ -970,6 +1086,10 @@ static int restartVp9OnLow(VideoPlayer *player)
       player->vp9FeedPause = 0;   // (it waits: no decoder)
       return 0;
    }
+   if (rsx) {
+      (void)__sync_fetch_and_add(&vp9RsxLive, 1);
+      vp9RsxLatchReset(player);
+   }
    uint64_t landed = walked ? at : seekVideoDemuxer(&player->lowDemuxer, at, 0);
    player->vp9OnLow = 1;
    player->vp9LastSwitchNs = landed;
@@ -982,6 +1102,7 @@ static int restartVp9OnLow(VideoPlayer *player)
    player->vp9RatePictures = 0;
    player->vp9StatsUs = 0;
    player->vp9RsxFrames = 0;
+   player->vp9FramesAtStats = 0;   // (V3.1.0 Test 4)
    player->vp9LastPts = (int64_t)landed - 1;
    vp9SkipLate(player);   // (V3.1.0) the new decoder leaves out what is late from its first frame on
    __sync_synchronize();
@@ -1128,6 +1249,7 @@ static void decodeThread(uint64_t arg)
 
       int width, height; uint64_t pts;
       int got;
+      int rsxFailOver = 0;   // (V3.1.0 Test 4) the RSX part did not start: the player fails, play.c builds it anew without it
       if (player->vp9) {
          tvp9_picture *pic = &player->slots[slot].vp9;
          got = decodeNextVp9(player, pic);
@@ -1136,13 +1258,22 @@ static void decodeThread(uint64_t arg)
             player->slots[slot].hasVp9 = 1;   // published with SLOT_READY under the lock below
             afterVp9Picture(player, pic);
             player->vp9LastPts = (int64_t)pts;   // (V3.0.4 Test 2)
+            if (player->vp9Rsx && !player->vp9RsxTrusted && !vp9RsxTrust(player)) {   // (V3.1.0 Test 4)
+               tvp9_release_picture(player->vp9, pic);
+               player->slots[slot].hasVp9 = 0;
+               got = -1;
+               rsxFailOver = 1;
+            } else if (player->vp9Rsx && player->vp9RsxTrusted && ++player->vp9RsxShown == 30 &&
+                       strcmp(vp9RsxTest, "brake-after-30") == 0 && displayHooks.brake) {
+               displayHooks.brake("TEST: rsx-test=brake-after-30");   // (the block's next row finds no room: it gives up)
+            }
          }
       } else {
          got = player->decoder ? decodeNextFrame(player, player->slots[slot].yuv, &width, &height, &pts, &startedAtKeyframe) : -1;
       }
       // (V3.0.4 Test 2) TEE VP9 stopped in 1440p: opened anew, on in 1080p (it empties every slot, this one too)
-      if (got < 0 && player->vp9 && player->running && player->seekRequestNs < 0 && restartVp9OnLow(player)) continue;
-      if (got < 0 && player->running && player->seekRequestNs < 0 && recoverDecoder(player, &startedAtKeyframe)) {
+      if (got < 0 && !rsxFailOver && player->vp9 && player->running && player->seekRequestNs < 0 && restartVp9OnLow(player)) continue;
+      if (got < 0 && !rsxFailOver && player->running && player->seekRequestNs < 0 && recoverDecoder(player, &startedAtKeyframe)) {
          lock(&player->lock);
          player->slots[slot].state = SLOT_EMPTY;
          unlock(&player->lock);
@@ -1170,6 +1301,7 @@ static void decodeThread(uint64_t arg)
          if (player->seekRequestNs < 0) {
             player->ended = 1;
             if (got < 0) player->failed = 1;   // (V3.0.4) an error, not the end: hasVideoPlayerFailed
+            if (rsxFailOver) player->failedOnRsx = 1;   // (V3.1.0 Test 4) ... didVideoPlayerFailOnRsx
          }
          unlock(&player->lock);
          // idle at end of stream (or after a hard error) until a seek restarts decode
@@ -1502,6 +1634,10 @@ void setVideoDisplayHooks(const VideoDisplayHooks *hooks)
 }
 void setVideoDisplaySync(int byFlips) { syncByFlips = byFlips ? 1 : 0; }
 void setVideoVp9ReleaseEarly(int early) { releaseEarly = early ? 1 : 0; }
+// (V3.1.0 Test 4) see video-player.h
+void setVideoVp9Rsx(int mode) { vp9RsxMode = mode == 1 || mode == 2 ? mode : 0; }
+void setVideoVp9RsxTest(const char *test) { vp9RsxTest = test ? test : ""; }
+int didVideoPlayerFailOnRsx(const VideoPlayer *player) { return player && player->failedOnRsx; }
 
 void getVideoPlayerCounters(VideoPlayer *player, VideoPlayerCounters *counters)
 {
@@ -1533,6 +1669,113 @@ int isVideoOnLowTrack(const VideoPlayer *player)
 
 static void logVp9Line(const char *line) { logInfo("[tee-vp9] %s\n", line); }
 
+// the open line's word on the sound
+static const char *vp9SoundWord(const VideoPlayer *player)
+{
+   return player->hasAudioDemuxer && player->audioDemuxer.isOpus ? ", Opus sound on the PPU"
+          : vp9Spes == 6 ? ", no sound (AAC needs an SPE)" : ", AAC sound";
+}
+
+// (V3.1.0 Test 4) the picture block back: to the UI's allocator, which mapped it - or, rsx = 1 (the block mapped it and
+// tvp9_close unmapped it), to the heap
+static void freeVp9Memory(VideoPlayer *player)
+{
+   if (!player->vp9Memory) return;
+   if (player->vp9MemoryAppMapped) player->freeFrame(player->vp9Memory);
+   else free(player->vp9Memory);
+   player->vp9Memory = 0;
+}
+
+// (V3.1.0 Test 4) TEE VP9 with its RSX part for this stream? vp9-rsx= asks for it, the display shares the RSX (not given up,
+// no crash marker found), no other decoder has it, the run has not turned it off - and 4K only with vp9-rsx=on
+static int vp9RsxWanted(const VideoPlayer *player)
+{
+   static int unsharedLogged;
+   if (!vp9RsxMode || vp9RsxSessionOff || vp9RsxLive != 0 || (vp9RsxMode == 1 && player->vp9Is4k)) return 0;
+   if (!haveDisplayHooks || !displayHooks.rsxAllowed || !displayHooks.isMapped || !displayHooks.pause || !displayHooks.resume ||
+       !displayHooks.rsxAllowed()) {
+      if (!unsharedLogged) {
+         unsharedLogged = 1;
+         logWarn("[video-player] vp9-rsx: the display does not share the RSX (gfx-share off, the RSX part given up, or the last "
+                 "run ended while it predicted) - TEE VP9 on the SPEs alone\n");
+      }
+      return 0;
+   }
+   return 1;
+}
+
+// ... the gate after an open with it: what the RSX part takes at the first key frame - the 3 MB vertex ring (once a run; the
+// block keeps it), 1 MB of rows a slot (3 up to 2560 x 1472, 2 above), about 1 MB of rectangle lists - has to leave
+// VP9_RSX_FREE_MB free, or the SPU groups run short of the system's memory (0x80010004 in the VP9 project's tests)
+static int vp9RsxMemoryLeft(const VideoPlayer *player, int *freeMb)
+{
+   sys_memory_info_t memory;
+   *freeMb = -1;
+   if (sys_memory_get_user_memory_size(&memory) != CELL_OK) return 0;
+   int needMb = VP9_RSX_FREE_MB + (vp9RsxRingTaken ? 0 : 3) + (player->vp9Is4k ? 2 : 3) + 1;
+   *freeMb = (int)(memory.available_user_memory >> 20);
+   return *freeMb >= needMb;
+}
+
+// ... the open: the RSX setups, the picture block in memory of its own that the app never maps (the block maps it at the
+// first key frame and unmaps it in tvp9_close), the gate. None fits: the prediction surfaces tvp9_open took (17 - 24 MB) go
+// back for the setups without the RSX part. 1: open, *config what it was opened with
+static int openVp9Rsx(VideoPlayer *player, tvp9_config *config, char *err, int errLen)
+{
+   const Vp9Setup *setups = player->vp9Is4k ? VP9_SETUPS_4K_RSX : VP9_SETUPS_RSX;
+   unsigned setupCount = player->vp9Is4k ? sizeof VP9_SETUPS_4K_RSX / sizeof VP9_SETUPS_4K_RSX[0]
+                                         : sizeof VP9_SETUPS_RSX / sizeof VP9_SETUPS_RSX[0];
+   for (unsigned setup = 0; setup < setupCount; setup++) {
+      tvp9_config c = *config;
+      c.rsx = 1;
+      c.pictures = setups[setup].pictures;
+      c.tasks = setups[setup].tasks;
+      c.input_bytes = setups[setup].inputMb << 20;
+      c.entropy_pool = setups[setup].entropyPoolMb << 20;
+      c.records_pool = setups[setup].recordsPoolMb << 20;
+      size_t bytes = tvp9_picture_memory_size(&c);
+      void *memory = memalign(1024 * 1024, bytes);
+      if (!memory) {
+         snprintf(err, (size_t)errLen, "no 1 MB aligned block of %d MB for %d pictures", (int)(bytes >> 20), c.pictures);
+         continue;
+      }
+      c.picture_memory = memory;
+      c.picture_memory_bytes = bytes;
+      if (strcmp(vp9RsxTest, "stall-3000") == 0) rsx_mc_test_inject(0, VP9_RSX_STALL_ROWS, 3000);   // (its next run)
+      tvp9 *decoder = tvp9_open(&c, err, errLen);
+      if (!decoder) {
+         logWarn("[video-player] TEE VP9 with the RSX part did not open with %d pictures, %d tasks and %d MB input: %s\n",
+                 c.pictures, c.tasks ? c.tasks : 5, (int)(c.input_bytes >> 20), err);
+         free(memory);
+         continue;
+      }
+      int freeMb;
+      if (!vp9RsxMemoryLeft(player, &freeMb)) {
+         tvp9_close(decoder);   // (nothing of its RSX part is set up before the first key frame: no pause, nothing unmapped)
+         free(memory);
+         snprintf(err, (size_t)errLen, "%d MB free with %d pictures and %d MB input, short of what its RSX part takes", freeMb,
+                  c.pictures, (int)(c.input_bytes >> 20));
+         logWarn("[video-player] TEE VP9 with the RSX part: %s\n", err);
+         continue;
+      }
+      player->vp9 = decoder;
+      player->vp9Memory = memory;
+      player->vp9MemoryAppMapped = 0;
+      player->vp9Rsx = 1;
+      (void)__sync_fetch_and_add(&vp9RsxLive, 1);
+      vp9RsxLatchReset(player);
+      *config = c;
+      logInfo("[video-player] TEE VP9 %s: %dx%d stream, %d + %d SPEs, %d pictures, %d tasks, %d MB input (%d MB + %d MB)%s, "
+              "with the RSX part (rsx = 1; %d MB free)\n", TEE_VP9_VERSION, player->demuxer.width, player->demuxer.height,
+              c.entropy_spes, c.pixel_spes, c.pictures, c.tasks ? c.tasks : 5, (int)(c.input_bytes >> 20), (int)(bytes >> 20),
+              (int)(tvp9_memory_size(&c) >> 20), vp9SoundWord(player), freeMb);
+      return 1;
+   }
+   if (vp9RsxLive == 0) rsx_mc_drop_prealloc();   // (rsx_mc.c does it only while nothing of it is set up)
+   logWarn("[video-player] TEE VP9 with the RSX part does not fit (%s) - without it\n", err);
+   return 0;
+}
+
 // VP9: opens the TEE VP9 building block for the stream (createVideoPlayerSplit, before the decode thread). Its
 // picture buffers come from the UI's allocator - RSX-visible, 1 MB aligned - so the RSX draws the pictures where
 // the decoder wrote them; no H.264 frame slots are allocated. With all 6 SPEs on the picture the sound is closed
@@ -1560,18 +1803,25 @@ static int openVp9(VideoPlayer *player, VideoFrameAllocFn allocFrame)
    }
    char err[160];
    err[0] = 0;
+   // (V3.1.0 Test 4) with the RSX part first, when it may run - its own setups and memory; without it the tables above, and
+   // the prediction surfaces an earlier stream with it left in the heap (17 - 24 MB: rsx_mc keeps them) go back first - the
+   // rebuild after a fail-over needs them most
+   if (vp9RsxWanted(player)) openVp9Rsx(player, &config, err, (int)sizeof err);
+   else if (vp9RsxLive == 0) rsx_mc_drop_prealloc();   // (nothing to do when there are none; rsx_mc.c refuses while in use)
    int pictures = 0;
    for (unsigned setup = 0; setup < setupCount && !player->vp9; setup++) {
       pictures = setups[setup].pictures;
       config.pictures = pictures;
       config.tasks = setups[setup].tasks;
       config.input_bytes = setups[setup].inputMb << 20;
+      config.entropy_pool = setups[setup].entropyPoolMb << 20;   // (V3.1.0 Test 4: 0 in these, the decoder's own as before)
+      config.records_pool = setups[setup].recordsPoolMb << 20;
       size_t bytes = tvp9_picture_memory_size(&config);
       player->vp9Memory = allocFrame(bytes);
+      player->vp9MemoryAppMapped = 1;   // (V3.1.0 Test 4) the UI's allocator's: freeFrame gives it back
       if (!player->vp9Memory || ((uintptr_t)player->vp9Memory & 0xFFFFF)) {
          snprintf(err, sizeof err, "no 1 MB aligned block of %d MB for %d pictures", (int)(bytes >> 20), pictures);
-         if (player->vp9Memory) player->freeFrame(player->vp9Memory);
-         player->vp9Memory = 0;
+         freeVp9Memory(player);
          continue;
       }
       config.picture_memory = player->vp9Memory;
@@ -1580,15 +1830,12 @@ static int openVp9(VideoPlayer *player, VideoFrameAllocFn allocFrame)
       if (!player->vp9) {
          logWarn("[video-player] TEE VP9 did not open with %d pictures, %d tasks and %d MB input: %s\n", pictures,
                  config.tasks ? config.tasks : 5, (int)(config.input_bytes >> 20), err);
-         player->freeFrame(player->vp9Memory);
-         player->vp9Memory = 0;
+         freeVp9Memory(player);
       }
       else logInfo("[video-player] TEE VP9 %s: %dx%d stream, %d + %d SPEs, %d pictures, %d tasks, %d MB input (%d MB + %d MB)%s\n",
                    TEE_VP9_VERSION, player->demuxer.width, player->demuxer.height, config.entropy_spes, config.pixel_spes,
                    pictures, config.tasks ? config.tasks : 5, (int)(config.input_bytes >> 20), (int)(bytes >> 20),
-                   (int)(tvp9_memory_size(&config) >> 20),
-                   player->hasAudioDemuxer && player->audioDemuxer.isOpus ? ", Opus sound on the PPU"
-                   : vp9Spes == 6 ? ", no sound (AAC needs an SPE)" : ", AAC sound");
+                   (int)(tvp9_memory_size(&config) >> 20), vp9SoundWord(player));
    }
    if (player->vp9) player->vp9Config = config;   // (V3.0.4 Test 2) for restartVp9OnLow
    sys_memory_info_t memory;
@@ -1767,6 +2014,9 @@ void destroyVideoPlayer(VideoPlayer *player)
          logError("[video-player] the decode thread did not stop in %d ms (the TEE Decoder hangs?): player left behind\n",
                   DESTROY_WAIT_MS);
          disableH264TeeForSession("it hung");
+         // (V3.1.0 Test 4) the RSX part's state is file-static in the block (rsx_mc.c): with a decoder left open no other one
+         // may have it - and vp9RsxLive stays counted
+         disableVp9RsxForSession("a player was left behind");
          releaseAudioPipeline(player);
          return;
       }
@@ -1775,8 +2025,16 @@ void destroyVideoPlayer(VideoPlayer *player)
    }
    releaseAudioPipeline(player);
    destroyH264Decoder(player->decoder);
-   if (player->vp9) tvp9_close(player->vp9);                         // the SPEs stop (by force if one hangs)
-   if (player->vp9Memory) player->freeFrame(player->vp9Memory);
+   if (player->vp9) {
+      // (V3.1.0 Test 4) with the RSX part: the RSX idle before tvp9_close unmaps its memory (see restartVp9OnLow) - on the UI
+      // thread, where play.c destroys a player after finishGfx, that is a drain only
+      int rsx = player->vp9Rsx, paused = rsx && displayHooks.pause && displayHooks.resume;
+      if (paused) displayHooks.pause(VP9_RSX_PAUSE_US);
+      tvp9_close(player->vp9);                                     // the SPEs stop (by force if one hangs)
+      if (paused) displayHooks.resume();
+      if (rsx) vp9RsxClosed(player);
+   }
+   freeVp9Memory(player);
    closeVideoDemuxer(&player->demuxer);
    if (player->hasAudioDemuxer) closeVideoDemuxer(&player->audioDemuxer);
    if (player->hasLowDemuxer) closeVideoDemuxer(&player->lowDemuxer);
@@ -1880,7 +2138,7 @@ const uint8_t *getVideoFrame(VideoPlayer *player, int *width, int *height)
    lock(&player->lock);
    // (V3.1.0 Test 3) the pictures the screen is done with go back at every present - before the returns of a seek or a
    // pre-roll too, which can hold a picture back for seconds
-   if (releaseEarly) retireFlippedSlots(player, nowUs);
+   if (releaseByFlip(player)) retireFlippedSlots(player, nowUs);
 
    // a posted seek freezes presentation: frames decoded before the flush must not advance the
    // position; the displayed frame stays up until the new position's frames arrive
@@ -1972,7 +2230,7 @@ const uint8_t *getVideoFrame(VideoPlayer *player, int *width, int *height)
    if (best >= 0) {
       for (int i = 0; i < FRAME_SLOTS; i++) {
          if (player->slots[i].state == SLOT_RETIRING) {                                                  // GPU is done with it by now -
-            if (!releaseEarly || slotFlipDone(&player->slots[i], nowUs)) retireSlot(player, i);          // (Test 3) once its flip happened
+            if (!releaseByFlip(player) || slotFlipDone(&player->slots[i], nowUs)) retireSlot(player, i);   // (Test 3) once its flip happened
          } else if (player->slots[i].state == SLOT_DISPLAYING) {                                          // hold it for the frame in flight
             player->slots[i].state = SLOT_RETIRING;
             player->slots[i].retiringUs = nowUs;
@@ -2244,7 +2502,9 @@ long getVideoLiveFirstSq(const VideoPlayer *player)
 
 const char *getVideoDecoderName(const VideoPlayer *player)
 {
-   if (player && player->vp9) return "TEE Decoder";   // TEE: the format is on the video line, the decoder is the TEE Decoder
+   // TEE: the format is on the video line, the decoder is the TEE Decoder - (V3.1.0 Test 4) the R3 panel's " RSX" while its RSX
+   // part predicts
+   if (player && player->vp9) return player->vp9RsxOn ? "TEE Decoder RSX" : "TEE Decoder";
    return player ? getH264DecoderName(player->decoder) : "none";
 }
 
@@ -2260,6 +2520,9 @@ int getVideoFrameLayout(VideoPlayer *player, VideoFrameLayout *out)
    int idx = player->displayIndex;
    if (idx < 0) { unlock(&player->lock); return 0; }
    FrameSlot *slot = &player->slots[idx];
+   // (V3.1.0 Test 4) a picture of a decoder with the RSX part is drawn only once the latch trusts it (vp9RsxTrust) - not
+   // stamped either, so it goes back at once
+   if (slot->hasVp9 && player->vp9Rsx && !player->vp9RsxTrusted) { unlock(&player->lock); return 0; }
    // (V3.1.0 Test 3) the frame being drawn shows this picture: it goes back once that frame's flip has happened
    if (haveDisplayHooks) { slot->drawnFlip = displayHooks.nextFlipId(); slot->drawn = 1; }
    if (slot->hasVp9) {

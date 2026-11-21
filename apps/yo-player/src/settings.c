@@ -88,6 +88,9 @@ static int updateCheck = 1;                  // (V3.0.0 Test 12) update-check=: 
 static int displaySyncByFlips = 1;           // (V3.1.0 Test 3) display-sync=: flips / wall
 static int logAsync = 1;                     // ... log=: async / sync
 static int vp9ReleaseEarly = 1;              // ... vp9-release=: early / late (not in the file: the bench's A/B)
+static int gfxShare = 0;                     // (V3.1.0 Test 4) gfx-share=: off / on (not in the file: experimental)
+static int vp9Rsx = 0;                       // ... vp9-rsx=: off / 1440 / on
+static char rsxTest[16];                     // ... rsx-test=: a test's word, "" for none
 
 // ---- content region ----
 
@@ -189,6 +192,34 @@ static int parseRegion(const char *value)
 static void settingsPath(char *out, int cap)
 {
    snprintf(out, cap, "%s/settings.txt", getAppDataDir());
+}
+
+// (V3.1.0 Test 4) the first word of a value findSettingValue found - up to a blank, a '#' or the line's end - cut to cap - 1
+static void copySettingWord(const char *value, char *out, int cap)
+{
+   int length = 0;
+   while (length < cap - 1 && value[length] && value[length] != '\r' && value[length] != '\n' && value[length] != ' ' &&
+          value[length] != '\t' && value[length] != '#') {
+      out[length] = value[length];
+      length++;
+   }
+   out[length] = 0;
+}
+
+// (V3.1.0 Test 4) see settings.h: main.c asks for gfx-share= before initGfx, which loadSettings runs after (the data
+// folder is there by then: migrateAppData). Main thread only: 4 KB of buffer on the stack, as loadSettings
+int readEarlySetting(const char *key, char *value, int cap)
+{
+   if (cap <= 0) return 0;
+   value[0] = 0;
+   char path[128];
+   settingsPath(path, sizeof path);
+   char text[SETTINGS_FILE_CAP];
+   if (readFile(path, text, sizeof text) <= 0) return 0;
+   const char *found = findSettingValue(text, key);
+   if (!found) return 0;
+   copySettingWord(found, value, cap);
+   return 1;
 }
 
 // (V3.0.3) A file V3.0.0 - V3.0.2 wrote holds subtitle-language=off with the comment that YouTube refuses its
@@ -356,9 +387,26 @@ void loadSettings(void)
       else if (settingValueEquals(release, "late"))  vp9ReleaseEarly = 0;
       else logWarn("[settings] vp9-release takes early or late, using early\n");
    }
-   logInfo("[settings] video-decoder %s, tee-decoder-spes %d, vp9-spes %d, display-sync %s, log %s, vp9-release %s\n",
-           videoDecoder == VIDEO_DECODER_SONY ? "sony" : "auto", teeDecoderSpes, vp9Spes, displaySyncByFlips ? "flips" : "wall",
-           logAsync ? "async" : "sync", vp9ReleaseEarly ? "early" : "late");
+   // (V3.1.0 Test 4) TEE VP9's RSX part: main.c has read gfx-share= already (readEarlySetting) - this is for the line below
+   const char *share = findSettingValue(text, "gfx-share");
+   if (share) {
+      if      (settingValueEquals(share, "off")) gfxShare = 0;
+      else if (settingValueEquals(share, "on"))  gfxShare = 1;
+      else logWarn("[settings] gfx-share takes off or on, using off\n");
+   }
+   const char *rsx = findSettingValue(text, "vp9-rsx");
+   if (rsx) {
+      if      (settingValueEquals(rsx, "off"))  vp9Rsx = 0;
+      else if (settingValueEquals(rsx, "1440")) vp9Rsx = 1;
+      else if (settingValueEquals(rsx, "on"))   vp9Rsx = 2;
+      else logWarn("[settings] vp9-rsx takes off, 1440 or on, using off\n");
+   }
+   const char *test = findSettingValue(text, "rsx-test");
+   if (test) copySettingWord(test, rsxTest, sizeof rsxTest);
+   logInfo("[settings] video-decoder %s, tee-decoder-spes %d, vp9-spes %d, display-sync %s, log %s, vp9-release %s, gfx-share %s, "
+           "vp9-rsx %s%s%s\n", videoDecoder == VIDEO_DECODER_SONY ? "sony" : "auto", teeDecoderSpes, vp9Spes,
+           displaySyncByFlips ? "flips" : "wall", logAsync ? "async" : "sync", vp9ReleaseEarly ? "early" : "late",
+           gfxShare ? "on" : "off", vp9Rsx == 2 ? "on" : vp9Rsx == 1 ? "1440" : "off", rsxTest[0] ? ", rsx-test " : "", rsxTest);
    const char *quality = findSettingValue(text, "quality");
    if (quality && !settingValueEquals(quality, "auto")) {
       int height = 0;
@@ -475,6 +523,9 @@ int getVp9Spes(void) { return vp9Spes; }
 int getDisplaySyncByFlips(void) { return displaySyncByFlips; }   // (V3.1.0 Test 3)
 int getLogAsync(void) { return logAsync; }
 int getVp9ReleaseEarly(void) { return vp9ReleaseEarly; }
+int getGfxShare(void) { return gfxShare; }   // (V3.1.0 Test 4)
+int getVp9Rsx(void) { return vp9Rsx; }
+const char *getRsxTest(void) { return rsxTest; }
 
 int getDownloadQuality(void) { return downloadQuality; }
 

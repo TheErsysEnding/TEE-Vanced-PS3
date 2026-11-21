@@ -29,6 +29,15 @@ int getVp9Spes(void);
 int getDisplaySyncByFlips(void);
 int getLogAsync(void);
 int getVp9ReleaseEarly(void);
+// (V3.1.0 Test 4) experimental - may freeze the console, so not in the file it writes; only with someone at the console:
+// gfx-share=off|on (0 / 1): the RSX's command buffer shared with TEE VP9's RSX part (gfx.h setGfxShareMode - main.c reads it
+// with readEarlySetting before initGfx, a bench job's global gfx-share= winning); vp9-rsx=off|1440|on (0 / 1 / 2): TEE VP9
+// predicts on the RSX, up to 1440p or 4K too (needs gfx-share=on); rsx-test=<word>: a test of its failure paths ("" none)
+int getGfxShare(void);
+int getVp9Rsx(void);
+const char *getRsxTest(void);
+// key= from settings.txt before loadSettings has run: 1 with its first word in value (cut to cap - 1 bytes), 0 without it
+int readEarlySetting(const char *key, char *value, int cap);
 // settings.txt download-quality=1440|1080|xmb: the R3 page's last choice (0, 1, 2 - downloads.h DownloadQuality)
 int getDownloadQuality(void);
 int setDownloadQuality(int quality);

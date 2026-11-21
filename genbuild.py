@@ -72,11 +72,11 @@ def split_list(value):
 #   folder, manifest (project-relative), left out of the build, files allowed besides the manifest's, C flags
 VENDORED = [
     ("src/tee_decoder", "tee_decoder.sha256", {"td_plat_ps3.c"}, set(), ""),
-    # 0.2.1: the RSX part (rsx_mc.c, vp9_rsxmc.c, vp9_tables.c, tv9_rsx_programs.c, -DTV9_RSX) stays out until the
-    # display code keeps the rules of tv9_rsx_host.h - the picture runs on the SPEs alone (rsx = 0) meanwhile
-    ("src/tee_vp9", "src/tee_vp9/tee_vp9.sha256",
-     {"tv9_plat_ps3.c", "rsx_mc.c", "vp9_rsxmc.c", "vp9_tables.c", "tv9_rsx_programs.c"},
-     {"tee_vp9.sha256", "tee_vp9.NOTICE", "libvpx.LICENSE", "libvpx.PATENTS", "PSL1GHT.LICENSE"}, "-std=gnu99"),
+    # 0.3.2: the RSX part is built in - rsx_mc.c, vp9_rsxmc.c, vp9_tables.c and tv9_rsx_programs.c are compiled and
+    # linked, the whole block with -DTV9_RSX (only tee_vp9.c tests it). The link then needs the nine tv9h_ functions of
+    # tv9_rsx_host.h from the display code (gfx.c); tvp9_config.rsx decides at run time (0: the SPEs alone, as before)
+    ("src/tee_vp9", "src/tee_vp9/tee_vp9.sha256", {"tv9_plat_ps3.c"},
+     {"tee_vp9.sha256", "tee_vp9.NOTICE", "libvpx.LICENSE", "libvpx.PATENTS", "PSL1GHT.LICENSE"}, "-std=gnu99 -DTV9_RSX"),
 ]
 
 # TEE's Opus building block (libs/simple-lib-av/tee_opus, vendored unchanged): a library built with the SDK, linked

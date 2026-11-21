@@ -179,3 +179,25 @@ uint32_t getGfxVblanksMissed(void);
 // two), the longest gap in microseconds - for the bench (apps/yo-player bench.c), read on the UI thread
 typedef struct { uint32_t flips, gaps25, gaps42, maxGapUs; } GfxFlipStats;
 void getGfxFlipStats(GfxFlipStats *stats);
+
+// ---- (TEE Vanced V3.1.0 Test 4) the RSX shared with TEE VP9's RSX part (settings.txt gfx-share=on, experimental) ----
+// setGfxShareMode, before initGfx: on = one command buffer of 955 KB instead of libgcm's 32 KB segments, a lock around
+// every group of commands, no wait for the flip in the command stream - the five rules of tee_vp9/tv9_rsx_host.h, whose nine
+// tv9h_ functions gfx.c implements. test: settings.txt rsx-test= (NULL or "" for none; "small-cb" makes the buffer 48 KB, so it
+// starts over every frame or two; "fail-start" keeps TEE VP9's RSX part from starting). Off, the default: the command stream
+// of V3.1.0 Test 3, command for command.
+void setGfxShareMode(int on, const char *test);
+int  isGfxShared(void);                       // on, and libgcm's buffer had the layout the sharing needs
+// for the player (video-player.h VideoDisplayHooks): TEE VP9 may use the RSX - shared, not braked, and the last run did not
+// end while the RSX predicted (the marker DBG_DIR/rsx-active); the RSX can read `address` (it is mapped for it)
+int  isGfxRsxAllowed(void);
+int  isGfxRsxReadable(const void *address);
+// around tvp9_close of a decoder with the RSX part (it unmaps memory, which wants the RSX idle): from another thread the UI
+// writes no commands meanwhile (at most 5 s), and the RSX is drained (0, or -1 when it did not finish within timeoutUs); on
+// the UI thread only the drain
+int  pauseGfxDrawing(uint32_t timeoutUs);
+void resumeGfxDrawing(void);
+// the RSX part given up for the rest of the run, with a log line (once)
+void brakeGfxRsx(const char *why);
+// the crash marker: on when a decoder's RSX part predicts, off at its close - found at the next start, vp9-rsx is off once
+void setGfxRsxActive(int on);
