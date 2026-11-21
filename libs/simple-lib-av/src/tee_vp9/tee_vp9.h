@@ -3,8 +3,8 @@
 /* TEE VP9 - a VP9 decoder of its own on the PS3's SPEs, as a building block for apps. The interface follows the TEE
    Decoder's (tee_decoder.h, H.264) function by function, so a player that drives one can drive the other.
 
-   What it decodes: VP9 profile 0 (8 bit, 4:2:0), up to 2560 x 1440, as YouTube serves it in WebM (itag 308, 271,
-   303, 248 ...). Not: profiles 1 - 3 (10 bit, 4:4:4), a reference frame of another size (scaled prediction). Such
+   What it decodes: VP9 profile 0 (8 bit, 4:2:0), up to 2560 x 1440 by default and (0.3.0) up to 3840 x 2160 when
+   max_width / max_height say so, as YouTube serves it in WebM (itag 308, 271, 303, 248 ...; 4K: 313, 315). Not: profiles 1 - 3 (10 bit, 4:4:4), a reference frame of another size (scaled prediction). Such
    a stream stops with an error (tvp9_error says which), it never shows garbage.
 
    How fast (measured on the console with the test application, whole clips, every picture equal to ffmpeg's): real
@@ -64,7 +64,7 @@
 extern "C" {
 #endif
 
-#define TEE_VP9_VERSION "0.2.2"
+#define TEE_VP9_VERSION "0.3.2"
 
 typedef struct tvp9 tvp9;
 
@@ -87,6 +87,12 @@ typedef struct {
 	int timeout_ms;                 /* an SPE that does not answer this long stops the decoder (10000) */
 	int max_pictures;               /* decode at most this many */
 	int no_store;                   /* the pixel SPEs write reconstructed superblocks into the frame, not a store */
+	uint32_t entropy_pool;          /* (0.3.1) bytes of records an entropy SPE may hold (up to 2560 x 1472: 13.5 MB;
+	                                   larger: 10 MB) */
+	uint32_t records_pool;          /* (0.3.1) bytes of records the tasks hold together (up to 2560 x 1472: 5 MB a
+	                                   task; larger: 9 MB + 2.5 MB for every task after the first) */
+	int rsx_slots;                  /* (0.3.1) frames under way at the RSX at a time, 2 or 3 (up to 2560 x 1472: 3,
+	                                   larger: 2): one prediction surface each (4K: 12 MB) */
 
 	/* 0.2: 1 = the RSX predicts the inter blocks that have one reference, and the pixel SPEs fetch its predictions
 	   (real YouTube 1440p60: 74 - 77 pictures a second instead of 62 - 66). Needs a build with the block's RSX part
@@ -96,7 +102,8 @@ typedef struct {
 	   up until tvp9_close and goes on on the SPEs alone. The frames that were under way have no proper predictions
 	   then, and the frames after them build on those: their pictures are not handed out, up to the next key frame
 	   (tvp9_picture.index skips their numbers; YouTube has a key frame about every 5 s).
-	   The picture block is mapped for the RSX by the decoder, and 17 MB of prediction surfaces come on top */
+	   The picture block is mapped for the RSX by the decoder, and 17 MB of prediction surfaces come on top (1440p;
+	   4K: 36 MB, with rsx_slots = 2 24 MB) */
 	int rsx;
 } tvp9_config;
 
@@ -106,7 +113,8 @@ typedef struct {
 	int width, height;              /* the picture's size, e.g. 2560 x 1440; chroma planes: half of each, rounded up */
 	int64_t pts;                    /* the time stamp fed with its block */
 	int index;                      /* 0, 1, 2 ... since tvp9_open / tvp9_flush (numbers are skipped where pictures
-	                                   were not handed out after the RSX part failed: see tvp9_config.rsx) */
+	                                   were not handed out after the RSX part failed: see tvp9_config.rsx; (0.3.2) and
+	                                   where frames were skipped: tvp9_skip_before) */
 	int key_frame;                  /* 1: a key frame */
 	uint32_t offset_y, offset_u, offset_v;   /* y, u, v as byte offsets into the picture memory block */
 	int out_, gen_;                 /* internal */
@@ -147,6 +155,18 @@ void   tvp9_picture_memory(const tvp9 *d, void **base, size_t *size);
 int    tvp9_size(const tvp9 *d, int *width, int *height);   /* the picture size; 0 before the first key frame */
 int    tvp9_pictures_decoded(const tvp9 *d);   /* since tvp9_open / tvp9_flush */
 
+/* (0.3.2) a player that falls behind: the shown frames with a time stamp below pts that no other frame refers to (VP9's
+   refresh_frame_flags = 0) are parsed but not decoded, and their pictures are not handed out - tvp9_picture.index
+   skips their numbers, tvp9_stats.skipped counts them. Every other picture stays exact: such a frame changes no
+   reference, and the entropy stage still reads it for the probabilities and motion vectors the next frame takes over.
+   YouTube's harder streams have one every 5 - 12 frames (9 % of the frames in a 4K forest in the wind, 16 - 18 % in
+   fireworks, 11 % in a 1440p60 game), calmer ones often none - skipping then changes nothing.
+   The decision falls when the entropy stage is done with a frame, a few frames before its picture would come: pass
+   the time stamp due on the screen now plus a margin for that lead, in the units fed with the blocks (with
+   WebM's milliseconds: clock + 100, see TEE-VP9-INTEGRATION.md), whenever the clock moves. INT64_MIN (the default, also
+   after tvp9_flush): none skipped; INT64_MAX: every such frame. Any thread, any time */
+void   tvp9_skip_before(tvp9 *d, int64_t pts);
+
 /* a block's first frame, without a decoder: 1 a key frame (*width, *height and *profile set), 0 another frame
    (*profile set), -1 not a VP9 frame. For a demuxer that looks for a place to start and for a player that asks
    whether the decoder takes the stream (profile 0, the size within the configuration) */
@@ -157,10 +177,12 @@ typedef struct {
 	int frames, pictures;           /* frames decoded (hidden ones too); pictures handed out */
 	int dropped;                    /* blocks dropped before the first key frame */
 	int rsx_frames;                 /* frames the RSX predicted blocks of (tvp9_config.rsx) */
+	int entropy_waits, records_waits;   /* (0.3.1) frames that waited for room in a pool of records */
 	double entropy_ms, pixel_ms;    /* the mean time a frame took on its entropy SPEs (the slower one) and on its
 	                                   pixel SPEs (their sum) */
 	double fps;                     /* frames decoded a second of wall time while the decoder was not waiting for
 	                                   input or for the app to release pictures */
+	int skipped;                    /* (0.3.2) shown frames not decoded (tvp9_skip_before) */
 } tvp9_stats;
 void   tvp9_get_stats(const tvp9 *d, tvp9_stats *s);
 

@@ -79,10 +79,15 @@
 
 #define RSXMC_STRIP_W      192              /* strips: a superblock's cell */
 #define RSXMC_STRIP_H      32
-#define RSXMC_STRIP_PER    12               /* ... cells side by side */
-#define RSXMC_STRIP_PITCH  (RSXMC_STRIP_PER * RSXMC_STRIP_W)            /* 2304 = 9 * 256: no power of two */
-#define RSXMC_STRIP_ROWS(g)  ((((g)->aw / 64) * ((g)->ah / 64) + RSXMC_STRIP_PER - 1) / RSXMC_STRIP_PER * RSXMC_STRIP_H)
-#define RSXMC_STRIP_BYTES(g) ((size_t)RSXMC_STRIP_ROWS(g) * RSXMC_STRIP_PITCH)
+/* ... cells side by side: 12 (pitch 2304 = 9 * 256: no power of two); (3.76) 20 when 12 a line would make the surface
+   taller than a render target may be (4096 lines; a 4K frame has 2040 superblocks: 5440 lines with 12, 3264 with 20 at
+   pitch 3840 = 15 * 256). The pixel SPU takes it from the job's pitch (pred_pitch_y / PIX_STRIP_W) */
+#define RSXMC_STRIP_PER_OF(aw, ah) \
+	((((aw) / 64) * ((ah) / 64) + 11) / 12 * RSXMC_STRIP_H <= 4096 ? 12 : 20)
+#define RSXMC_STRIP_PER(g)   RSXMC_STRIP_PER_OF((g)->aw, (g)->ah)
+#define RSXMC_STRIP_PITCH(g) (RSXMC_STRIP_PER(g) * RSXMC_STRIP_W)
+#define RSXMC_STRIP_ROWS(g)  ((((g)->aw / 64) * ((g)->ah / 64) + RSXMC_STRIP_PER(g) - 1) / RSXMC_STRIP_PER(g) * RSXMC_STRIP_H)
+#define RSXMC_STRIP_BYTES(g) ((size_t)RSXMC_STRIP_ROWS(g) * RSXMC_STRIP_PITCH(g))
 
 #define RSXMC_SB_BYTES     6144             /* packed: a superblock's predictions (64 x 64 + 32 x (32 + 32)) */
 #define RSXMC_ROW_H(g)     ((g)->aw / 64 * 96)                          /* ... a superblock row's surface: its height */
