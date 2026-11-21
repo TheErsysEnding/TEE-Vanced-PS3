@@ -213,6 +213,7 @@ struct VideoPlayer {
    int              vp9RsxOn;         // the decoder's rsx_frames grew: the RSX thresholds apply
    int              vp9RsxFrames;     // ... its value at the last stats line
    int              vp9FramesAtStats; // (V3.1.0 Test 4) ... and the frames' (rsx_frames stood still while they grew: given up)
+   int              vp9ProbeStage;    // (V3.1.0 Test 8) decode thread: the start probe's lines logged since the open or a seek
    int              vp9Rsx;           // ... TEE VP9 is open with its RSX part (rsx = 1)
    int              vp9MemoryAppMapped;   // ... vp9Memory came from the UI's allocator (freeFrame); rsx = 1: memalign, free()
    volatile int     vp9RsxTrusted;    // ... its RSX part predicts and the block has mapped the pictures: they are drawn
@@ -924,6 +925,28 @@ static void afterVp9Picture(VideoPlayer *player, const tvp9_picture *pic)
               player->vp9LowName : player->vp9HighName, stats.rsx_frames, stats.skipped, stats.entropy_waits,
               stats.records_waits);
    }
+   // (V3.1.0 Test 8) the start probe, logged only for now: the decoder's numbers after its first 8, 16 and 32 frames since
+   // the open or a seek (tvp9_flush starts them over) - the key frame's among them. A probe that holds the pre-roll and
+   // starts a video too heavy for its stream on the lower one would go by them; these lines are for its threshold
+   if (player->vp9ProbeStage < 3) {
+      static const int PROBE_AT[3] = { 8, 16, 32 };
+      tvp9_stats probe;
+      tvp9_get_stats(player->vp9, &probe);
+      while (player->vp9ProbeStage < 3 && probe.frames >= PROBE_AT[player->vp9ProbeStage]) {
+         int64_t frameNs = (int64_t)player->demuxer.frameDurationNs;
+         int rateX100 = frameNs > 0 ? (int)(100000000000ll / frameNs) : 0;
+         uint64_t clock = presentationClockNs(player, nowUs);
+         logInfo("[video-player] probe after %d frames (%d pictures) in %s: %d.%d pictures/s while busy, the video %d.%02d; "
+                 "entropy %d us, pixel %d us a frame, %d + %d waited for room; %s, the picture %d ms %s the clock\n",
+                 probe.frames, probe.pictures, !player->hasLowDemuxer ? player->vp9HighName : player->vp9OnLow ?
+                 player->vp9LowName : player->vp9HighName, (int)probe.fps, (int)(probe.fps * 10.0) % 10, rateX100 / 100,
+                 rateX100 % 100, (int)(probe.entropy_ms * 1000.0), (int)(probe.pixel_ms * 1000.0), probe.entropy_waits,
+                 probe.records_waits, player->started ? "playing" : "in the pre-roll",
+                 (int)(((int64_t)clock > pic->pts ? (int64_t)clock - pic->pts : pic->pts - (int64_t)clock) / 1000000),
+                 (int64_t)clock > pic->pts ? "behind" : "ahead of");
+         player->vp9ProbeStage++;
+      }
+   }
    if (player->demuxer.frameDurationNs) return;
    if (player->vp9RatePictures == 0) { player->vp9FirstPts = (uint64_t)pic->pts; player->vp9FirstIndex = pic->index; }
    if (++player->vp9RatePictures <= VP9_RATE_PICTURES) return;
@@ -1152,6 +1175,7 @@ static int restartVp9OnLow(VideoPlayer *player)
    char err[160];
    err[0] = 0;
    player->vp9 = tvp9_open(&player->vp9Config, err, sizeof err);
+   player->vp9ProbeStage = 0;   // (V3.1.0 Test 8) a new decoder, new numbers
    if (!player->vp9) {   // the smaller input, as openVp9's last setup
       tvp9_config smaller = player->vp9Config;
       smaller.input_bytes = 6u << 20;
@@ -1268,6 +1292,7 @@ static void performSeek(VideoPlayer *player)
    player->statsShown = player->statsLate = player->statsRepeats = player->statsStarved = player->statsMissed = 0;
    player->vp9DropSeconds = 0;           // (V3.0.4) and the safety net's count of seconds with pictures dropped,
    player->vp9DropIgnore = VP9_DROP_IGNORE;   // the pre-roll's own seconds passed over
+   player->vp9ProbeStage = 0;            // (V3.1.0 Test 8) the decoder's numbers start over with the flush
    player->vp9CatchingUp = 0;            // the pre-roll below holds and releases the sound itself
    // hold the audio feed until the first post-seek frame actually presents (getVideoFrame releases it), so
    // audio can't drain ahead and then race the video to catch up (the "speedup"). (Test 13) In the same locked step
