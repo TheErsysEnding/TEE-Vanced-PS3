@@ -42,6 +42,10 @@ typedef struct {
    int      state;
    tvp9_picture vp9;    // VP9: the decoder's picture this slot shows, drawn from the decoder's own memory
    int      hasVp9;     // vp9 holds a picture that goes back to the decoder when the slot is done with
+   // (V3.1.0 Test 3) the flip of the last frame that drew it (getVideoFrameLayout): RETIRING goes once that flip happened
+   uint32_t drawnFlip;
+   int      drawn;
+   uint64_t retiringUs; // when it left the screen (a flip that never comes holds it no longer than RETIRE_FENCE_MAX_US)
 } FrameSlot;
 
 // VP9 (TEE VP9 building block): the slots hold the decoder's pictures, not copies of them. A held picture keeps
@@ -109,6 +113,12 @@ static const Vp9Setup VP9_SETUPS[] = { { 12, 0, 20 }, { 10, 0, 20 }, { 10, 0, 6 
 static const Vp9Setup VP9_SETUPS_4K[] = { { 8, 4, 10 }, { 7, 4, 10 }, { 7, 4, 6 }, { 6, 3, 6 } };
 
 static int vp9Spes = 6;           // see setVideoVp9Spes
+// (V3.1.0 Test 3) the display's counters (setVideoDisplayHooks) and the switches of display-sync= and vp9-release=
+static VideoDisplayHooks displayHooks;
+static int haveDisplayHooks;
+static int syncByFlips = 1;
+static int releaseEarly = 1;
+#define RETIRE_FENCE_MAX_US 250000ull   // a flip that has not happened by then (the flip handler stopped?) holds no picture
 static uint32_t vp9KeyFrameLimit = VP9_KEY_FRAME_BYTES;   // (V3.0.4 Test 2) lowered for the rest of the run by a stop
 static uint32_t vp9KeyFrameLimit4k = VP9_KEY_FRAME_BYTES_4K;   // (V3.1.0) ... the same for 4K's key frames
 
@@ -168,6 +178,7 @@ struct VideoPlayer {
    int              vp9Slots;         // ... the slots the ring may fill (VP9_SLOTS, VP9_SLOTS_4K)
    const char      *vp9HighName, *vp9LowName;   // ... "1440p" and "1080p", or "2160p" and "1440p" (the log's words)
    uint64_t     vp9StatsUs;       // when the decoder's numbers last went to the log
+   uint64_t     vp9CountersUs;    // (V3.1.0 Test 3) ... and into totals
    uint64_t     vp9FirstPts;      // the rate measurement for a WebM without a frame duration
    int          vp9FirstIndex;    // ... and its picture number: (V3.1.0) a frame left out has a number too
    int          vp9RatePictures;
@@ -240,6 +251,8 @@ struct VideoPlayer {
    uint64_t syncLastUs;         // when the last present ran
    int      syncVblanks;        // vblanks counted toward the next picture
    int      syncSpeedSet;       // the sound's tempo is not 1.0 at the moment
+   uint32_t syncLastMissed;     // (V3.1.0 Test 3) the display's missed-vblank count at the last present (display-sync=flips)
+   VideoPlayerCounters totals;  // (V3.1.0 Test 3) what the player has done, for the bench (getVideoPlayerCounters)
    // (V3.0.0) VP9: the sound waits for the picture. Its Opus track is a stream of its own, a few KB a second, so a
    // picture short of input (or of decoding time) fell behind a sound that ran on - up to 0.7 s in the hardest
    // minutes of a 1440p60 stream (TEE, 2026-11-12). Past AV_HOLD_ENGAGE_NS behind, the sound pauses (clock frozen)
@@ -341,6 +354,25 @@ static void retireSlot(VideoPlayer *player, int i)
    player->slots[i].state = player->slots[i].hasVp9 ? SLOT_RELEASE : SLOT_EMPTY;
 }
 
+// (V3.1.0 Test 3) rule 5 of TEE VP9's RSX part, for every picture: a slot that left the screen goes once the flip of the
+// last frame that drew it has happened - the RSX has read it by then (it draws in the order of the command stream, and
+// that flip comes after the draw). Until V3.1.0 Test 2 a slot left at the second present with a new picture: at 30 fps on
+// a 60 Hz screen a picture 4K's ring of three needs back stayed a whole present longer than it had to (caller holds
+// player->lock)
+static int slotFlipDone(const FrameSlot *slot, uint64_t nowUs)
+{
+   if (!haveDisplayHooks || !slot->drawn) return 1;
+   if ((int32_t)(displayHooks.flipsDone() - slot->drawnFlip) >= 0) return 1;
+   return nowUs - slot->retiringUs > RETIRE_FENCE_MAX_US;
+}
+
+// at every present, not only at one with a new picture (vp9-release=early)
+static void retireFlippedSlots(VideoPlayer *player, uint64_t nowUs)
+{
+   for (int i = 0; i < FRAME_SLOTS; i++)
+      if (player->slots[i].state == SLOT_RETIRING && slotFlipDone(&player->slots[i], nowUs)) retireSlot(player, i);
+}
+
 // what a slot shows: its YUV buffer, or a VP9 picture's luma (non-NULL is all getVideoFrame's callers ask)
 static const uint8_t *slotPicture(const FrameSlot *slot)
 {
@@ -359,7 +391,7 @@ static int claimEmptySlot(VideoPlayer *player)
       if (inUse >= player->vp9Slots) { unlock(&player->lock); return -1; }   // (V3.1.0) 4K's ring is shorter
    }
    for (int i = 0; i < FRAME_SLOTS; i++)
-      if (player->slots[i].state == SLOT_EMPTY) { player->slots[i].state = SLOT_FILLING; found = i; break; }
+      if (player->slots[i].state == SLOT_EMPTY) { player->slots[i].state = SLOT_FILLING; player->slots[i].drawn = 0; found = i; break; }
    unlock(&player->lock);
    return found;
 }
@@ -454,6 +486,7 @@ static int vp9ConsiderChange(VideoPlayer *player, const VideoAu *au)
       uint64_t lowAt = seekMkvDemuxerToCluster(&player->lowDemuxer.container.mkv, from);
       if (lowAt != MKV_NO_CLUSTER) {
          player->vp9OnLow = 1;
+         player->totals.toLow++;   // (V3.1.0 Test 3)
          player->vp9LastSwitchNs = lowAt;
          player->vp9SwitchAtNs = -1;          // a change planned for later is this one
          player->vp9StartedAtKeyframe = 0;    // the cluster's first block is a key frame - if not, on to the next one
@@ -519,6 +552,7 @@ static int vp9ConsiderChange(VideoPlayer *player, const VideoAu *au)
    player->vp9SwitchAtNs = -1;
    uint64_t landed = seekVideoDemuxer(toLow ? &player->lowDemuxer : &player->demuxer, at, 0);
    player->vp9OnLow = toLow;
+   if (toLow) player->totals.toLow++; else player->totals.toHigh++;   // (V3.1.0 Test 3)
    player->vp9LastSwitchNs = landed;
    double down, up;
    vp9Thresholds(player, &down, &up);
@@ -655,6 +689,13 @@ static int decodeNextVp9(VideoPlayer *player, tvp9_picture *pic)
       }
       if (player->vp9FeedError) return -1;
       if (player->vp9Fed != fedSeen) { fedSeen = player->vp9Fed; stalledMs = 0; }
+      // (V3.1.0 Test 3) a picture the screen let go of goes back while the decoder waits - it may be the buffer the next
+      // picture needs (until Test 2 only claimEmptySlot handed them back, after the next picture had come out)
+      if (releaseEarly) {
+         int any = 0;
+         for (int i = 0; i < FRAME_SLOTS; i++) if (player->slots[i].state == SLOT_RELEASE) any = 1;
+         if (any) { lock(&player->lock); releaseVp9Slots(player); unlock(&player->lock); }
+      }
       sleepMs(1); stalledMs++;
    }
    if (player->running && player->seekRequestNs < 0 && stalledMs >= VP9_STALL_MS) {
@@ -670,6 +711,19 @@ static int decodeNextVp9(VideoPlayer *player, tvp9_picture *pic)
 static void afterVp9Picture(VideoPlayer *player, const tvp9_picture *pic)
 {
    uint64_t nowUs = sys_time_get_system_time();
+   // (V3.1.0 Test 3) the decoder's numbers for the bench, about once a second (word by word: a torn read costs nothing)
+   if (nowUs - player->vp9CountersUs >= 1000000ull) {
+      player->vp9CountersUs = nowUs;
+      tvp9_stats now;
+      tvp9_get_stats(player->vp9, &now);
+      player->totals.vp9Frames = now.frames;
+      player->totals.vp9Pictures = now.pictures;
+      player->totals.vp9Skipped = now.skipped;
+      player->totals.vp9RsxFrames = now.rsx_frames;
+      player->totals.vp9EntropyWaits = now.entropy_waits;
+      player->totals.vp9RecordsWaits = now.records_waits;
+      player->totals.vp9BusyFpsX10 = (int)(now.fps * 10.0);
+   }
    if (!player->vp9StatsUs) player->vp9StatsUs = nowUs;
    else if (nowUs - player->vp9StatsUs >= 10000000ull) {
       player->vp9StatsUs = nowUs;
@@ -888,8 +942,16 @@ static int restartVp9OnLow(VideoPlayer *player)
    player->vp9DropSeconds = 0;
    player->vp9CatchingUp = 1;
    player->vp9CatchingUpUs = nowUs;
+   uint32_t lastFlip = haveDisplayHooks ? displayHooks.nextFlipId() : 0;   // (V3.1.0 Test 3) the frame being drawn
    unlock(&player->lock);
-   sleepMs(40);   // the frame in flight: the RSX may still draw the last picture
+   // the frame in flight: the RSX may still draw the last picture. (V3.1.0 Test 3) Until that frame's flip has happened -
+   // at most 1 s - rather than a guess of 40 ms
+   if (haveDisplayHooks) {
+      for (int waited = 0; waited < 1000 && player->running && (int32_t)(displayHooks.flipsDone() - lastFlip) < 0; waited++)
+         sleepMs(1);
+   } else {
+      sleepMs(40);
+   }
    tvp9_close(player->vp9);
    char err[160];
    err[0] = 0;
@@ -1428,6 +1490,31 @@ static void setUpDisplaySync(VideoPlayer *player)
 
 void setVideoVp9Spes(int spes) { vp9Spes = spes == 5 ? 5 : 6; }
 
+// (V3.1.0 Test 3) see video-player.h
+void setVideoDisplayHooks(const VideoDisplayHooks *hooks)
+{
+   if (hooks && hooks->nextFlipId && hooks->flipsDone && hooks->vblanksMissed) { displayHooks = *hooks; haveDisplayHooks = 1; }
+   else haveDisplayHooks = 0;
+}
+void setVideoDisplaySync(int byFlips) { syncByFlips = byFlips ? 1 : 0; }
+void setVideoVp9ReleaseEarly(int early) { releaseEarly = early ? 1 : 0; }
+
+void getVideoPlayerCounters(VideoPlayer *player, VideoPlayerCounters *counters)
+{
+   if (!counters) return;
+   memset(counters, 0, sizeof *counters);
+   counters->memFreeMb = -1;
+   if (!player) return;
+   lock(&player->lock);
+   *counters = player->totals;
+   counters->width = player->demuxer.width;
+   counters->height = player->demuxer.height;
+   counters->fpsMilli = player->demuxer.frameDurationNs ? (int)(1000000000000ull / player->demuxer.frameDurationNs) : 0;
+   counters->onLow = isVideoOnLowTrack(player);
+   counters->restarts = (uint32_t)player->vp9Restarts;
+   unlock(&player->lock);
+}
+
 int isVideoVp9(const VideoPlayer *player) { return player && player->vp9; }
 int isAudioOpus(const VideoPlayer *player) { return player && player->opus; }
 // (V3.0.4 Test 2) by the picture on screen: the feeder reads seconds ahead of it, so its stream (vp9OnLow) told R3's
@@ -1501,9 +1588,11 @@ static int openVp9(VideoPlayer *player, VideoFrameAllocFn allocFrame)
    }
    if (player->vp9) player->vp9Config = config;   // (V3.0.4 Test 2) for restartVp9OnLow
    sys_memory_info_t memory;
-   if (player->vp9 && sys_memory_get_user_memory_size(&memory) == CELL_OK)
+   if (player->vp9 && sys_memory_get_user_memory_size(&memory) == CELL_OK) {
       logInfo("[video-player] user memory with TEE VP9 open: %u MB free of %u MB (heap not counted)\n",
               (unsigned)(memory.available_user_memory >> 20), (unsigned)(memory.total_user_memory >> 20));
+      player->totals.memFreeMb = (int)(memory.available_user_memory >> 20);   // (V3.1.0 Test 3)
+   }
    if (!player->vp9) { logError("[video-player] TEE VP9 did not open: %s\n", err); return -1; }
    if (vp9Spes == 6 && player->hasAudioDemuxer && !player->audioDemuxer.isOpus) {   // AAC: no SPE left for cellAdec
       closeVideoDemuxer(&player->audioDemuxer);
@@ -1719,9 +1808,23 @@ static const uint8_t *takeHeldFrame(VideoPlayer *player, int *width, int *height
 // the clock skips one, more than 1.5 ahead waits. Returns the slot to show, -1 to keep the current one.
 static int pickSyncedFrame(VideoPlayer *player, uint64_t nowUs, uint64_t clock)
 {
-   int64_t vblankUs = (int64_t)player->syncVblankUs;
-   int elapsed = (int)(((int64_t)(nowUs - player->syncLastUs) + vblankUs / 2) / vblankUs);
-   if (elapsed < 0) elapsed = 0;
+   int elapsed;
+   if (haveDisplayHooks && syncByFlips) {
+      // (V3.1.0 Test 3) every present is one flip, one vblank on screen - plus the vblanks the screen showed the last frame
+      // again for, which the flip handler counts from the flips' times. Counted by wall time, a present that ran late
+      // (a log write, a subtitle cue being rendered) but whose frame still made its vblank - the UI runs a frame ahead -
+      // counted 2 and the next one 0: a picture dropped and one repeated while the screen missed nothing (40 of the 75
+      // stutter seconds of VP9 in TEE's log of V3.0.4 Test 3)
+      uint32_t missedNow = displayHooks.vblanksMissed();
+      int missed = (int)(int32_t)(missedNow - player->syncLastMissed);
+      player->syncLastMissed = missedNow;
+      elapsed = 1 + (missed > 0 ? missed : 0);
+      if (elapsed > 6) elapsed = 6;
+   } else {
+      int64_t vblankUs = (int64_t)player->syncVblankUs;
+      elapsed = (int)(((int64_t)(nowUs - player->syncLastUs) + vblankUs / 2) / vblankUs);
+      if (elapsed < 0) elapsed = 0;
+   }
    player->syncLastUs = nowUs;
    player->syncVblanks += elapsed;
    int advance = player->syncVblanks / player->syncPerFrame;
@@ -1759,6 +1862,9 @@ const uint8_t *getVideoFrame(VideoPlayer *player, int *width, int *height)
    char prerollLine[160];  // (V3.0.0 Test 13) where picture and sound stand when the pre-roll ends
    prerollLine[0] = 0;
    lock(&player->lock);
+   // (V3.1.0 Test 3) the pictures the screen is done with go back at every present - before the returns of a seek or a
+   // pre-roll too, which can hold a picture back for seconds
+   if (releaseEarly) retireFlippedSlots(player, nowUs);
 
    // a posted seek freezes presentation: frames decoded before the flush must not advance the
    // position; the displayed frame stays up until the new position's frames arrive
@@ -1838,15 +1944,22 @@ const uint8_t *getVideoFrame(VideoPlayer *player, int *width, int *height)
       // pick the latest ready frame whose pts is due; drop older ready frames (skip if we fell behind)
       for (int i = 0; i < FRAME_SLOTS; i++)
          if (player->slots[i].state == SLOT_READY && player->slots[i].pts <= clock && (best < 0 || player->slots[i].pts >= bestPts)) { best = i; bestPts = player->slots[i].pts; }
-      if (synced && best >= 0) { player->syncActive = 1; player->syncLastUs = nowUs; player->syncVblanks = 0; }
+      if (synced && best >= 0) {
+         player->syncActive = 1; player->syncLastUs = nowUs; player->syncVblanks = 0;
+         if (haveDisplayHooks) player->syncLastMissed = displayHooks.vblanksMissed();   // (V3.1.0 Test 3)
+      }
    }
    if (!synced) player->syncActive = 0;
 
    int late = 0;
    if (best >= 0) {
       for (int i = 0; i < FRAME_SLOTS; i++) {
-         if (player->slots[i].state == SLOT_RETIRING) retireSlot(player, i);                             // GPU is done with it by now
-         else if (player->slots[i].state == SLOT_DISPLAYING) player->slots[i].state = SLOT_RETIRING;      // hold one present for the frame in flight
+         if (player->slots[i].state == SLOT_RETIRING) {                                                  // GPU is done with it by now -
+            if (!releaseEarly || slotFlipDone(&player->slots[i], nowUs)) retireSlot(player, i);          // (Test 3) once its flip happened
+         } else if (player->slots[i].state == SLOT_DISPLAYING) {                                          // hold it for the frame in flight
+            player->slots[i].state = SLOT_RETIRING;
+            player->slots[i].retiringUs = nowUs;
+         }
          else if (player->slots[i].state == SLOT_READY && player->slots[i].pts < bestPts) { retireSlot(player, i); late++; }   // drop skipped
       }
       player->slots[best].state = SLOT_DISPLAYING;
@@ -1916,6 +2029,7 @@ const uint8_t *getVideoFrame(VideoPlayer *player, int *width, int *height)
             player->audioHeld = 1;
             player->audioHeldSinceUs = nowUs;
             holdAction = 1;
+            player->totals.holds++;   // (V3.1.0 Test 3)
             snprintf(holdLine, sizeof holdLine, "[video-player] the sound waits for the picture: %d ms behind it, %d decoded\n",
                      (int)(behindNs / 1000000), readyAfter);
          }
@@ -1928,6 +2042,7 @@ const uint8_t *getVideoFrame(VideoPlayer *player, int *width, int *height)
              (player->vp9CatchingUp && behindNs < holdAtNs / 2)) {   // (V3.0.4) 1080p is on its way: the sound goes on
             player->audioHeld = 0;
             holdAction = 2;
+            player->totals.holdMs += (uint32_t)(heldUs / 1000);   // (V3.1.0 Test 3)
             snprintf(holdLine, sizeof holdLine, "[video-player] the sound runs on after %d ms, %d pictures decoded ahead\n",
                      (int)(heldUs / 1000), readyAfter);
          }
@@ -1956,6 +2071,7 @@ const uint8_t *getVideoFrame(VideoPlayer *player, int *width, int *height)
             player->vp9SafetyBps = bps;
             __sync_synchronize();
             player->vp9SafetyRequest = 1;
+            player->totals.safetyNets++;   // (V3.1.0 Test 3)
             player->vp9BehindSinceUs = player->vp9LastHoldUs = 0;
             player->vp9DropSeconds = 0;
             player->vp9CatchingUp = 1;   // (V3.0.4) the sound runs on from here until 1080p has caught up
@@ -1976,6 +2092,12 @@ const uint8_t *getVideoFrame(VideoPlayer *player, int *width, int *height)
       if (best >= 0) player->statsShown++; else player->statsRepeats++;
       if (best < 0 && readyCount == 0) player->statsStarved++;
       player->statsLate += late;
+      if (player->started) {   // (V3.1.0 Test 3) the same, since the player was built - for the bench
+         player->totals.presents++;
+         if (best >= 0) player->totals.shown++; else player->totals.repeats++;
+         if (best < 0 && readyCount == 0) player->totals.starved++;
+         player->totals.late += (uint32_t)late;
+      }
       if (readyCount < player->statsReadyMin) player->statsReadyMin = readyCount;
       if (nowUs - player->statsSecondUs >= 1000000ull) {
          // (V3.0.4) the safety net's earliest sign: a second in which 1440p dropped or missed VP9_DROPS_PER_S pictures -
@@ -2106,7 +2228,9 @@ int getVideoFrameLayout(VideoPlayer *player, VideoFrameLayout *out)
    lock(&player->lock);
    int idx = player->displayIndex;
    if (idx < 0) { unlock(&player->lock); return 0; }
-   const FrameSlot *slot = &player->slots[idx];
+   FrameSlot *slot = &player->slots[idx];
+   // (V3.1.0 Test 3) the frame being drawn shows this picture: it goes back once that frame's flip has happened
+   if (haveDisplayHooks) { slot->drawnFlip = displayHooks.nextFlipId(); slot->drawn = 1; }
    if (slot->hasVp9) {
       // the decoder's frame buffer: planes as wide as the stream rounded up to 64, a border on every side (the
       // module's 80 luma / 48 chroma samples, read back from the stride), each plane starting 128-byte aligned

@@ -50,6 +50,14 @@ static const char *DEFAULT_SETTINGS =
    "# 1440p (VP9, picked in START > Quality): 6 = 2 entropy + 4 pixel SPEs, 60 fps but no sound (Sony's sound\n"
    "# decoder needs an SPE of its own); 5 = 1 entropy + 4 pixel with sound, slower (50 - 63 fps measured)\n"
    "\n"
+   "display-sync=flips\n"
+   "# a video whose frame rate is the screen's shows one picture per vertical blank: flips = the picture moves on by\n"
+   "# the vertical blanks that went by and the flips that were missed; wall = by the time between two frames\n"
+   "\n"
+   "log=async\n"
+   "# the log (/dev_hdd0/tmp/TEE_Vanced/dbg.txt): async = written by a thread of its own every 0.1 s, so no write\n"
+   "# holds up the picture; sync = every line at once (errors always are)\n"
+   "\n"
    "quality=auto\n"
    "# the highest video quality to play: auto = the best the console plays smoothly, or a height such as 1080,\n"
    "# 720, 480, 360 or 144 - lower saves bandwidth on a slow connection. The player sets it too: START > Quality.\n"
@@ -77,6 +85,9 @@ static int downloadQuality = 0;   // download-quality=: the R3 page's last choic
 static int qualityCap = 0;   // quality=: the highest video height to play, 0 = auto
 static char subtitleLanguage[12] = "auto";   // (V3.0.0) subtitle-language=: off, auto or a code (V3.0.3: auto)
 static int updateCheck = 1;                  // (V3.0.0 Test 12) update-check=: on / off
+static int displaySyncByFlips = 1;           // (V3.1.0 Test 3) display-sync=: flips / wall
+static int logAsync = 1;                     // ... log=: async / sync
+static int vp9ReleaseEarly = 1;              // ... vp9-release=: early / late (not in the file: the bench's A/B)
 
 // ---- content region ----
 
@@ -326,8 +337,28 @@ void loadSettings(void)
       else if (settingValueEquals(vp9, "5")) vp9Spes = 5;
       else logWarn("[settings] vp9-spes takes 5 or 6, using 6\n");
    }
-   logInfo("[settings] video-decoder %s, tee-decoder-spes %d, vp9-spes %d\n", videoDecoder == VIDEO_DECODER_SONY ? "sony" : "auto",
-           teeDecoderSpes, vp9Spes);
+   // (V3.1.0 Test 3)
+   const char *sync = findSettingValue(text, "display-sync");
+   if (sync) {
+      if      (settingValueEquals(sync, "flips")) displaySyncByFlips = 1;
+      else if (settingValueEquals(sync, "wall"))  displaySyncByFlips = 0;
+      else logWarn("[settings] display-sync takes flips or wall, using flips\n");
+   }
+   const char *logMode = findSettingValue(text, "log");
+   if (logMode) {
+      if      (settingValueEquals(logMode, "async")) logAsync = 1;
+      else if (settingValueEquals(logMode, "sync"))  logAsync = 0;
+      else logWarn("[settings] log takes async or sync, using async\n");
+   }
+   const char *release = findSettingValue(text, "vp9-release");
+   if (release) {
+      if      (settingValueEquals(release, "early")) vp9ReleaseEarly = 1;
+      else if (settingValueEquals(release, "late"))  vp9ReleaseEarly = 0;
+      else logWarn("[settings] vp9-release takes early or late, using early\n");
+   }
+   logInfo("[settings] video-decoder %s, tee-decoder-spes %d, vp9-spes %d, display-sync %s, log %s, vp9-release %s\n",
+           videoDecoder == VIDEO_DECODER_SONY ? "sony" : "auto", teeDecoderSpes, vp9Spes, displaySyncByFlips ? "flips" : "wall",
+           logAsync ? "async" : "sync", vp9ReleaseEarly ? "early" : "late");
    const char *quality = findSettingValue(text, "quality");
    if (quality && !settingValueEquals(quality, "auto")) {
       int height = 0;
@@ -441,6 +472,9 @@ SponsorblockMode getSponsorblockMode(void) { return sponsorblockMode; }
 VideoDecoderSetting getVideoDecoderSetting(void) { return videoDecoder; }
 int getTeeDecoderSpes(void) { return teeDecoderSpes; }
 int getVp9Spes(void) { return vp9Spes; }
+int getDisplaySyncByFlips(void) { return displaySyncByFlips; }   // (V3.1.0 Test 3)
+int getLogAsync(void) { return logAsync; }
+int getVp9ReleaseEarly(void) { return vp9ReleaseEarly; }
 
 int getDownloadQuality(void) { return downloadQuality; }
 

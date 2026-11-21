@@ -87,3 +87,42 @@ typedef struct {
    int leftC, topC;                  // its top left inside the chroma planes
 } VideoFrameLayout;
 int getVideoFrameLayout(VideoPlayer *player, VideoFrameLayout *layout);
+
+// ---- (V3.1.0 Test 3) the display's counters, and the switches the bench (apps/yo-player bench.c) turns ----
+// The app's gfx layer counts flips and vertical blanks; main.c hands them over after initGfx. Without them the player
+// paces by wall time and gives a picture back one present after it left the screen, as before.
+typedef struct {
+   uint32_t (*nextFlipId)(void);   // the number the flip of the frame being drawn will have (flips queued + 1)
+   uint32_t (*flipsDone)(void);    // flips the screen has shown so far
+   uint32_t (*vblanksMissed)(void);   // vertical blanks the screen showed a frame again for (by the flips' times)
+} VideoDisplayHooks;
+void setVideoDisplayHooks(const VideoDisplayHooks *hooks);
+// settings.txt display-sync=flips|wall: display sync advances the picture by one per present plus the vertical blanks the
+// screen showed the last frame again for (1, the default), or by the wall time between two presents, rounded (0: V3.1.0
+// Test 2 - a present that ran late but still made its vblank counted 2 and the next one 0: a dropped and a repeated
+// picture while the screen missed nothing)
+void setVideoDisplaySync(int byFlips);
+// vp9-release=early|late (the bench's A/B): a picture goes back to TEE VP9 as soon as the flip after it has happened
+// and while the decode thread waits for the next one (1, the default), or at the next present with a new picture (0)
+void setVideoVp9ReleaseEarly(int early);
+
+// what a player has done since it was built - the bench reads it at the start and the end of a run (UI thread)
+typedef struct {
+   uint32_t presents;       // getVideoFrame calls after the pre-roll
+   uint32_t shown;          // ... with a new picture
+   uint32_t late;           // pictures dropped as late
+   uint32_t repeats;        // presents without a new picture
+   uint32_t starved;        // ... with none ready at all
+   uint32_t holds, holdMs;  // the sound waited for the picture: how often, how long in all
+   uint32_t toLow, toHigh;  // VP9: changes to the lower stream (1080p / 1440p) and back
+   uint32_t safetyNets;     // ... the safety net's words
+   uint32_t restarts;       // ... TEE VP9 opened anew after a stop
+   int      memFreeMb;      // user memory free once the decoder was open (-1: not known)
+   int      width, height;  // the main stream
+   int      fpsMilli;       // its frame rate in mHz (0: not known yet)
+   int      onLow;          // the picture on screen comes from the lower stream
+   // TEE VP9's own numbers (decode thread, copied about once a second); all 0 for H.264
+   int      vp9Frames, vp9Pictures, vp9Skipped, vp9RsxFrames, vp9EntropyWaits, vp9RecordsWaits;
+   int      vp9BusyFpsX10;  // its "pictures a second while busy", times 10
+} VideoPlayerCounters;
+void getVideoPlayerCounters(VideoPlayer *player, VideoPlayerCounters *counters);

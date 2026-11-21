@@ -24,6 +24,11 @@ VideoDecoderSetting getVideoDecoderSetting(void);
 int getTeeDecoderSpes(void);
 // settings.txt vp9-spes=6|5: the TEE VP9 building block's SPEs for 1440p - 6 (2 + 4, no sound) or 5 (1 + 4, sound)
 int getVp9Spes(void);
+// (V3.1.0 Test 3) settings.txt display-sync=flips|wall (1 / 0, see setVideoDisplaySync), log=async|sync (1 / 0: the log
+// written by a thread of its own, startLogWriter), vp9-release=early|late (1 / 0, setVideoVp9ReleaseEarly)
+int getDisplaySyncByFlips(void);
+int getLogAsync(void);
+int getVp9ReleaseEarly(void);
 // settings.txt download-quality=1440|1080|xmb: the R3 page's last choice (0, 1, 2 - downloads.h DownloadQuality)
 int getDownloadQuality(void);
 int setDownloadQuality(int quality);

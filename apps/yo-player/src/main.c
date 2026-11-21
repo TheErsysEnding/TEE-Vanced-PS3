@@ -32,6 +32,9 @@
 #include "ui-clock.h"
 #include "bridge-client.h"
 #include "dbg.h"
+#include "video-player.h"   // (V3.1.0 Test 3) the display's counters and the player's switches
+#include "bench.h"          // ... playback measured from a job file
+#include <string.h>
 
 #define PROCESS_PRIORITY_DEFAULT 1001
 #define PROCESS_STACK_SIZE_64KB  0x10000
@@ -55,6 +58,10 @@ int main(int argc, char **argv)
    logBuildVersion();   // after registration, so the build line also reaches the bridge client's Logs tab
 
    if (initGfx(GFX_VSYNC_ON) != 0) return 1;
+   // (V3.1.0 Test 3) the player paces display sync by the screen's vblanks and flips, and gives a picture back once the
+   // flip after it has happened
+   static const VideoDisplayHooks displayHooks = { getGfxNextFlipId, getGfxFlipsDone, getGfxVblanksMissed };
+   setVideoDisplayHooks(&displayHooks);
    if (initAudio() != 0) return 1;
    if (initFont() != 0) return 1;
    if (initIconFont() != 0) logError("[yt] embedded icon font failed to load; icons will be blank\n");
@@ -65,6 +72,13 @@ int main(int argc, char **argv)
 
    initStats(5, 5, 14, activeTheme->textSecondary);
    loadSettings();         // user-editable settings.txt (created with defaults on first launch)
+   // (V3.1.0 Test 3) the player's switches, and the log on a thread of its own (a job file may ask for log=sync)
+   setVideoDisplaySync(getDisplaySyncByFlips());
+   setVideoVp9ReleaseEarly(getVp9ReleaseEarly());
+   int logAsync = getLogAsync();
+   char benchLog[8];
+   if (peekBenchGlobal("log", benchLog, sizeof benchLog)) logAsync = strcmp(benchLog, "sync") != 0;
+   if (logAsync) startLogWriter();
    initStorage();          // prefs + watch history; seeds the skip categories from the settings above, so
                            // it has to run AFTER loadSettings, not before
    initAccount();          // the YouTube sign-in kept from an earlier start, if any (account.txt)
@@ -104,6 +118,7 @@ int main(int argc, char **argv)
    termFont();
    termGfx();
    shutdownHttp();
+   stopLogWriter();       // (V3.1.0 Test 3) the lines still queued, while the file layer is up
    shutdownVfs();
    return 0;
 }

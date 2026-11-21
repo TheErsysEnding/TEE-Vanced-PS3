@@ -233,9 +233,52 @@ static uint64_t lastFlipWaitUs;
 
 // the display pipeline. flipsSubmitted counts flips the CPU has queued; flipsCompleted counts the
 // ones the RSX has retired (bumped by the flip callback). their difference is how many are in flight.
-static uint32_t          flipsSubmitted;
+// (V3.1.0 Test 3) both volatile: the player reads them from its own threads (getGfxNextFlipId / getGfxFlipsDone), and
+// the flip handler times the flips for the bench - a gap over 25 ms is a vblank the screen showed the last frame again
+static volatile uint32_t flipsSubmitted;
 static volatile uint32_t flipsCompleted;
-static void onGfxFlip(const uint32_t head) { (void)head; flipsCompleted++; }
+static volatile uint64_t lastFlipUs;
+static volatile uint32_t flipGaps25, flipGaps42, flipMaxGapUs;
+static volatile uint32_t vblanksMissed;
+static uint64_t lastFlipAtUs;      // when the last flip happened: libgcm's time of it, else the handler's
+static uint32_t screenVblankUs = 16683;
+static void onGfxFlip(const uint32_t head)
+{
+   (void)head;
+   uint64_t now = sys_time_get_system_time();
+   if (lastFlipUs) {
+      uint64_t gap = now - lastFlipUs;
+      if (gap > 25000) flipGaps25++;
+      if (gap > 41700) flipGaps42++;
+      if (gap > flipMaxGapUs) flipMaxGapUs = (uint32_t)(gap > 0xFFFFFFFFull ? 0xFFFFFFFFull : gap);
+   }
+   lastFlipUs = now;
+   // the vblanks between this flip and the last, from the flip times libgcm keeps (the handler wakes a little later,
+   // by a varying amount); a time that does not move on is not trusted, the handler's own is taken then
+   uint64_t at = (uint64_t)cellGcmGetLastFlipTime();
+   if (!at || at <= lastFlipAtUs || at > now) at = now;
+   if (lastFlipAtUs && screenVblankUs) {
+      uint64_t vblanks = (at - lastFlipAtUs + screenVblankUs / 2) / screenVblankUs;
+      if (vblanks > 1) vblanksMissed += (uint32_t)(vblanks > 600 ? 599 : vblanks - 1);
+   }
+   lastFlipAtUs = at;
+   __sync_synchronize();
+   flipsCompleted++;
+}
+
+uint32_t getGfxNextFlipId(void) { return flipsSubmitted + 1; }
+uint32_t getGfxFlipsDone(void)  { return flipsCompleted; }
+uint32_t getGfxVblankCount(void) { return (uint32_t)cellGcmGetVBlankCount(); }
+uint32_t getGfxVblanksMissed(void) { return vblanksMissed; }
+
+void getGfxFlipStats(GfxFlipStats *stats)
+{
+   if (!stats) return;
+   stats->flips = flipsCompleted;
+   stats->gaps25 = flipGaps25;
+   stats->gaps42 = flipGaps42;
+   stats->maxGapUs = flipMaxGapUs;
+}
 
 uint64_t getGfxFlipWaitUs(void)
 {
@@ -384,6 +427,14 @@ int initGfx(GfxVsync vsync)
    backBuffer = 0;
    flipsSubmitted = 0;
    flipsCompleted = 0;
+   lastFlipUs = 0;
+   flipGaps25 = flipGaps42 = flipMaxGapUs = 0;
+   vblanksMissed = 0;
+   lastFlipAtUs = 0;
+   // one vblank of the screen, for counting the ones it showed a frame again for
+   uint16_t rates = videoState.displayMode.refreshRates;
+   screenVblankUs = (rates & CELL_VIDEO_OUT_REFRESH_RATE_59_94HZ) ? 16683 : (rates & CELL_VIDEO_OUT_REFRESH_RATE_60HZ) ? 16667
+                  : (rates & CELL_VIDEO_OUT_REFRESH_RATE_50HZ) ? 20000 : (rates & CELL_VIDEO_OUT_REFRESH_RATE_30HZ) ? 33333 : 16683;
    cellGcmSetFlipHandler(onGfxFlip);   // retires in-flight flips so endGfxFrame need not block on them
    initialized = 1;
 

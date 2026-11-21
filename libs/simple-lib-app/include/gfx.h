@@ -164,3 +164,18 @@ void       freeGfxTexture(GfxTexture *tex);
 // at the start of the next frame instead, so nothing has to wait for the GPU mid-frame.
 void       retireGfxTexture(GfxTexture *tex);
 
+// ---- (TEE Vanced V3.1.0 Test 3) the display's counters ----
+// getGfxNextFlipId: the number the flip of the frame being drawn will have (flips queued so far + 1);
+// getGfxFlipsDone: the flips the screen has shown (the flip handler counts them); getGfxVblankCount: the screen's
+// vertical blanks (cellGcmGetVBlankCount). A picture drawn into frame n may be released once flipsDone - n >= 0.
+uint32_t getGfxNextFlipId(void);
+uint32_t getGfxFlipsDone(void);
+uint32_t getGfxVblankCount(void);
+// the vertical blanks the screen showed a frame again for because the next one was not there: from the times of the flips,
+// in whole vblanks, counted by the flip handler (so a present never reads a vblank count and a flip count that disagree
+// for the moment between the vblank and the handler)
+uint32_t getGfxVblanksMissed(void);
+// the flips since initGfx: how many, how many came more than 25 ms / 41.7 ms after the one before (a missed vblank /
+// two), the longest gap in microseconds - for the bench (apps/yo-player bench.c), read on the UI thread
+typedef struct { uint32_t flips, gaps25, gaps42, maxGapUs; } GfxFlipStats;
+void getGfxFlipStats(GfxFlipStats *stats);
