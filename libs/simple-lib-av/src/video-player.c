@@ -84,8 +84,14 @@ typedef struct {
 // busy at 60 fps, starts that did not 41.6 - 44.1 (nNBsYTzPxbc at 1:00 then 24 - 40 of 60 for 5 s until the safety net's
 // 1080p). Not for 4K: after 8, 16 or 32 frames the 4K30 starts that held (23.5 - 30.9) and the one that did not (30.2 -
 // 31.6) were alike - 4K goes by T_down, the safety net behind it
+// (Test 11) By the decoder's own capacity, not its rate while busy: that rate swung with how the first blocks came in -
+// the same two starts that held at 53.5 - 58.0 in Tests 8 / 9 measured 43.6 - 44.7 in Test 10 and went 1080p for
+// nothing. The time a frame took on the entropy SPEs and on the pixel SPEs does not depend on that: the capacity is the
+// slower stage's rate - 1000 / entropy ms, pixel SPEs x 1000 / pixel ms. Test 8, after 8 frames: the starts that held
+// 68.5 - 78.6 a second, the ones that did not 43.4 - 53.6; Test 9 (11 - 12 frames) the ones that held 68.9 - 81.4. Below
+// the video's own rate the stream does not hold there
 #define VP9_PROBE_FRAMES   8
-#define VP9_PROBE_SHARE    0.80
+#define VP9_PROBE_SHARE    1.0
 #define VP9_PROBE_MAX_US   1500000ull
 #define AV_HOLD_CATCHUP_NS 1500000000ll     // (V3.0.4) while 1080p is on its way: the sound waits only this far behind
 #define VP9_CATCHUP_US     20000000ull      // ... for this long at most
@@ -2281,7 +2287,7 @@ const uint8_t *getVideoFrame(VideoPlayer *player, int *width, int *height)
    int releaseAudio = 0;   // set when pre-roll fires, to un-hold the audio feed after the lock is dropped
    char prerollLine[160];  // (V3.0.0 Test 13) where picture and sound stand when the pre-roll ends
    prerollLine[0] = 0;
-   char probeLine[200];    // (V3.1.0 Test 9) the start probe's word
+   char probeLine[260];    // (V3.1.0 Test 9) the start probe's word
    probeLine[0] = 0;
    int probeLow = 0;
    lock(&player->lock);
@@ -2326,10 +2332,17 @@ const uint8_t *getVideoFrame(VideoPlayer *player, int *width, int *height)
                player->vp9ProbeHold = 0;
                int64_t frameNs = (int64_t)player->demuxer.frameDurationNs;
                double rate = frameNs > 0 ? 1.0e9 / (double)frameNs : 0.0;
-               probeLow = probe.frames >= VP9_PROBE_FRAMES && rate > 0.0 && probe.fps < VP9_PROBE_SHARE * rate;
+               // (Test 11) the capacity: the slower stage's rate (see VP9_PROBE_SHARE)
+               int pixelSpes = player->vp9Config.pixel_spes > 0 ? player->vp9Config.pixel_spes : 4;
+               double entropyRate = probe.entropy_ms > 0.0 ? 1000.0 / probe.entropy_ms : 0.0;
+               double pixelRate = probe.pixel_ms > 0.0 ? (double)pixelSpes * 1000.0 / probe.pixel_ms : 0.0;
+               double capacity = entropyRate < pixelRate ? entropyRate : pixelRate;
+               probeLow = probe.frames >= VP9_PROBE_FRAMES && rate > 0.0 && capacity > 0.0 && capacity < VP9_PROBE_SHARE * rate;
                if (probeLow) decoderWarm = 0;
-               snprintf(probeLine, sizeof probeLine, "[video-player] the start probe: %d frames in %s at %d.%d pictures/s while busy, "
-                        "the video %d.%d - %s\n", probe.frames, player->vp9HighName, (int)probe.fps, (int)(probe.fps * 10.0) % 10,
+               snprintf(probeLine, sizeof probeLine, "[video-player] the start probe: %d frames in %s, capacity %d.%d a second (entropy %d.%d, "
+                        "pixel %d.%d; %d.%d while busy), the video %d.%d - %s\n", probe.frames, player->vp9HighName,
+                        (int)capacity, (int)(capacity * 10.0) % 10, (int)entropyRate, (int)(entropyRate * 10.0) % 10,
+                        (int)pixelRate, (int)(pixelRate * 10.0) % 10, (int)probe.fps, (int)(probe.fps * 10.0) % 10,
                         (int)rate, (int)(rate * 10.0) % 10, probeLow ? "too heavy here: the lower stream from the same key frame" :
                         probe.frames >= VP9_PROBE_FRAMES ? "it holds" : "too few frames in time: no word");
             }
