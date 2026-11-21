@@ -67,10 +67,15 @@ typedef struct {
 #define VP9_BEHIND_NS      150000000ll      // the safety net: the picture this far behind its sound ...
 #define VP9_BEHIND_US      1000000ull       // ... for this long - or two holds of the sound within VP9_HOLDS_US
 #define VP9_HOLDS_US       6000000ull
-#define VP9_DROPS_PER_S    8                // (V3.0.4) ... or this many pictures a second dropped as late or missing
-#define VP9_DROP_SECONDS   2                //   for this many seconds in a row (one late a second is 60 fps on 59.94 Hz)
-#define VP9_SETTLE_NS      6000000000ull    // ... though not this soon after a change of stream: its first seconds drop
-                                            //   pictures of their own while the decoder takes the new size
+// (V3.1.0 Test 5) ... or a second in which a tenth of the pictures due did not come on screen (VP9_SHORT_MIN at the least)
+// - left out by TEE VP9, dropped as late, missing at their present or passed over by display sync -, VP9_DROP_SECONDS
+// seconds in a row. By the video's own rate, so 30 fps the same as 60: until Test 4 it was 8 a second dropped as late or
+// missing, a 60 fps rule that at 30 fps waited for 8 of 30 - and the frames TEE VP9 left out it did not count at all
+// (TEE, 2026-11-21: a 4K30 video at barely 25 fps went down far too late)
+#define VP9_SHORT_MIN      2
+#define VP9_DROP_SECONDS   2
+#define VP9_SETTLE_NS      2000000000ull    // ... though not this soon after a change of stream (until Test 4: 6 s) - TEE VP9
+                                            //   0.3.x takes a new size in about 5 frames of decoding time (tee_vp9.h)
 #define VP9_DROP_IGNORE    2                // ... nor in the first seconds after a seek
 #define AV_HOLD_CATCHUP_NS 1500000000ll     // (V3.0.4) while 1080p is on its way: the sound waits only this far behind
 #define VP9_CATCHUP_US     20000000ull      // ... for this long at most
@@ -175,6 +180,7 @@ struct VideoPlayer {
    int              vp9SwitchToLow;   // ... and goes this way
    const char      *vp9SwitchWhy;     // ... for the log
    int              vp9SwitchBps;     // ... the busiest section ahead when it was decided (bits a second)
+   int              vp9SwitchLowReady;   // (V3.1.0 Test 5) ... the safety net's: lowDemuxer stands at that key frame already
    uint64_t         vp9NextCueNs;     // feeder: the next 1440p cue at which the rule is looked at again
    uint64_t         vp9LastSwitchNs;  // media time of the last change
    double           vp9DownBps, vp9UpBps;   // T_down / T_up on the SPEs alone, bits a second (the safety net lowers them)
@@ -183,7 +189,7 @@ struct VideoPlayer {
    volatile int     vp9SafetyBps;     // ... the bitrate of the section it fell behind in
    uint64_t         vp9BehindSinceUs; // UI: since when the picture has been more than VP9_BEHIND_NS behind (0 = it is not)
    uint64_t         vp9LastHoldUs;    // UI: when the sound's last hold began (two close together: the safety net)
-   int              vp9DropSeconds;   // (V3.0.4) UI: seconds in a row in which VP9_DROPS_PER_S pictures were dropped or missing
+   int              vp9DropSeconds;   // (V3.0.4) UI: seconds in a row in which a tenth of the pictures due was missing (Test 5)
    int              vp9DropIgnore;    // ... stats seconds still to pass over (a seek's)
    int              vp9CatchingUp;    // (V3.0.4) UI: 1080p is asked for - the sound runs on until the picture caught up
    uint64_t         vp9CatchingUpUs;  // ... since when
@@ -267,6 +273,7 @@ struct VideoPlayer {
    // presentation statistics (getVideoFrame, under lock): a line goes to the log for every second in which a
    // picture was dropped as late or none was ready - the stutter a viewer sees, with what was behind it
    uint64_t statsSecondUs;
+   uint64_t statsClockNs;       // (V3.1.0 Test 5) the clock when the second began: the pictures due in it
    int      statsShown, statsLate, statsRepeats, statsStarved, statsReadyMin;
    int      statsMissed;        // (V3.1.0 Test 3) presents with none ready at which a picture was due (statsStarved counts
                                 //   those at which none was due too: half of them at 30 fps on a 60 Hz screen)
@@ -505,6 +512,20 @@ static void vp9Thresholds(const VideoPlayer *player, double *down, double *up)
 // Mbit/s with one decimal, as two ints for the log (its printf has no floating point)
 #define VP9_MBIT(bps) (int)((double)(bps) / 1000000.0), (int)((double)(bps) / 100000.0) % 10
 
+// the safety net's word (feeder): T_down for the rest of the video at 90 % of the bitrate of the section the upper stream
+// fell behind in, T_up below it - so the video goes up again only where it is clearly lighter
+static void vp9LowerForSafety(VideoPlayer *player)
+{
+   double down, up;
+   vp9Thresholds(player, &down, &up);
+   double lowered = 0.9 * (double)player->vp9SafetyBps;
+   if (lowered > 2000000.0 && lowered < down) {
+      player->vp9DownBps = lowered;
+      if (player->vp9UpBps >= lowered) player->vp9UpBps = 0.8 * lowered;
+      player->vp9Lowered = 1;
+   }
+}
+
 // the feeder, for each block it read: is a change due here? The rule is looked at once a 1440p section (a cue,
 // every ~3 s): down to 1080p when a section of the next 10 s is busier than T_down - or the safety net asked - and up
 // again when every one is below T_up and the last change is 10 s back. A change waits for the other stream's key frame
@@ -537,6 +558,7 @@ static int vp9ConsiderChange(VideoPlayer *player, const VideoAu *au)
          player->totals.toLow++;   // (V3.1.0 Test 3)
          player->vp9LastSwitchNs = lowAt;
          player->vp9SwitchAtNs = -1;          // a change planned for later is this one
+         player->vp9SwitchLowReady = 0;
          player->vp9StartedAtKeyframe = 0;    // the cluster's first block is a key frame - if not, on to the next one
          if (lowAt <= pts + VP9_SAME_TIME_NS)
             logInfo("[video-player] VP9 quality: %s -> %s at %d.%03d s (a key frame too big for TEE VP9 in %s: "
@@ -552,6 +574,26 @@ static int vp9ConsiderChange(VideoPlayer *player, const VideoAu *au)
       }
       // no 1080p cluster header could be read: 1440p goes on - should TEE VP9 stop on it, restartVp9OnLow takes over
    }
+   // (V3.1.0 Test 5) the safety net's word at once: down at the lower stream's first key frame (a cluster) at or after this
+   // block. Until Test 4 it waited for the upper stream's next cue (every ~5.5 s) and went from the lower stream's cue at or
+   // after it - up to 11 s more of the picture behind, on top of the pictures already fed. No cluster header read: the cue
+   // rule below takes the word, as before
+   if (player->vp9SafetyRequest && !player->vp9OnLow) {
+      uint64_t lowAt = seekMkvDemuxerToCluster(&player->lowDemuxer.container.mkv, pts);
+      if (lowAt != MKV_NO_CLUSTER) {
+         player->vp9SafetyRequest = 0;
+         vp9LowerForSafety(player);
+         if (player->vp9SwitchAtNs < 0 || !player->vp9SwitchToLow || lowAt < (uint64_t)player->vp9SwitchAtNs) {
+            player->vp9SwitchAtNs = (int64_t)lowAt;
+            player->vp9SwitchToLow = 1;
+            player->vp9SwitchLowReady = 1;   // the lower demuxer stands at that cluster: the change reads on from there
+            player->vp9SwitchWhy = "safety net: the picture fell behind";
+            player->vp9SwitchBps = player->vp9SafetyBps;
+         } else {
+            player->vp9SwitchLowReady = 0;   // a change down planned sooner: it seeks the lower stream itself
+         }
+      }
+   }
    if (pts >= player->vp9NextCueNs) {   // a new 1440p section: the rule
       int i = vp9CueAtOrBefore(high, pts);
       uint64_t at = i >= 0 ? high->cues[i].timeNs : 0;
@@ -559,15 +601,10 @@ static int vp9ConsiderChange(VideoPlayer *player, const VideoAu *au)
       double down, up;
       vp9Thresholds(player, &down, &up);
       int safety = player->vp9SafetyRequest;
-      if (safety) {   // T_down for the rest of the video: 90 % of the section 1440p fell behind in
+      if (safety) {   // (the cluster above could not be read)
          player->vp9SafetyRequest = 0;
-         double lowered = 0.9 * (double)player->vp9SafetyBps;
-         if (lowered > 2000000.0 && lowered < down) {
-            player->vp9DownBps = lowered;
-            if (player->vp9UpBps >= lowered) player->vp9UpBps = 0.8 * lowered;
-            player->vp9Lowered = 1;
-            vp9Thresholds(player, &down, &up);
-         }
+         vp9LowerForSafety(player);
+         vp9Thresholds(player, &down, &up);
       }
       double peak = vp9PeakAhead(high, at);
       int wantLow = player->vp9OnLow;
@@ -597,8 +634,11 @@ static int vp9ConsiderChange(VideoPlayer *player, const VideoAu *au)
    // the change: the other stream from its key frame at vp9SwitchAtNs
    uint64_t at = (uint64_t)player->vp9SwitchAtNs;
    int toLow = player->vp9SwitchToLow;
+   int ready = toLow && player->vp9SwitchLowReady;   // (V3.1.0 Test 5) the safety net's: the lower demuxer stands there already
    player->vp9SwitchAtNs = -1;
-   uint64_t landed = seekVideoDemuxer(toLow ? &player->lowDemuxer : &player->demuxer, at, 0);
+   player->vp9SwitchLowReady = 0;
+   uint64_t landed = ready ? at : seekVideoDemuxer(toLow ? &player->lowDemuxer : &player->demuxer, at, 0);
+   if (ready) player->vp9StartedAtKeyframe = 0;   // a cluster begins on a key frame - if not, on to the next one
    player->vp9OnLow = toLow;
    if (toLow) player->totals.toLow++; else player->totals.toHigh++;   // (V3.1.0 Test 3)
    player->vp9LastSwitchNs = landed;
@@ -622,6 +662,7 @@ static uint64_t vp9SeekTrack(VideoPlayer *player, uint64_t targetNs, int landAft
    double peak = vp9PeakAhead(high, targetNs);
    int toLow = player->vp9OnLow ? !(peak < up) : peak > down;
    player->vp9SwitchAtNs = -1;
+   player->vp9SwitchLowReady = 0;
    player->vp9NextCueNs = 0;   // the rule looks again at the first block
    uint64_t landed = seekVideoDemuxer(toLow ? &player->lowDemuxer : &player->demuxer, targetNs, landAfter);
    if (toLow != player->vp9OnLow) {
@@ -1099,6 +1140,7 @@ static int restartVp9OnLow(VideoPlayer *player)
    player->vp9OnLow = 1;
    player->vp9LastSwitchNs = landed;
    player->vp9SwitchAtNs = -1;
+   player->vp9SwitchLowReady = 0;
    player->vp9NextCueNs = 0;
    player->hasPendingAu = 0;
    player->inputEnded = 0;
@@ -1880,6 +1922,7 @@ VideoPlayer *createVideoPlayerVp9(const char *videoPath, const char *lowVideoPat
    player->seekRequestNs = -1;
    player->audioSeekPendingNs = -1;
    player->vp9SwitchAtNs = -1;
+   player->vp9SwitchLowReady = 0;
    player->vp9LastPts = -1;   // (V3.0.4 Test 2)
    player->freeFrame = freeFrame ? freeFrame : freeFrameToHeap;
    if (!allocFrame) allocFrame = allocFrameFromHeap;
@@ -2285,7 +2328,7 @@ const uint8_t *getVideoFrame(VideoPlayer *player, int *width, int *height)
    int holdAction = 0;   // 1: pause the sound, 2: let it run on
    char holdLine[128];
    holdLine[0] = 0;
-   char safetyLine[160];   // (Test 14) the safety net's word, logged after the lock
+   char safetyLine[200];   // (Test 14) the safety net's word, logged after the lock
    safetyLine[0] = 0;
    if (player->audioHeld && (player->paused || !player->vp9 || !player->audioFeedOpen || !player->audioClockValid)) {
       player->audioHeld = 0;   // the user's pause owns the feed now; at the end of the sound, what is left plays out
@@ -2355,7 +2398,7 @@ const uint8_t *getVideoFrame(VideoPlayer *player, int *width, int *height)
          }
          // (V3.0.4) the earliest sign, seconds before the sound has to wait: pictures dropped as late or missing,
          // VP9_DROP_SECONDS seconds in a row (counted with the stutter statistics below)
-         if (player->vp9DropSeconds >= VP9_DROP_SECONDS) sign = "pictures dropped";
+         if (player->vp9DropSeconds >= VP9_DROP_SECONDS) sign = "pictures missing 2 s in a row";
          if (sign) {
             const MkvDemuxer *high = &player->demuxer.container.mkv;
             int bps = (int)vp9SectionBps(high, vp9CueAtOrBefore(high, player->currentPts));
@@ -2368,7 +2411,7 @@ const uint8_t *getVideoFrame(VideoPlayer *player, int *width, int *height)
             player->vp9CatchingUp = 1;   // (V3.0.4) the sound runs on from here until 1080p has caught up
             player->vp9CatchingUpUs = nowUs;
             snprintf(safetyLine, sizeof safetyLine, "[video-player] VP9: %s falls behind at %d s (%d.%d Mbit/s there, %s): "
-                     "%s from the next cue, the sound runs on meanwhile\n", player->vp9HighName,
+                     "%s from its next key frame, the sound runs on meanwhile\n", player->vp9HighName,
                      (int)(player->currentPts / 1000000000ull), VP9_MBIT(bps), sign, player->vp9LowName);
          }
       }
@@ -2379,7 +2422,7 @@ const uint8_t *getVideoFrame(VideoPlayer *player, int *width, int *height)
    char statsLine[200];
    statsLine[0] = 0;
    if (!player->paused) {
-      if (!player->statsSecondUs) { player->statsSecondUs = nowUs; player->statsReadyMin = FRAME_SLOTS; }
+      if (!player->statsSecondUs) { player->statsSecondUs = nowUs; player->statsClockNs = clock; player->statsReadyMin = FRAME_SLOTS; }
       if (best >= 0) player->statsShown++; else player->statsRepeats++;
       if (best < 0 && readyCount == 0) player->statsStarved++;
       // (V3.1.0 Test 3) ... and of those, the ones at which the next picture was due: at 30 fps every other present on a
@@ -2397,24 +2440,31 @@ const uint8_t *getVideoFrame(VideoPlayer *player, int *width, int *height)
       }
       if (readyCount < player->statsReadyMin) player->statsReadyMin = readyCount;
       if (nowUs - player->statsSecondUs >= 1000000ull) {
-         // (V3.0.4) the safety net's earliest sign: a second in which 1440p dropped or missed VP9_DROPS_PER_S pictures -
-         // not in the seconds after a change of stream, when the decoder takes the new size, nor right after a seek
+         // (V3.1.0 Test 5) the pictures due in this second by the clock (a held sound holds it: none due then), and of them
+         // the ones that did not come on screen
+         int due = frameDueNs > 0 && clock > player->statsClockNs
+                   ? (int)(((int64_t)(clock - player->statsClockNs) + frameDueNs / 2) / frameDueNs) : 0;
+         int missing = due - player->statsShown;
+         int shortSecond = due > 0 && missing >= VP9_SHORT_MIN && missing * 10 >= due;
+         // (V3.0.4) the safety net's earliest sign: a short second of the upper stream - not in the seconds after a change
+         // of stream, when the decoder takes the new size, nor right after a seek
          if (player->vp9DropIgnore > 0) {
             player->vp9DropIgnore--;
             player->vp9DropSeconds = 0;
          } else if (player->vp9 && player->hasLowDemuxer && !player->vp9OnLow && !player->ended &&
-                    player->currentPts >= player->vp9LastSwitchNs + VP9_SETTLE_NS &&
-                    player->statsLate + player->statsMissed >= VP9_DROPS_PER_S) {
+                    player->currentPts >= player->vp9LastSwitchNs + VP9_SETTLE_NS && shortSecond) {
             player->vp9DropSeconds++;
          } else {
             player->vp9DropSeconds = 0;
          }
-         if (player->statsLate || player->statsMissed)   // (V3.1.0 Test 3) a second in which a picture was missing or late
-            snprintf(statsLine, sizeof statsLine, "[video-player] 1 s: %d pictures shown, %d dropped as late, %d presents "
+         // (V3.1.0 Test 3) a second in which a picture was missing or late - (Test 5) or short of its rate
+         if (player->statsLate || player->statsMissed || shortSecond)
+            snprintf(statsLine, sizeof statsLine, "[video-player] 1 s: %d pictures shown of %d due, %d dropped as late, %d presents "
                      "without a new one (%d with none ready), fewest ready %d of %d, %d due with none ready\n",
-                     player->statsShown, player->statsLate, player->statsRepeats, player->statsStarved, player->statsReadyMin,
+                     player->statsShown, due, player->statsLate, player->statsRepeats, player->statsStarved, player->statsReadyMin,
                      FRAME_SLOTS, player->statsMissed);
          player->statsSecondUs = nowUs;
+         player->statsClockNs = clock;
          player->statsShown = player->statsLate = player->statsRepeats = player->statsStarved = player->statsMissed = 0;
          player->statsReadyMin = FRAME_SLOTS;
       }
