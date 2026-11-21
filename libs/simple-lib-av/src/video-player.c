@@ -703,7 +703,12 @@ static uint64_t vp9SeekTrack(VideoPlayer *player, uint64_t targetNs, int landAft
    player->vp9SwitchLowReady = 0;
    player->vp9SafetyPlanned = 0;
    player->vp9NextCueNs = 0;   // the rule looks again at the first block
-   uint64_t landed = seekVideoDemuxer(toLow ? &player->lowDemuxer : &player->demuxer, targetNs, landAfter);
+   uint64_t landed = MKV_NO_CLUSTER;
+   // (V3.1.0 Test 10) the start probe's seek: the same key frame as the upper stream's landing - the lower stream's cluster at
+   // or after it, cued or not. A WebM seek lands on a cue at or before the target (landAfter is mp4's): in Test 9 that was
+   // 6 s back on 1080p (nNBsYTzPxbc 59 -> 53 s, DJbxiP6hDMs 96 -> 90 s), the video played those seconds again
+   if (probe) landed = seekMkvDemuxerToCluster(&player->lowDemuxer.container.mkv, targetNs);
+   if (landed == MKV_NO_CLUSTER) landed = seekVideoDemuxer(toLow ? &player->lowDemuxer : &player->demuxer, targetNs, landAfter);
    if (toLow != player->vp9OnLow) {
       logInfo("[video-player] VP9 quality: %s -> %s at the seek to %d s (%d.%d Mbit/s ahead%s)\n",
               toLow ? player->vp9HighName : player->vp9LowName, toLow ? player->vp9LowName : player->vp9HighName,
