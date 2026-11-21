@@ -1278,8 +1278,11 @@ static void reopenAt(float seconds)
    state.reopenPending = 1;
    state.seeking = 0;   // the rebuilt player starts at the target; there is nothing left to apply
 
+   logInfo("[yt] reopening at %d s: the RSX finishes first\n", (int)seconds);
    finishGfx();   // the RSX may still be sampling the current frame buffer
+   logInfo("[yt] ... finished; the player goes\n");
    destroyVideoPlayer(state.player);
+   logInfo("[yt] ... the player is gone\n");
    state.player = NULL;
    state.firstFrameSeen = 0;
    state.stage = STAGE_LOADING;

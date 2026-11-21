@@ -649,9 +649,11 @@ static void emitTargetState(void)
 static int gfxBurstBegin(void)
 {
    if (!gfxShareActive) return 1;
-   if (frameBroken || pauseCount > 0) return 0;
+   // (a pause breaks the frame: its flip would show it drawn in part - the bursts before the pause, none after it)
+   if (frameBroken) return 0;
+   if (pauseCount > 0) { frameBroken = 1; return 0; }
    if (!lockForUi()) { frameBroken = 1; return 0; }
-   if (pauseCount > 0) { unlockCmd(); return 0; }   // (a pause began meanwhile: it took the lock and let it go just now)
+   if (pauseCount > 0) { unlockCmd(); frameBroken = 1; return 0; }   // (a pause began meanwhile: it took the lock and let it go)
    if (gfxEnsureRoom(BURST_BYTES, APP_RESTART_US, 1) != 0) { unlockCmd(); frameBroken = 1; return 0; }
    burstStart = CTX->current;
    burstBroken = 0;
@@ -1854,8 +1856,9 @@ int pauseGfxDrawing(uint32_t timeoutUs)
 {
    if (!gfxShareActive) return 0;
    if (gfxThread() != uiThread) {
+      pauseSinceUs = gfxNowUs();   // (before the count: the UI's 5-s release reads the time once it sees the count)
+      __sync_synchronize();
       (void)__sync_fetch_and_add(&pauseCount, 1);
-      pauseSinceUs = gfxNowUs();
       __sync_synchronize();
       // a burst of the UI's under way is through after this; every later one sees the pause under the lock (gfxBurstBegin)
       if (lockForDrain(timeoutUs)) unlockCmd();

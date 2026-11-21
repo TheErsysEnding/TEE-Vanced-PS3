@@ -391,18 +391,20 @@ static void retireSlot(VideoPlayer *player, int i)
 // that flip comes after the draw). Until V3.1.0 Test 2 a slot left at the second present with a new picture: at 30 fps on
 // a 60 Hz screen a picture 4K's ring of three needs back stayed a whole present longer than it had to (caller holds
 // player->lock)
-static int slotFlipDone(const FrameSlot *slot, uint64_t nowUs)
+static int slotFlipDone(const VideoPlayer *player, const FrameSlot *slot, uint64_t nowUs)
 {
    if (!haveDisplayHooks || !slot->drawn) return 1;
    if ((int32_t)(displayHooks.flipsDone() - slot->drawnFlip) >= 0) return 1;
-   return nowUs - slot->retiringUs > RETIRE_FENCE_MAX_US;
+   // (V3.1.0 Test 4) never for a picture of a decoder with its RSX part: rule 5 is the block's, and with the command buffer
+   // shared a draw may still wait in it when the flips stall (the display brakes after 2 s - and then the pictures wait)
+   return !player->vp9Rsx && nowUs - slot->retiringUs > RETIRE_FENCE_MAX_US;
 }
 
 // at every present, not only at one with a new picture (vp9-release=early)
 static void retireFlippedSlots(VideoPlayer *player, uint64_t nowUs)
 {
    for (int i = 0; i < FRAME_SLOTS; i++)
-      if (player->slots[i].state == SLOT_RETIRING && slotFlipDone(&player->slots[i], nowUs)) retireSlot(player, i);
+      if (player->slots[i].state == SLOT_RETIRING && slotFlipDone(player, &player->slots[i], nowUs)) retireSlot(player, i);
 }
 
 // (V3.1.0 Test 4) a picture of a decoder with the RSX part goes back only after the flip of its last draw, whatever
@@ -1069,8 +1071,11 @@ static int restartVp9OnLow(VideoPlayer *player)
    // and the RSX is drained first, and drawing goes on right after the close. The new decoder has the same configuration,
    // the RSX part again, its pictures drawn once the latch trusts it
    int rsx = player->vp9Rsx, paused = rsx && displayHooks.pause && displayHooks.resume;
+   if (rsx) logInfo("[video-player] the restart with the RSX part: the RSX drained first\n");
    if (paused) displayHooks.pause(VP9_RSX_PAUSE_US);
+   if (rsx) logInfo("[video-player] ... drained; tvp9_close\n");
    tvp9_close(player->vp9);
+   if (rsx) logInfo("[video-player] ... TEE VP9 closed; tvp9_open\n");
    if (paused) displayHooks.resume();
    if (rsx) vp9RsxClosed(player);
    char err[160];
@@ -2020,6 +2025,7 @@ void destroyVideoPlayer(VideoPlayer *player)
          releaseAudioPipeline(player);
          return;
       }
+      if (player->vp9Rsx) logInfo("[video-player] closing: the decode thread and the feeder have stopped\n");
       joinThread(player->thread);
       if (player->vp9FeedActive) joinThread(player->vp9FeedTid);
    }
@@ -2029,8 +2035,11 @@ void destroyVideoPlayer(VideoPlayer *player)
       // (V3.1.0 Test 4) with the RSX part: the RSX idle before tvp9_close unmaps its memory (see restartVp9OnLow) - on the UI
       // thread, where play.c destroys a player after finishGfx, that is a drain only
       int rsx = player->vp9Rsx, paused = rsx && displayHooks.pause && displayHooks.resume;
+      if (rsx) logInfo("[video-player] closing TEE VP9 with its RSX part: the RSX drained first\n");
       if (paused) displayHooks.pause(VP9_RSX_PAUSE_US);
+      if (rsx) logInfo("[video-player] ... drained; tvp9_close\n");
       tvp9_close(player->vp9);                                     // the SPEs stop (by force if one hangs)
+      if (rsx) logInfo("[video-player] ... TEE VP9 closed\n");
       if (paused) displayHooks.resume();
       if (rsx) vp9RsxClosed(player);
    }
@@ -2230,7 +2239,7 @@ const uint8_t *getVideoFrame(VideoPlayer *player, int *width, int *height)
    if (best >= 0) {
       for (int i = 0; i < FRAME_SLOTS; i++) {
          if (player->slots[i].state == SLOT_RETIRING) {                                                  // GPU is done with it by now -
-            if (!releaseByFlip(player) || slotFlipDone(&player->slots[i], nowUs)) retireSlot(player, i);   // (Test 3) once its flip happened
+            if (!releaseByFlip(player) || slotFlipDone(player, &player->slots[i], nowUs)) retireSlot(player, i);   // (Test 3) once its flip happened
          } else if (player->slots[i].state == SLOT_DISPLAYING) {                                          // hold it for the frame in flight
             player->slots[i].state = SLOT_RETIRING;
             player->slots[i].retiringUs = nowUs;
