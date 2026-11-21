@@ -77,6 +77,16 @@ typedef struct {
 #define VP9_SETTLE_NS      2000000000ull    // ... though not this soon after a change of stream (until Test 4: 6 s) - TEE VP9
                                             //   0.3.x takes a new size in about 5 frames of decoding time (tee_vp9.h)
 #define VP9_DROP_IGNORE    2                // ... nor in the first seconds after a seek
+// (V3.1.0 Test 9) the start probe: 1440p beside 1080p, the picture waits after a start or a seek until TEE VP9 has decoded
+// VP9_PROBE_FRAMES frames there (at most VP9_PROBE_MAX_US); below VP9_PROBE_SHARE of the video's rate while busy, this
+// stream is too heavy here, and the video starts in 1080p from the same key frame - before a picture of 1440p is shown.
+// From TEE's console (Test 8, after 8 frames, the key frame among them): starts that held 50.6 - 54.9 pictures/s while
+// busy at 60 fps, starts that did not 41.6 - 44.1 (nNBsYTzPxbc at 1:00 then 24 - 40 of 60 for 5 s until the safety net's
+// 1080p). Not for 4K: after 8, 16 or 32 frames the 4K30 starts that held (23.5 - 30.9) and the one that did not (30.2 -
+// 31.6) were alike - 4K goes by T_down, the safety net behind it
+#define VP9_PROBE_FRAMES   8
+#define VP9_PROBE_SHARE    0.80
+#define VP9_PROBE_MAX_US   1500000ull
 #define AV_HOLD_CATCHUP_NS 1500000000ll     // (V3.0.4) while 1080p is on its way: the sound waits only this far behind
 #define VP9_CATCHUP_US     20000000ull      // ... for this long at most
 // (V3.0.4 Test 2) TEE VP9 stops on a key frame whose records - the entropy stage's output, about 7 times the block -
@@ -214,6 +224,10 @@ struct VideoPlayer {
    int              vp9RsxFrames;     // ... its value at the last stats line
    int              vp9FramesAtStats; // (V3.1.0 Test 4) ... and the frames' (rsx_frames stood still while they grew: given up)
    int              vp9ProbeStage;    // (V3.1.0 Test 8) decode thread: the start probe's lines logged since the open or a seek
+   volatile int     vp9ProbeHold;     // (V3.1.0 Test 9) UI: the pre-roll waits for the start probe (decode thread arms it)
+   uint64_t         vp9ProbeSinceUs;  // ... UI: since when it waits (0: not yet)
+   uint64_t         vp9ProbeAtNs;     // ... the key frame the upper stream started from (the start, a seek's landing)
+   volatile int     vp9ProbeForceLow; // ... UI -> decode thread: too heavy there - the seek it posts lands on the lower stream
    int              vp9Rsx;           // ... TEE VP9 is open with its RSX part (rsx = 1)
    int              vp9MemoryAppMapped;   // ... vp9Memory came from the UI's allocator (freeFrame); rsx = 1: memalign, free()
    volatile int     vp9RsxTrusted;    // ... its RSX part predicts and the block has mapped the pictures: they are drawn
@@ -320,6 +334,7 @@ static void audioDecodeThread(uint64_t arg);
 static void opusAudioThread(uint64_t arg);   // (V3.0.0) the Opus one, beside it below
 static void setUpDisplaySync(VideoPlayer *player);   // a VP9 stream whose rate the decode thread measured
 static void postSeek(VideoPlayer *player, float seconds, int landAfter);   // (Test 12) the VP9 feeder's retry
+static void postSeekNs(VideoPlayer *player, int64_t targetNs, int landAfter);   // (V3.1.0 Test 9) the start probe's
 
 // how far the freshly decoded picture may fall behind the clock before the decoder is allowed to
 // drop non-reference B pictures, and where it stops again. Hysteresis so it cannot flap per frame.
@@ -682,16 +697,17 @@ static uint64_t vp9SeekTrack(VideoPlayer *player, uint64_t targetNs, int landAft
    double down, up;
    vp9Thresholds(player, &down, &up);
    double peak = vp9PeakAhead(high, targetNs);
-   int toLow = player->vp9OnLow ? !(peak < up) : peak > down;
+   int probe = player->vp9ProbeForceLow;   // (V3.1.0 Test 9) the start probe found the upper stream too heavy here
+   int toLow = probe ? 1 : player->vp9OnLow ? !(peak < up) : peak > down;
    player->vp9SwitchAtNs = -1;
    player->vp9SwitchLowReady = 0;
    player->vp9SafetyPlanned = 0;
    player->vp9NextCueNs = 0;   // the rule looks again at the first block
    uint64_t landed = seekVideoDemuxer(toLow ? &player->lowDemuxer : &player->demuxer, targetNs, landAfter);
    if (toLow != player->vp9OnLow) {
-      logInfo("[video-player] VP9 quality: %s -> %s at the seek to %d s (%d.%d Mbit/s ahead)\n",
+      logInfo("[video-player] VP9 quality: %s -> %s at the seek to %d s (%d.%d Mbit/s ahead%s)\n",
               toLow ? player->vp9HighName : player->vp9LowName, toLow ? player->vp9LowName : player->vp9HighName,
-              (int)(landed / 1000000000ull), VP9_MBIT(peak));
+              (int)(landed / 1000000000ull), VP9_MBIT(peak), probe ? "; the start probe" : "");
       player->vp9OnLow = toLow;
       player->vp9LastSwitchNs = landed;
    }
@@ -1269,8 +1285,19 @@ static void performSeek(VideoPlayer *player)
    player->vp9FeedError = 0;   // (V3.0.0 Test 12) a seek is a fresh try at the stream
    player->failed = 0;         // (V3.0.4)
    // land on the fragment keyframe covering the target - or, for a sponsor skip, the next keyframe at/after it
+   // (V3.1.0 Test 9) the start probe's seek: T_down for the rest of the video at 90 % of the section there, as the safety net
+   // sets it - the cues take it up again only where it is clearly lighter
+   if (player->vp9ProbeForceLow && player->hasLowDemuxer) {
+      const MkvDemuxer *high = &player->demuxer.container.mkv;
+      player->vp9SafetyBps = (int)vp9SectionBps(high, vp9CueAtOrBefore(high, targetNs));
+      vp9LowerForSafety(player);
+   }
    uint64_t landedNs = player->hasLowDemuxer ? vp9SeekTrack(player, targetNs, player->seekLandAfter)   // (Test 14)
                                              : seekVideoDemuxer(&player->demuxer, targetNs, player->seekLandAfter);
+   player->vp9ProbeForceLow = 0;
+   player->vp9ProbeAtNs = landedNs;   // (V3.1.0 Test 9) the probe again where the upper stream starts
+   player->vp9ProbeSinceUs = 0;
+   player->vp9ProbeHold = player->hasLowDemuxer && !player->vp9Is4k && !player->vp9OnLow;
    player->vp9LastPts = (int64_t)landedNs - 1;   // (V3.0.4 Test 2) no picture since
    // audio follows the video keyframe, but on its own thread: its demuxer seek costs a network
    // reconnect, and doing it here would hold up the first post-seek picture for no reason
@@ -2011,6 +2038,11 @@ VideoPlayer *createVideoPlayerVp9(const char *videoPath, const char *lowVideoPat
    // join the audio open before ANY exit: the thread writes into the player, so it must be done
    // (and its outcome adopted) before a failed video open can tear the player down
    if (lowOpening) { joinThread(lowOpenTid); player->hasLowDemuxer = lowJob.ok; }
+   // (V3.1.0 Test 9) the start probe for a start without a seek (a seek arms it anew); the first block's cue rule may still
+   // send it down, which the probe sees (vp9OnLow) and lets go
+   player->vp9ProbeAtNs = 0;
+   player->vp9ProbeSinceUs = 0;
+   player->vp9ProbeHold = player->hasLowDemuxer && !player->vp9Is4k;
    if (lowOpening && !lowJob.ok)
       logWarn("[video-player] the %s VP9 stream did not open: no change of quality\n", player->vp9LowName);
    if (audioOpening) { joinThread(audioOpenTid); player->hasAudioDemuxer = audioJob.ok; }
@@ -2244,6 +2276,9 @@ const uint8_t *getVideoFrame(VideoPlayer *player, int *width, int *height)
    int releaseAudio = 0;   // set when pre-roll fires, to un-hold the audio feed after the lock is dropped
    char prerollLine[160];  // (V3.0.0 Test 13) where picture and sound stand when the pre-roll ends
    prerollLine[0] = 0;
+   char probeLine[200];    // (V3.1.0 Test 9) the start probe's word
+   probeLine[0] = 0;
+   int probeLow = 0;
    lock(&player->lock);
    // (V3.1.0 Test 3) the pictures the screen is done with go back at every present - before the returns of a seek or a
    // pre-roll too, which can hold a picture back for seconds
@@ -2271,6 +2306,30 @@ const uint8_t *getVideoFrame(VideoPlayer *player, int *width, int *height)
          if (prerollNeed < 1) prerollNeed = 1;
       }
       int decoderWarm  = readyCount >= prerollNeed || player->ended;   // a short clip may never fill the ring
+      // (V3.1.0 Test 9) the start probe (see VP9_PROBE_FRAMES): once the pictures are there, a few more frames, then the rate
+      // TEE VP9 decoded them at says whether this stream holds here
+      if (player->vp9ProbeHold && decoderWarm) {
+         if (!player->vp9ProbeSinceUs) player->vp9ProbeSinceUs = nowUs;
+         if (!player->vp9 || !player->hasLowDemuxer || player->vp9OnLow || player->ended) {
+            player->vp9ProbeHold = 0;   // (the cues sent it down at the first block already, or nothing to say)
+         } else {
+            tvp9_stats probe;
+            tvp9_get_stats(player->vp9, &probe);   // (plain counters: any thread)
+            if (probe.frames < VP9_PROBE_FRAMES && nowUs - player->vp9ProbeSinceUs < VP9_PROBE_MAX_US) {
+               decoderWarm = 0;
+            } else {
+               player->vp9ProbeHold = 0;
+               int64_t frameNs = (int64_t)player->demuxer.frameDurationNs;
+               double rate = frameNs > 0 ? 1.0e9 / (double)frameNs : 0.0;
+               probeLow = probe.frames >= VP9_PROBE_FRAMES && rate > 0.0 && probe.fps < VP9_PROBE_SHARE * rate;
+               if (probeLow) decoderWarm = 0;
+               snprintf(probeLine, sizeof probeLine, "[video-player] the start probe: %d frames in %s at %d.%d pictures/s while busy, "
+                        "the video %d.%d - %s\n", probe.frames, player->vp9HighName, (int)probe.fps, (int)(probe.fps * 10.0) % 10,
+                        (int)rate, (int)(rate * 10.0) % 10, probeLow ? "too heavy here: the lower stream from the same key frame" :
+                        probe.frames >= VP9_PROBE_FRAMES ? "it holds" : "too few frames in time: no word");
+            }
+         }
+      }
       int audioWaiting = player->audioAlive && !player->audioClockValid;     // a dead/absent audio pipeline never holds video
 
       // don't wait forever for audio to anchor the clock: on a stalled audio stream it never decodes a
@@ -2283,7 +2342,16 @@ const uint8_t *getVideoFrame(VideoPlayer *player, int *width, int *height)
             audioWaiting = 0;
          }
       }
-      if (found < 0 || !decoderWarm || audioWaiting) return takeHeldFrame(player, width, height);
+      if (found < 0 || !decoderWarm || audioWaiting) {
+         const uint8_t *held = takeHeldFrame(player, width, height);   // (unlocks)
+         if (probeLine[0]) logInfo("%s", probeLine);
+         if (probeLow) {   // (V3.1.0 Test 9) the same key frame on the lower stream: a seek, landing at or after it
+            player->vp9ProbeForceLow = 1;
+            int64_t at = (int64_t)player->vp9ProbeAtNs - 20000000ll;
+            postSeekNs(player, at > 0 ? at : 0, 1);
+         }
+         return held;
+      }
       player->basePts    = earliest;
       player->baseWallUs = nowUs;
       player->started    = 1;
@@ -2545,6 +2613,7 @@ const uint8_t *getVideoFrame(VideoPlayer *player, int *width, int *height)
    if (holdLine[0]) logInfo("%s", holdLine);
    if (safetyLine[0]) logInfo("%s", safetyLine);
    if (prerollLine[0]) logInfo("%s", prerollLine);
+   if (probeLine[0]) logInfo("%s", probeLine);
    return buffer;
 }
 
@@ -2579,7 +2648,11 @@ static void postSeek(VideoPlayer *player, float seconds, int landAfter)
    if (seconds < 0.0f) seconds = 0.0f;
    float duration = getVideoDurationSeconds(player);
    if (duration > 0.0f && seconds > duration) seconds = duration;
-   int64_t targetNs = (int64_t)(seconds * 1.0e9f);
+   postSeekNs(player, (int64_t)(seconds * 1.0e9f), landAfter);
+}
+
+static void postSeekNs(VideoPlayer *player, int64_t targetNs, int landAfter)
+{
    lock(&player->lock);
    player->currentPts = (uint64_t)targetNs;   // position reads as the target until the seek lands
    unlock(&player->lock);
