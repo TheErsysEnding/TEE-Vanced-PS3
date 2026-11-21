@@ -81,8 +81,10 @@ static void flushRingLocked(void)
 
 static int queueLogLine(const char *line, int len, int urgent)
 {
-   if (urgent) {   // an error: everything before it, then the line itself, now - on the thread that logged it
-      lock(&logFileLock);
+   // an error: everything before it, then the line itself, now - on the thread that logged it. Unless the writer is in
+   // the middle of a write (it holds the file below the UI's and the decoder's priority, and they must never wait on it):
+   // then the line goes into the ring like any other, and the writer takes it as soon as it is through
+   if (urgent && sys_lwmutex_trylock(&logFileLock) == CELL_OK) {
       flushRingLocked();
       appendToLog(line, len);
       unlock(&logFileLock);
@@ -131,7 +133,10 @@ void startLogWriter(void)
    if (createLock(&logFileLock) != 0) { destroyLock(&logRingLock); return; }
    logWriterRunning = 1;
    logWriterExited = 0;
-   if (spawnJoinableThread(&logWriterTid, logWriterThread, 0, THREAD_PRIORITY_LOW, THREAD_STACK_SIZE_16KB, "tv_log") != 0) {
+   // priority 1010: below the UI (1001) and the decoder (1000), above the player's 0x400 workers - it sleeps through every
+   // HDD write and only copies a few KB, but at 0x500 busy workers could keep it from finishing a write while an error
+   // line or the ring waits for it
+   if (spawnJoinableThread(&logWriterTid, logWriterThread, 0, 1010, THREAD_STACK_SIZE_16KB, "tv_log") != 0) {
       logWriterRunning = 0;
       destroyLock(&logFileLock);
       destroyLock(&logRingLock);
@@ -147,8 +152,12 @@ void startLogWriter(void)
 void stopLogWriter(void)
 {
    if (!logWriterStarted) return;
-   logQueueLine = 0;          // from here on every line goes straight to the file again
+   // what is queued goes first, then every line straight to the file again - in that order, under the file's lock
+   lock(&logFileLock);
+   flushRingLocked();
+   logQueueLine = 0;
    __sync_synchronize();
+   unlock(&logFileLock);
    logWriterRunning = 0;
    for (int waited = 0; !logWriterExited && waited < 2000; waited += 5) sleepMs(5);
    uint64_t exitCode;

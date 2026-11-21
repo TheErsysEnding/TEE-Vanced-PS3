@@ -28,6 +28,7 @@ typedef struct {
    int vp9Spes;      // 5 or 6, in place of getVp9Spes
    int hybrid;       // 0 (nohybrid): a VP9 stream gets no lower stream beside it (play.c's vp9PairCount 0)
    int mute;         // the sound at volume 0; the feed runs on, so the clock the picture keeps to is the same
+   int showStats;    // R3's panel on from the first picture (r3)
 } BenchPlay;
 // 1 with the run's settings while the play screen on top was opened by the bench, 0 for any other play (play left as
 // it is). play.c's worker asks too: the settings are set before the screen is pushed and stay until it has gone.

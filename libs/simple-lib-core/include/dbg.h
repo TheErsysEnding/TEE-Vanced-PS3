@@ -41,7 +41,7 @@ static inline void setLogCallback(LogCallback fn) { logCallback = fn; }
 // (TEE Vanced V3.1.0 Test 3) the log on a thread of its own. Every line used to be an open, a write and a close on the
 // HDD in the thread that logged it - a few ms, now and then tens, on the UI thread in the middle of a frame (the 10-s
 // display-sync line, the 1-s stutter line) and on the decode and feeder threads. Once startLogWriter has run (main.c,
-// settings.txt log=async), INFO, WARN and TRCE lines are copied into a ring that a low-priority thread appends to DBG_LOG
+// settings.txt log=async), INFO, WARN and TRCE lines are copied into a ring that a thread of its own appends to DBG_LOG
 // every 0.1 s; an ERR line writes the ring and itself at once, so nothing that leads up to an error waits. A hard hang
 // loses at most the last 0.1 s of INFO and WARN - log=sync for hunting one. src/dbg.c (this fork's) holds the ring.
 // logQueueLine: set while the writer runs; 1 = the line is taken care of.

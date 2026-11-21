@@ -23,7 +23,7 @@
 // in the log and left at its default.
 //
 // Every other line is a run, its words apart by spaces or tabs:
-//   <videoId> <startSec> <seconds> <quality> [nohybrid] [spes=5|6] [sync=flips|wall] [release=early|late] [repeat=n]
+//   <videoId> <startSec> <seconds> <quality> [nohybrid] [spes=5|6] [sync=flips|wall] [release=early|late] [r3] [repeat=n]
 //   videoId    the video's 11-character id
 //   startSec   where it starts, in whole seconds (the player lands on the key frame at or before it)
 //   seconds    how many seconds of the video are counted once the warmup is over
@@ -32,6 +32,7 @@
 //   spes=      the TEE VP9 building block's SPEs (settings.txt vp9-spes)
 //   sync=      display sync by the vblanks missed or by the wall clock (display-sync, setVideoDisplaySync)
 //   release=   a VP9 picture goes back at its flip or at the next present (vp9-release, setVideoVp9ReleaseEarly)
+//   r3         R3's panel on, as TEE watches while he tests: its numbers are rendered anew every second, on the UI thread
 //   repeat=n   the line n times in a row
 // spes=, sync= and release= left out are the user's settings, and those are back after every run. At most 32 runs in
 // all, repeats counted. A line that does not read as a run - an option it does not know among them - is said in the log
@@ -138,6 +139,7 @@ typedef struct {
    int  spes;      // 5 or 6; 0: the user's (vp9-spes)
    int  sync;      // 1 flips, 0 wall; -1: the user's (display-sync)
    int  release;   // 1 early, 0 late; -1: the user's (vp9-release)
+   int  r3;        // R3's panel on
 } BenchRun;
 
 typedef enum { BENCH_OFF, BENCH_WAITING, BENCH_OPENING, BENCH_WARMUP, BENCH_COUNTING } BenchStage;
@@ -431,10 +433,11 @@ static void readRun(int number, char *line, int *dropped)
       else if (strcmp(option, "sync=wall") == 0)     run.sync = 0;
       else if (strcmp(option, "release=early") == 0) run.release = 1;
       else if (strcmp(option, "release=late") == 0)  run.release = 0;
+      else if (strcmp(option, "r3") == 0)            run.r3 = 1;
       else if (strncmp(option, "repeat=", 7) == 0 && readNumber(option + 7, &repeat) && repeat >= 1 && repeat <= MAX_RUNS) {
          // the number is in
       } else {
-         logWarn("[bench] line %d: \"%.24s\" is no run option (nohybrid, spes=5|6, sync=flips|wall, release=early|late, "
+         logWarn("[bench] line %d: \"%.24s\" is no run option (nohybrid, spes=5|6, sync=flips|wall, release=early|late, r3, "
                  "repeat=1..%d) - left out\n", number, option, MAX_RUNS);
          return;
       }
@@ -478,9 +481,9 @@ static void describeRun(char *out, int cap, int index)
    char quality[8];
    if (run->quality) snprintf(quality, sizeof quality, "%d", run->quality);
    else              strcpy(quality, "auto");
-   snprintf(out, (size_t)cap, "run %d/%d %s %d+%d q%s %s sync=%s release=%s spes=%d", index + 1, bench.runCount, run->id,
+   snprintf(out, (size_t)cap, "run %d/%d %s %d+%d q%s %s sync=%s release=%s spes=%d%s", index + 1, bench.runCount, run->id,
             run->startSec, run->seconds, quality, run->hybrid ? "hybrid" : "nohybrid", runSync(run) ? "flips" : "wall",
-            runRelease(run) ? "early" : "late", runSpes(run));
+            runRelease(run) ? "early" : "late", runSpes(run), run->r3 ? " r3" : "");
 }
 
 // the user's switches, as settings.txt has them: after every run, and when a job stops
@@ -663,6 +666,7 @@ static void startRun(uint64_t now)
    bench.play.qualityCap = run->quality;
    bench.play.vp9Spes    = runSpes(run);
    bench.play.hybrid     = run->hybrid;
+   bench.play.showStats  = run->r3;
    bench.play.mute       = bench.mute;
    // the process-wide switches the player reads, before it is built (play.c's worker takes the SPEs from getBenchPlay)
    setVideoDisplaySync(runSync(run));

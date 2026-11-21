@@ -2245,6 +2245,8 @@ static void updatePlay(void)
          state.player = state.pendingPlayer;
          state.pendingPlayer = NULL;
          setAudioPcmFeedVolume(feedVolume());   // (V3.1.0 Test 3) none in a bench run with mute=1
+         BenchPlay benchPlay;                   // ... and R3's panel on in one with r3
+         if (getBenchPlay(&benchPlay) && benchPlay.showStats) state.showStats = 1;
          uiSetTextLabel(&titleLabel, TITLE_WEIGHT, state.title);   // rasterise once, off the draw path
          state.stage = STAGE_PLAYING;
          // a live player: the segment its picture began with - a rewind past the server's window began at the

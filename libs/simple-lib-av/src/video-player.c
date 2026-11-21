@@ -240,6 +240,8 @@ struct VideoPlayer {
    // picture was dropped as late or none was ready - the stutter a viewer sees, with what was behind it
    uint64_t statsSecondUs;
    int      statsShown, statsLate, statsRepeats, statsStarved, statsReadyMin;
+   int      statsMissed;        // (V3.1.0 Test 3) presents with none ready at which a picture was due (statsStarved counts
+                                //   those at which none was due too: half of them at 30 fps on a 60 Hz screen)
 
    // display sync (see pickSyncedFrame): a video whose frame rate matches the screen's (60 fps on 59.94 Hz, 30 on
    // 59.94 at two vblanks a picture) shows exactly one picture per vblank, and the sound's tempo is steered by a
@@ -1064,7 +1066,7 @@ static void performSeek(VideoPlayer *player)
    player->audioWaitStartUs = 0;         // fresh pre-roll: each seek gets the full window to wait for audio,
                                          // else a stale timer trips instantly and video starts on the wall clock
    player->statsSecondUs = 0;            // the stutter statistics start over with the new position
-   player->statsShown = player->statsLate = player->statsRepeats = player->statsStarved = 0;
+   player->statsShown = player->statsLate = player->statsRepeats = player->statsStarved = player->statsMissed = 0;
    player->vp9DropSeconds = 0;           // (V3.0.4) and the safety net's count of seconds with pictures dropped,
    player->vp9DropIgnore = VP9_DROP_IGNORE;   // the pre-roll's own seconds passed over
    player->vp9CatchingUp = 0;            // the pre-roll below holds and releases the sound itself
@@ -1833,7 +1835,9 @@ static int pickSyncedFrame(VideoPlayer *player, uint64_t nowUs, uint64_t clock)
    player->syncVblanks -= advance * player->syncPerFrame;
 
    int64_t frameNs = (int64_t)player->demuxer.frameDurationNs;
-   uint64_t at = player->syncAtPts > player->currentPts ? player->syncAtPts : player->currentPts;   // (V3.1.0 Test 3)
+   // (V3.1.0 Test 3) where the timeline stands - display-sync=wall keeps Test 2's: the picture on screen
+   int byFlips = haveDisplayHooks && syncByFlips;
+   uint64_t at = byFlips && player->syncAtPts > player->currentPts ? player->syncAtPts : player->currentPts;
    int64_t errorNs = (int64_t)at - (int64_t)clock;   // > 0: the picture is ahead of the sound
    int best = -1;
    if (errorNs < -frameNs * 6) {   // far behind (a stall): straight to the picture that is due, as without sync
@@ -1852,10 +1856,14 @@ static int pickSyncedFrame(VideoPlayer *player, uint64_t nowUs, uint64_t clock)
          if (player->slots[i].state == SLOT_READY && player->slots[i].pts > after &&
              (next < 0 || player->slots[i].pts < player->slots[next].pts)) next = i;
       if (next < 0) break;   // nothing newer decoded yet: show what is there, or repeat
-      // (V3.1.0 Test 3) the next picture more than 1.5 frames on: TEE VP9 left a frame out (tvp9_skip_before). This step is
-      // that frame's, so the picture on screen stays for it - a repeat in its place, rather than the next picture one
-      // vblank early and a repeat after it
-      if (player->vp9 && frameNs > 0 && (int64_t)(player->slots[next].pts - at) > frameNs * 3 / 2) { at += (uint64_t)frameNs; continue; }
+      // (V3.1.0 Test 3) the next picture 1.5 - 4.5 frames on: TEE VP9 left up to three frames out (tvp9_skip_before). This
+      // step is a left-out frame's, so the picture on screen stays for it - a repeat in its place, rather than the next
+      // picture a vblank early and a repeat after it. A wider gap (a change of stream that lands later) is shown as before
+      int64_t gapNs = (int64_t)(player->slots[next].pts - at);
+      if (byFlips && player->vp9 && frameNs > 0 && gapNs > frameNs * 3 / 2 && gapNs <= frameNs * 9 / 2) {
+         at += (uint64_t)frameNs;
+         continue;
+      }
       best = next;
       after = at = player->slots[next].pts;
    }
@@ -2016,7 +2024,11 @@ const uint8_t *getVideoFrame(VideoPlayer *player, int *width, int *height)
       player->audioHeld = 0;   // the user's pause owns the feed now; at the end of the sound, what is left plays out
       if (!player->paused) holdAction = 2;
    } else if (player->vp9 && player->audioFeedOpen && player->audioClockValid && player->started && !player->paused) {
-      int64_t behindNs = (int64_t)clock - (int64_t)player->currentPts;   // > 0: the picture is behind the sound
+      // > 0: the picture is behind the sound. (V3.1.0 Test 3) Display sync's timeline where it is past the picture on screen
+      // by a frame or three TEE VP9 left out: those repeats are no picture behind
+      uint64_t shownPts = synced && player->syncActive && haveDisplayHooks && syncByFlips && player->syncAtPts > player->currentPts
+                          ? player->syncAtPts : player->currentPts;
+      int64_t behindNs = (int64_t)clock - (int64_t)shownPts;
       int readyAfter = 0, readyDue = 0;
       for (int i = 0; i < FRAME_SLOTS; i++)
          if (player->slots[i].state == SLOT_READY) { readyAfter++; if (player->slots[i].pts <= clock) readyDue++; }
@@ -2034,7 +2046,10 @@ const uint8_t *getVideoFrame(VideoPlayer *player, int *width, int *height)
          player->vp9CatchingUp = 0;
       int64_t holdAtNs = player->vp9CatchingUp ? AV_HOLD_CATCHUP_NS : AV_HOLD_ENGAGE_NS;
       if (!player->audioHeld) {
-         if (behindNs > holdAtNs && !player->ended) {
+         // (V3.1.0 Test 3) not while every decoded picture is still to come: a gap in the pictures (frames TEE VP9 left
+         // out, a change of stream that lands later) is no picture behind - held then, the sound and the picture would
+         // wait for each other, and the release below lets go of it at once (the same test, caughtUp)
+         if (behindNs > holdAtNs && !caughtUp && !player->ended) {
             player->audioHeld = 1;
             player->audioHeldSinceUs = nowUs;
             holdAction = 1;
@@ -2100,6 +2115,12 @@ const uint8_t *getVideoFrame(VideoPlayer *player, int *width, int *height)
       if (!player->statsSecondUs) { player->statsSecondUs = nowUs; player->statsReadyMin = FRAME_SLOTS; }
       if (best >= 0) player->statsShown++; else player->statsRepeats++;
       if (best < 0 && readyCount == 0) player->statsStarved++;
+      // (V3.1.0 Test 3) ... and of those, the ones at which the next picture was due: at 30 fps every other present on a
+      // 60 Hz screen needs none, and 4K's ring of three is often empty at such a present - which Test 2 counted as a
+      // picture missing. On TEE's console London 4K30 dropped to 1440p after 8 s although every picture came in time
+      int64_t frameDueNs = (int64_t)player->demuxer.frameDurationNs;
+      if (best < 0 && readyCount == 0 &&
+          (frameDueNs <= 0 || (int64_t)player->currentPts + frameDueNs <= (int64_t)clock + frameDueNs / 4)) player->statsMissed++;
       player->statsLate += late;
       if (player->started) {   // (V3.1.0 Test 3) the same, since the player was built - for the bench
          player->totals.presents++;
@@ -2116,17 +2137,18 @@ const uint8_t *getVideoFrame(VideoPlayer *player, int *width, int *height)
             player->vp9DropSeconds = 0;
          } else if (player->vp9 && player->hasLowDemuxer && !player->vp9OnLow && !player->ended &&
                     player->currentPts >= player->vp9LastSwitchNs + VP9_SETTLE_NS &&
-                    player->statsLate + player->statsStarved >= VP9_DROPS_PER_S) {
+                    player->statsLate + player->statsMissed >= VP9_DROPS_PER_S) {
             player->vp9DropSeconds++;
          } else {
             player->vp9DropSeconds = 0;
          }
-         if (player->statsLate || player->statsStarved)
+         if (player->statsLate || player->statsMissed)   // (V3.1.0 Test 3) a second in which a picture was missing or late
             snprintf(statsLine, sizeof statsLine, "[video-player] 1 s: %d pictures shown, %d dropped as late, %d presents "
-                     "without a new one (%d with none ready), fewest ready %d of %d\n", player->statsShown, player->statsLate,
-                     player->statsRepeats, player->statsStarved, player->statsReadyMin, FRAME_SLOTS);
+                     "without a new one (%d with none ready), fewest ready %d of %d, %d due with none ready\n",
+                     player->statsShown, player->statsLate, player->statsRepeats, player->statsStarved, player->statsReadyMin,
+                     FRAME_SLOTS, player->statsMissed);
          player->statsSecondUs = nowUs;
-         player->statsShown = player->statsLate = player->statsRepeats = player->statsStarved = 0;
+         player->statsShown = player->statsLate = player->statsRepeats = player->statsStarved = player->statsMissed = 0;
          player->statsReadyMin = FRAME_SLOTS;
       }
    }
