@@ -272,6 +272,7 @@ static uint32_t screenVblankUs;    // one vblank of the screen, in microseconds 
 // (V3.1.0 Test 4) posted at every flip: the shared mode's wait for the flip before the next one sleeps on it
 static sys_semaphore_t flipSema;
 static volatile int    flipSemaOk;
+static int gfxShareActive;   // (the same variable as the shared mode's below: the handler posts only while it is set)
 static void onGfxFlip(const uint32_t head)
 {
    (void)head;
@@ -302,7 +303,9 @@ static void onGfxFlip(const uint32_t head)
    lastFlipVblank = vblank ? vblank : 1;
    __sync_synchronize();
    flipsCompleted++;
-   if (flipSemaOk) sys_semaphore_post(flipSema, 1);   // (V3.1.0 Test 4) full (nobody waited for a while): no matter
+   // (V3.1.0 Test 4) shared only - the handler runs in libgcm's interrupt thread, and with gfx-share=off it stays the one
+   // Test 3 ran on the console with; a full semaphore (nobody waited for a while) is no matter
+   if (flipSemaOk && gfxShareActive) sys_semaphore_post(flipSema, 1);
 }
 
 uint32_t getGfxNextFlipId(void) { return flipsSubmitted + 1; }
@@ -540,9 +543,10 @@ static int gfxCbRestart(uint32_t timeoutUs, int byBlock)
       if (CTX->current == cbBegin) return 0;   // nothing written in this lap: nothing to wait for
       cellGcmFlush(CTX);
       while (control->get == cbBeginOffset) {   // (put lies past the beginning: the flush just set it there)
-         if (gfxNowUs() - startUs > timeoutUs) { shared.precheckTimeouts++; return -1; }
-         sys_timer_usleep(30);                  // (no more often: the libgcm reference's note on CellGcmControl)
-      }
+         uint64_t waitedUs = gfxNowUs() - startUs;
+         if (waitedUs > timeoutUs) { shared.precheckTimeouts++; return -1; }
+         sys_timer_usleep(waitedUs < 1000 ? 30 : 500);   // (30 us no more often: the libgcm reference's note on CellGcmControl;
+      }                                                   //  past 1 ms a backlog - no need to wake 30 000 times a second)
       uint32_t get = control->get, put = control->put;
       uint32_t bytes = (uint32_t)((uint8_t *)CTX->current - (uint8_t *)cbBegin);
       CTX->current[0] = CELL_GCM_JUMP(cbBeginOffset);   // (end lies SHARED_SLACK_BYTES before the piece's end: room for it)
@@ -564,8 +568,9 @@ static int gfxCbRestart(uint32_t timeoutUs, int byBlock)
       }
    }
    while (control->get != cbBeginOffset) {
-      if (gfxNowUs() - startUs > timeoutUs) { shared.restartTimeouts++; return -1; }
-      sys_timer_usleep(30);
+      uint64_t waitedUs = gfxNowUs() - startUs;
+      if (waitedUs > timeoutUs) { shared.restartTimeouts++; return -1; }
+      sys_timer_usleep(waitedUs < 1000 ? 30 : 500);
    }
    CTX->begin = cbBegin;
    CTX->current = cbBegin;
@@ -715,8 +720,9 @@ static int gfxDrain(uint32_t timeoutUs)
    unlockCmd();
    volatile uint32_t *label = (volatile uint32_t *)cellGcmGetLabelAddress(DRAIN_LABEL);
    while ((int32_t)(*label - seq) < 0) {
-      if (gfxNowUs() - startUs > timeoutUs) { shared.drainTimeouts++; return -1; }
-      sys_timer_usleep(30);
+      uint64_t waitedUs = gfxNowUs() - startUs;
+      if (waitedUs > timeoutUs) { shared.drainTimeouts++; return -1; }
+      sys_timer_usleep(waitedUs < 1000 ? 30 : 500);
    }
    return 0;
 }
