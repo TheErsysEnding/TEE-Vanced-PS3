@@ -95,8 +95,13 @@ typedef struct {
 // Mbit/s 31.3, a forest in wind at 22 Mbit/s 25.5, fireworks at 44 Mbit/s 14.6 - an ordinary 4K30 video holds, a
 // heavy one does not. A 60 fps video has no 4K30 stream (its 4K is 60 fps: 315), so it never comes here.
 #define VP9_4K_ROWS         1472            // a stream taller (or wider than 2560) is 4K: the decoder is opened for its size
-#define VP9_DOWN_BPS_4K     20000000.0      // T_down / T_up for 4K on the SPEs alone - an estimate from those passages,
-#define VP9_UP_BPS_4K       16000000.0      //   logged with every change so they can be tuned
+// (V3.1.0 Test 6) T_down / T_up for 4K on the SPEs alone, from TEE's console: at ~17.5 Mbit/s 4K30 does not hold - a
+// Norway film (KLuTLF3x9sA / sTsjt8J4OmA, 17.6 Mbit/s) 23 of 30 pictures a second (the decoder 29.5 a second while busy, its
+// pixel stage the limit), London (Ueqm3PQKYPk, 17.4 - 17.9) the sound waiting at 137 s. Until Test 5 20 / 16 Mbit/s, the VP9
+// project's estimate - such a video started in 4K, and its safety net could go down only at 1440p's next key frame (6 s
+// on in the Norway film: 5.4 s more at 23 pictures a second). A passage the next 10 s of which are this busy starts in 1440p
+#define VP9_DOWN_BPS_4K     16000000.0
+#define VP9_UP_BPS_4K       13000000.0
 #define VP9_KEY_FRAME_BYTES_4K (1200u << 10)   // a 4K key frame above this goes in 1440p: 0.3.x gives each of the two
                                             //   entropy SPEs 5 MB of a 4K frame's records (about 7 times the block)
 // (V3.1.0 Test 5) 4K beside 1440p: the feeder keeps no more than this ahead of the clock once the picture runs. 4K's 10 MB of
