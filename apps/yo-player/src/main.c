@@ -88,6 +88,11 @@ int main(int argc, char **argv)
    setVideoDisplaySync(getDisplaySyncByFlips());
    setVideoVp9ReleaseEarly(getVp9ReleaseEarly());
    setVideoVp9Rsx(getVp9Rsx());            // (V3.1.0 Test 4) TEE VP9's RSX part - with gfx-share=on only
+   char benchRsx[8];                       // ... a bench job's global vp9-rsx= for this launch, as its gfx-share=
+   if (peekBenchGlobal("vp9-rsx", benchRsx, sizeof benchRsx)) {
+      setVideoVp9Rsx(strcmp(benchRsx, "on") == 0 ? 2 : strcmp(benchRsx, "1440") == 0 ? 1 : 0);
+      logInfo("[yt] vp9-rsx %s for this launch (the bench job's)\n", benchRsx);
+   }
    setVideoVp9RsxTest(getRsxTest());
    int logAsync = getLogAsync();
    char benchLog[8];

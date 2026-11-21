@@ -269,6 +269,9 @@ static volatile uint32_t vblanksMissed;
 static uint32_t lastFlipVblank;    // the vblank count when the handler saw the last flip
 static uint64_t lastFlipTimeUs;    // libgcm's time of the last flip (cellGcmGetLastFlipTime)
 static uint32_t screenVblankUs;    // one vblank of the screen, in microseconds (initGfx)
+// (V3.1.0 Test 4) posted at every flip: the shared mode's wait for the flip before the next one sleeps on it
+static sys_semaphore_t flipSema;
+static volatile int    flipSemaOk;
 static void onGfxFlip(const uint32_t head)
 {
    (void)head;
@@ -299,6 +302,7 @@ static void onGfxFlip(const uint32_t head)
    lastFlipVblank = vblank ? vblank : 1;
    __sync_synchronize();
    flipsCompleted++;
+   if (flipSemaOk) sys_semaphore_post(flipSema, 1);   // (V3.1.0 Test 4) full (nobody waited for a while): no matter
 }
 
 uint32_t getGfxNextFlipId(void) { return flipsSubmitted + 1; }
@@ -368,7 +372,7 @@ static volatile int pauseCount;               // pauseGfxDrawing from another th
 static volatile uint64_t pauseSinceUs;
 static uint32_t drainSeq;                     // label 255's last value (written under the lock)
 static uint32_t flipsConfirmed;               // (UI thread) the flips known to have happened, by the handler or the status
-static uint64_t lastFlipTimeUs;               // ... the last one's time (cellGcmGetLastFlipTime)
+static uint64_t sharedLastFlipUs;             // ... the last one's time (cellGcmGetLastFlipTime)
 static int flipStallLogged;
 static uint32_t flipBurstBytes;               // a flip's commands, for one log line
 static int flipBurstLogged;
@@ -725,6 +729,7 @@ static uint32_t flipsCounted;                 // ... the confirmed flips the 10-
 static int gfxPreviousFlipDone(uint32_t timeoutUs)
 {
    uint64_t startUs = gfxNowUs();
+   if (flipSemaOk) while (sys_semaphore_trywait(flipSema) == CELL_OK) {}   // (V3.1.0 Test 4) posts of flips long done
    for (;;) {
       uint32_t handled = flipsCompleted;
       if ((int32_t)(handled - flipsConfirmed) > 0)
@@ -735,19 +740,27 @@ static int gfxPreviousFlipDone(uint32_t timeoutUs)
          shared.resyncs++;
          break;
       }
-      if (gfxNowUs() - startUs >= timeoutUs) return 0;
-      sys_timer_usleep(100);
+      uint64_t waitedUs = gfxNowUs() - startUs;
+      if (waitedUs >= timeoutUs) return 0;
+      // (V3.1.0 Test 4) asleep until the flip handler posts the flip, at most 2 ms before the status is looked at again.
+      // Polled every 100 us at the UI's priority 1001 (once a frame, up to a vblank long), the wait left the player's 0x400
+      // threads so little that in RPCS3 the H.264 TEE Decoder stopped every 20 pictures ("no SPE answered"). Never 0: an
+      // lv2 wait with timeout 0 has none
+      uint64_t leftUs = timeoutUs - waitedUs;
+      usecond_t sleepUs = leftUs > 2000 ? 2000 : leftUs > 100 ? leftUs : 100;
+      if (flipSemaOk) sys_semaphore_wait(flipSema, sleepUs);
+      else sys_timer_usleep(sleepUs > 1000 ? 1000 : sleepUs);
    }
    if (flipsConfirmed != flipsCounted) {
       uint64_t at = (uint64_t)cellGcmGetLastFlipTime();
-      if (lastFlipTimeUs && at > lastFlipTimeUs) {
-         uint64_t gapUs = at - lastFlipTimeUs;
+      if (sharedLastFlipUs && at > sharedLastFlipUs) {
+         uint64_t gapUs = at - sharedLastFlipUs;
          uint32_t gap = (uint32_t)(gapUs > 0xFFFFFFFFull ? 0xFFFFFFFFull : gapUs);
          if (gap > shared.gapMaxUs) shared.gapMaxUs = gap;
          if (gap > 25000) shared.gaps25++;
          if (gap > 41700) shared.gaps42++;
       }
-      if (at) lastFlipTimeUs = at;
+      if (at) sharedLastFlipUs = at;
       shared.flips += flipsConfirmed - flipsCounted;
       flipsCounted = flipsConfirmed;
    }
@@ -999,6 +1012,12 @@ int initGfx(GfxVsync vsync)
    uint16_t rates = videoState.displayMode.refreshRates;   // one vblank of the screen, for the distance between flips
    screenVblankUs = (rates & CELL_VIDEO_OUT_REFRESH_RATE_59_94HZ) ? 16683 : (rates & CELL_VIDEO_OUT_REFRESH_RATE_60HZ) ? 16667
                   : (rates & CELL_VIDEO_OUT_REFRESH_RATE_50HZ) ? 20000 : (rates & CELL_VIDEO_OUT_REFRESH_RATE_30HZ) ? 33333 : 0;
+   // (V3.1.0 Test 4) the flips wake the shared mode's wait for them (gfxPreviousFlipDone)
+   if (!flipSemaOk) {
+      sys_semaphore_attribute_t semaAttr;
+      sys_semaphore_attribute_initialize(semaAttr);
+      flipSemaOk = sys_semaphore_create(&flipSema, &semaAttr, 0, 64) == CELL_OK;
+   }
    cellGcmSetFlipHandler(onGfxFlip);   // retires in-flight flips so endGfxFrame need not block on them
    initialized = 1;
 

@@ -379,6 +379,8 @@ static void readGlobal(int number, const char *key, const char *value)
       bench.logAsync = strcmp(value, "sync") != 0;
       if (bench.logAsync && strcmp(value, "async") != 0)
          logWarn("[bench] line %d: log takes async or sync, not \"%.24s\" - async\n", number, value);
+   } else if (strcmp(key, "gfx-share") == 0 || strcmp(key, "vp9-rsx") == 0) {
+      // (V3.1.0 Test 4) read by main.c before initGfx and before the players (peekBenchGlobal): for the whole launch
    } else {
       logWarn("[bench] line %d: \"%.24s\" is no key of a job - ignored\n", number, key);
    }
