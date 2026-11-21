@@ -82,12 +82,15 @@ int main(int argc, char **argv)
    initStorage();          // prefs + watch history; seeds the skip categories from the settings above, so
                            // it has to run AFTER loadSettings, not before
    initAccount();          // the YouTube sign-in kept from an earlier start, if any (account.txt)
+   initBench();            // (V3.1.0 Test 3) a bench job, if one waits (bench.h): renamed bench.running at once
    loadConsoleGlyphs();    // decode the console's own button glyphs for the on-screen hints
    initUiDraw();           // the Ember helper textures - never before initGfx, whose VRAM setup an earlier
                            // upload breaks
    initVideoExport();      // resolves the download staging folder, so it runs before initDownloads
    initDownloads();        // background download queue + its progress overlay
-   startUpdateCheck();     // (V3.0.0 Test 12) once a start, on a worker: is a newer release out? (update-check.h)
+   // (V3.0.0 Test 12) once a start, on a worker: is a newer release out? (update-check.h) (V3.1.0 Test 3) Not during a
+   // bench job: a request beside the runs' streams, and a notice on Home with nobody to read it
+   if (!isBenchActive()) startUpdateCheck();
 
    logInfo("[yt] net rc=%d\n", netRc);
    uiLogVram("startup");   // the baseline the later [vram] lines compare against
@@ -98,6 +101,7 @@ int main(int argc, char **argv)
       updateVideoExport();   // right after the sysutil pump, which is what delivers its results
       updatePad();
       updateScreen();
+      updateBench();         // (V3.1.0 Test 3) starts, reads and ends a bench job's runs; nothing without a job
 
       beginGfxFrame();
       clearGfx(activeTheme->appBg);

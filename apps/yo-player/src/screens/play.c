@@ -40,6 +40,7 @@
 #include "ps-button.h"          // L3 presses PS for pads the console has no PS button from
 #include "ui/console-glyphs.h" // the Triangle glyph on the skip prompt
 #include "dbg.h"                // logInfo/logError (bridge)
+#include "bench.h"              // (V3.1.0 Test 3) a bench run's own settings, and what the bench reads of the screen
 
 #include <string.h>
 #include <stdlib.h>
@@ -516,6 +517,14 @@ static TextTexture descriptionTexture;        // whole description as one tall t
 static VolumeMeter volumeMeter;
 static int volumeLevel = VOLUME_DEFAULT;
 
+// (V3.1.0 Test 3) the sound's volume: the meter's, or none in a bench run with mute=1 (bench.h) - the feed runs on all
+// the same, so the clock the picture keeps to is the one it always is
+static float feedVolume(void)
+{
+   BenchPlay bench;
+   return getBenchPlay(&bench) && bench.mute ? 0.0f : getVolumeMeterFraction(&volumeMeter);
+}
+
 static void fail(const char *reason)
 {
    logError("[yt] play failed: %s\n", reason);
@@ -644,6 +653,9 @@ static void worker(uint64_t arg)
    (void)arg;
    StreamInfo *info = malloc(sizeof *info);   // ~140 KB, too big for the stack
    const Extractor *extractor = findExtractor(requestedInput);
+   // (V3.1.0 Test 3) a bench run (bench.h) plays from its own start, with its own quality cap, VP9 SPEs and lower stream
+   BenchPlay bench;
+   int benchRun = getBenchPlay(&bench);
    if (!info || !extractor) { fail("unrecognised link or id"); goto done; }
 
    // resolve (stage stays STAGE_LOADING, set by initPlay's memset, until we adopt or fail)
@@ -659,6 +671,10 @@ static void worker(uint64_t arg)
          state.captionTracks[state.captionCount++] = info->captions[i];
    addTranslatedSubtitles(info);   // (V3.0.0, issue #4)
    pairVp9Streams(info);           // (Test 14) 1440p's 1080p stream, for the busy stretches
+   if (benchRun && !bench.hybrid && state.vp9PairCount) {   // (V3.1.0 Test 3) a bench run's nohybrid
+      logInfo("[bench] nohybrid: VP9 plays without the lower stream beside it\n");
+      state.vp9PairCount = 0;
+   }
 
    // which H.264 decoder this video may use: the TEE Decoder (TEE's own, on the SPEs) unless settings.txt says
    // video-decoder=sony or it failed earlier in this run; it also opens 1080p60, which cellVdec cannot keep up
@@ -666,7 +682,7 @@ static void worker(uint64_t arg)
    // audio-track switch) follows the same choice.
    setH264DecoderPolicy(getVideoDecoderSetting() == VIDEO_DECODER_SONY ? H264_POLICY_SONY : H264_POLICY_AUTO,
                         getTeeDecoderSpes());
-   setVideoVp9Spes(getVp9Spes());
+   setVideoVp9Spes(benchRun ? bench.vp9Spes : getVp9Spes());   // (V3.1.0 Test 3) a bench run's spes=
    int teeUsable = isH264TeeUsable();
    // the best playable format, up to the viewer's quality cap (settings quality=, START > Quality)
    // (V3.0.0) a download (extractors/local.c) holds exactly the stream it was downloaded as - VP9 too, whatever
@@ -675,7 +691,7 @@ static void worker(uint64_t arg)
    if (strncmp(requestedInput, LOCAL_INPUT_PREFIX, strlen(LOCAL_INPUT_PREFIX)) == 0) {
       for (int i = 0; i < info->formatCount && !video; i++) if (info->formats[i].hasVideo) video = &info->formats[i];
    } else {
-      video = pickVideoForPlayback(info, teeUsable, getQualityCap());
+      video = pickVideoForPlayback(info, teeUsable, benchRun ? bench.qualityCap : getQualityCap());   // (V3.1.0 Test 3)
    }
    if (!video) { fail("no playable mp4 video"); goto done; }
 
@@ -695,7 +711,7 @@ static void worker(uint64_t arg)
       state.liveOpenedAtEdge = !state.liveEnded;
       state.liveLatencySec = state.liveEnded ? 0.0f : (float)((LIVE_START_BEHIND + 1) * state.liveSegmentSec);   // until its first picture
       if (state.liveEnded) {
-         int resumeAt = getWatchedPosition(requestedInput);
+         int resumeAt = benchRun ? bench.startSec : getWatchedPosition(requestedInput);   // (V3.1.0 Test 3)
          long sq = state.liveFloorSq + resumeAt / state.liveSegmentSec;
          if (resumeAt > 3 && sq < state.liveEdgeSq - 1) liveResumeSq = state.liveFirstSq = sq;
          logInfo("[yt] ended live stream: sq %ld..%ld, %d s segments, from sq %ld\n", state.liveFloorSq, state.liveEdgeSq,
@@ -809,10 +825,12 @@ static void worker(uint64_t arg)
    // reconnect + fragment reload. drawPlay keeps the "Loading..." status up until the first frame is
    // presented, so that reload is covered rather than showing a black screen. storage returns 0 for a
    // typed url (never a history key), so this no-ops for anything but a bare videoId.
+   // (V3.1.0 Test 3) a bench run starts where its job says, whatever was saved: its startSec, 0 = the start
    {
-      int resumeAt = state.isLive ? 0 : getWatchedPosition(requestedInput);
+      int resumeAt = state.isLive ? 0 : benchRun ? bench.startSec : getWatchedPosition(requestedInput);
       float duration = getVideoDurationSeconds(state.pendingPlayer);
-      if (resumeAt > 3 && (duration <= 0 || resumeAt < duration - 10)) seekVideoPlayer(state.pendingPlayer, (float)resumeAt);
+      if (benchRun ? resumeAt > 0 : (resumeAt > 3 && (duration <= 0 || resumeAt < duration - 10)))
+         seekVideoPlayer(state.pendingPlayer, (float)resumeAt);
    }
 
 done:
@@ -1084,8 +1102,9 @@ static void initPlay(void)
 
    // fetch whenever ANY category is set to skip or to ask - an "ask" category needs the segments just as
    // much as an automatic one, and forgetting the second mask here would have made the new option silently
-   // do nothing on a video whose other categories were all set to Keep
-   if ((getSkipCategories() | getAskCategories()) != 0 && isBareVideoId(requestedInput))
+   // do nothing on a video whose other categories were all set to Keep. (V3.1.0 Test 3) Not in a bench run: a request
+   // beside the stream's, and a skip, would change what it measures
+   if (!isBenchPlay() && (getSkipCategories() | getAskCategories()) != 0 && isBareVideoId(requestedInput))
       state.sbThreadActive = (spawnJoinableThread(&state.sbWorkerTid, sponsorWorker, 0,
                               THREAD_PRIORITY_DEFAULT, THREAD_STACK_SIZE_64KB, "yt-sponsor") == 0);
 }
@@ -1183,7 +1202,7 @@ static void switchAudioTrack(int target)
 
    // save the position now, under termPlay's rule (a frame has played, not live): leaving during the
    // rebuild, or a rebuild that fails, would otherwise lose it - termPlay only saves with a player up
-   if (state.firstFrameSeen && !state.isLive) setWatchedPosition(requestedInput, (int)state.switchStartSec);
+   if (state.firstFrameSeen && !state.isLive && !isBenchPlay()) setWatchedPosition(requestedInput, (int)state.switchStartSec);
 
    finishGfx();   // the RSX may still be sampling the current frame buffer
    destroyVideoPlayer(state.player);
@@ -1524,7 +1543,7 @@ static void handlePlaybackInput(void)
    // volume: the widget steps itself on up/down; apply + persist the new level (works on live streams too)
    if (handleVolumeMeterInput(&volumeMeter)) {
       volumeLevel = volumeMeter.level;
-      setAudioPcmFeedVolume(getVolumeMeterFraction(&volumeMeter));
+      setAudioPcmFeedVolume(feedVolume());
    }
 
    // a live stream has no seek index: a rewind rebuilds the player at a segment instead
@@ -1849,6 +1868,7 @@ static void setPlayingQuality(int index)
 // No word on screen (TEE: R3's panel says what plays); the quality saved for the next videos stays as it is.
 static void fallBackFromVp9(void)
 {
+   noteBenchVp9Fallback();   // (V3.1.0 Test 3) a bench run ends here, as "fallback"; nothing otherwise
    int index = -1;
    for (int i = 0; i < state.qualityCount && index < 0; i++) if (!state.qualities[i].isVp9) index = i;   // best first
    float at = getVideoPositionSeconds(state.player);
@@ -1884,7 +1904,7 @@ static void chooseQuality(int choice)
              : (long)(liveWindowStartSq() + position / state.liveSegmentSec);
    }
    float at = state.seeking ? state.seekTarget : getVideoPositionSeconds(state.player);
-   if (state.firstFrameSeen && !state.isLive) setWatchedPosition(requestedInput, (int)at);
+   if (state.firstFrameSeen && !state.isLive && !isBenchPlay()) setWatchedPosition(requestedInput, (int)at);
    setPlayingQuality(index);   // (V3.0.0) with the sound that goes with it: Opus for VP9 (on the PPU), AAC for H.264
    if (state.isLive) {
       state.seeking = 0;
@@ -2224,7 +2244,7 @@ static void updatePlay(void)
       if (state.pendingPlayer) {
          state.player = state.pendingPlayer;
          state.pendingPlayer = NULL;
-         setAudioPcmFeedVolume(getVolumeMeterFraction(&volumeMeter));
+         setAudioPcmFeedVolume(feedVolume());   // (V3.1.0 Test 3) none in a bench run with mute=1
          uiSetTextLabel(&titleLabel, TITLE_WEIGHT, state.title);   // rasterise once, off the draw path
          state.stage = STAGE_PLAYING;
          // a live player: the segment its picture began with - a rewind past the server's window began at the
@@ -2289,9 +2309,10 @@ static void updatePlay(void)
       state.sbReady = 1;
    }
 
-   // chapters: when the description parse found none, ask /next once for youtube's own list
+   // chapters: when the description parse found none, ask /next once for youtube's own list. (V3.1.0 Test 3) Not in a
+   // bench run, like SponsorBlock: no request beside the stream's while it is measured
    if (state.stage == STAGE_PLAYING && !state.chFetchTried && state.chapters.count == 0 && !state.isLive &&
-       isBareVideoId(requestedInput)) {
+       isBareVideoId(requestedInput) && !isBenchPlay()) {
       state.chFetchTried = 1;
       state.chThreadActive = (spawnJoinableThread(&state.chWorkerTid, chapterWorker, 0,
                               THREAD_PRIORITY_DEFAULT, THREAD_STACK_SIZE_64KB, "yt-chapters") == 0);
@@ -3097,8 +3118,9 @@ static void termPlay(void)
    // save the resume position on the way out; a finished video is saved as 0 so it restarts next time.
    // only once a frame has actually played: a failed open or a resume seek that never landed must not
    // clobber a good saved position with 0. storage ignores non-id keys, so typed urls no-op.
-   // an ended live stream keeps its place like a video (the worker picks it up again)
-   if (state.player && state.firstFrameSeen && (!state.isLive || state.liveEnded))
+   // an ended live stream keeps its place like a video (the worker picks it up again). (V3.1.0 Test 3) A bench run keeps
+   // nothing: the video was played for numbers, not watched
+   if (state.player && state.firstFrameSeen && (!state.isLive || state.liveEnded) && !isBenchPlay())
       setWatchedPosition(requestedInput, isVideoEnded(state.player) ? 0 : (int)timelinePosition());
    if (state.player || state.pendingPlayer) finishGfx();   // RSX may still be sampling a frame buffer
    if (state.player) { destroyVideoPlayer(state.player); state.player = NULL; }
@@ -3149,5 +3171,10 @@ static void termPlay(void)
    // no closeFont: the fonts are the app's shared ones, and closing one would blank every label on every
    // screen still using it (ui-fonts.h)
 }
+
+// (V3.1.0 Test 3) what the bench reads of the screen (bench.h)
+VideoPlayer *getPlayScreenPlayer(void) { return state.player; }
+int hasPlayScreenPicture(void) { return state.firstFrameSeen; }
+int hasPlayScreenFailed(void) { return state.stage == STAGE_FAILED; }
 
 Screen playScreen = { initPlay, NULL, updatePlay, drawPlay, NULL, termPlay, SCREEN_TERMINATED };

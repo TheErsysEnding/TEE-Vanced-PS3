@@ -17,6 +17,7 @@
 #include "downloads.h"
 #include "update-check.h"   // (V3.0.0 Test 12) a newer release is out: said once a start
 #include "screens/welcome-screen.h"   // (Test 15) a new version's changes, once
+#include "bench.h"                    // (V3.1.0 Test 3) isBenchActive: no welcome while a bench job runs
 #include "screens/home-list.h"        // (Test 15) DOWN: the list view, with the selection's details
 #include "channel-avatars.h"          // (Test 15) the channels' pictures on the cards, the hero and the list
 #include "app-paths.h"      // APP_VERSION, in that notice
@@ -971,9 +972,10 @@ static int actOnSection(int section)
 
 static void updateHome(void)
 {
-   // (Test 15) once a run, first thing: a version not welcomed yet shows its changes and the support page
+   // (Test 15) once a run, first thing: a version not welcomed yet shows its changes and the support page. (V3.1.0
+   // Test 3) Not while a bench job runs, with nobody at the console to read them: they wait for the job's end
    static int welcomeChecked;
-   if (!welcomeChecked) {
+   if (!welcomeChecked && !isBenchActive()) {
       welcomeChecked = 1;
       if (isWelcomeDue()) { openWelcome(); return; }
    }
