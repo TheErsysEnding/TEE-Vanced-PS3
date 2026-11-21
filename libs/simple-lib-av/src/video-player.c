@@ -106,8 +106,10 @@ typedef struct {
                                             //   entropy SPEs 5 MB of a 4K frame's records (about 7 times the block)
 // (V3.1.0 Test 5) 4K beside 1440p: the feeder keeps no more than this ahead of the clock once the picture runs. 4K's 10 MB of
 // input held ~6 s of a 17 Mbit/s stream: on TEE's console (2026-11-21) the safety net spoke 2.7 s into a 4K30 video the
-// decoder kept at 25 fps, and 1440p reached the screen 7.4 s after that - every 4K picture already fed came first
-#define VP9_AHEAD_4K_NS     2000000000ll
+// decoder kept at 25 fps, and 1440p reached the screen 7.4 s after that - every 4K picture already fed came first.
+// (Test 7) 1440p beside 1080p the same: at LXb3EKWsInQ's busy scene (Test 6) the feeder stood 4 s ahead when the safety net
+// spoke at 22 s, and 1080p came at 27.3 s
+#define VP9_AHEAD_NS     2000000000ll
 #define VP9_SLOTS_4K        3               // the ring at 4K: one ready picture beside the two on screen - every buffer
                                             //   is 13.5 MB, and each one the ring holds the decoder has not
 // (V3.1.0) TEE VP9 0.3.2 leaves out the shown frames no other frame refers to when they would come too late:
@@ -710,11 +712,12 @@ static int feedVp9(VideoPlayer *player, int *startedAtKeyframe)
          if (vp9ConsiderChange(player, &player->pendingAu)) continue;   // (Test 14) dropped: the other stream from here
          player->hasPendingAu = 1;
       }
-      // (V3.1.0 Test 5) 4K beside 1440p, the picture running: the block waits while it lies more than VP9_AHEAD_4K_NS ahead
-      // of the clock - so a change down reaches the screen within that and the lower stream's next key frame
-      if (player->vp9Is4k && player->hasLowDemuxer && !player->vp9OnLow && player->started && !player->paused) {
+      // (V3.1.0 Test 5) 4K beside 1440p, the picture running: the block waits while it lies more than VP9_AHEAD_NS ahead
+      // of the clock - so a change down reaches the screen within that and the lower stream's next key frame. (Test 7) 1440p
+      // beside 1080p too
+      if (player->hasLowDemuxer && !player->vp9OnLow && player->started && !player->paused) {
          uint64_t clock = presentationClockNs(player, sys_time_get_system_time());
-         if ((int64_t)player->pendingAu.pts > (int64_t)clock + VP9_AHEAD_4K_NS) break;   // (fed later: hasPendingAu stays)
+         if ((int64_t)player->pendingAu.pts > (int64_t)clock + VP9_AHEAD_NS) break;   // (fed later: hasPendingAu stays)
       }
       int result = tvp9_feed(player->vp9, player->pendingAu.data, (size_t)player->pendingAu.size, (int64_t)player->pendingAu.pts);
       if (result == 0) break;            // the decoder has enough: retry this block later
@@ -2380,8 +2383,12 @@ const uint8_t *getVideoFrame(VideoPlayer *player, int *width, int *height)
       // change - the sound waits only for a picture more than AV_HOLD_CATCHUP_NS behind. Each wait of the sound is a
       // stutter, and the frames already fed to the decoder still come in 1440p: four in ten seconds in a busy 1440p60
       // scene (TEE, 2026-11-14, LXb3EKWsInQ at 0:23). The picture drops what it is late for and catches up in 1080p.
+      // (V3.1.0 Test 7) "caught up after the change": the picture on screen is the lower stream's already. vp9OnLow alone is
+      // the feeder's, seconds before the screen gets there: the sound waited for the upper stream's last pictures again (4
+      // times at LXb3EKWsInQ's busy scene, Test 6)
       if (player->vp9CatchingUp &&
-          ((player->vp9OnLow && behindNs < AV_HOLD_ENGAGE_NS / 2) || nowUs - player->vp9CatchingUpUs > VP9_CATCHUP_US))
+          ((player->vp9OnLow && player->currentPts >= player->vp9LastSwitchNs && behindNs < AV_HOLD_ENGAGE_NS / 2) ||
+           nowUs - player->vp9CatchingUpUs > VP9_CATCHUP_US))
          player->vp9CatchingUp = 0;
       int64_t holdAtNs = player->vp9CatchingUp ? AV_HOLD_CATCHUP_NS : AV_HOLD_ENGAGE_NS;
       if (!player->audioHeld) {
