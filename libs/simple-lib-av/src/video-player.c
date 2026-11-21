@@ -1798,6 +1798,10 @@ const uint8_t *getVideoFrame(VideoPlayer *player, int *width, int *height)
       player->basePts    = earliest;
       player->baseWallUs = nowUs;
       player->started    = 1;
+      // (V3.1.0) display sync locks on afresh, from the picture the clock picks: still locked from before a seek, it
+      // looked only for pictures later than the position - and the seek's first picture IS the position. With 1440p's
+      // ring it was dropped as late; 4K's ring of three it filled for good (the picture stood, RPCS3, 21 Nov)
+      player->syncActive = 0;
       if (player->vp9)
          snprintf(prerollLine, sizeof prerollLine, "[video-player] pre-roll done: picture at %d ms, sound at %d ms (%d frames "
                   "played), %d ready%s\n", (int)(earliest / 1000000ull),
@@ -1891,8 +1895,14 @@ const uint8_t *getVideoFrame(VideoPlayer *player, int *width, int *height)
       if (!player->paused) holdAction = 2;
    } else if (player->vp9 && player->audioFeedOpen && player->audioClockValid && player->started && !player->paused) {
       int64_t behindNs = (int64_t)clock - (int64_t)player->currentPts;   // > 0: the picture is behind the sound
-      int readyAfter = 0;
-      for (int i = 0; i < FRAME_SLOTS; i++) if (player->slots[i].state == SLOT_READY) readyAfter++;
+      int readyAfter = 0, readyDue = 0;
+      for (int i = 0; i < FRAME_SLOTS; i++)
+         if (player->slots[i].state == SLOT_READY) { readyAfter++; if (player->slots[i].pts <= clock) readyDue++; }
+      // (V3.1.0) caught up: at the clock - or as near as the decoded pictures go, every one of them still to come. A held
+      // sound freezes the clock, and without display sync (24 / 25 fps on a 60 Hz screen) only a picture that is due is
+      // shown: the picture stopped a few ms before the clock - or before a frame TEE VP9 left out - and the sound waited
+      // for a picture that waited for the sound
+      int caughtUp = behindNs <= 0 || (readyDue == 0 && readyAfter > 0);
       // (V3.0.4) While 1080p is on its way - from the safety net's word until the picture has caught up after the
       // change - the sound waits only for a picture more than AV_HOLD_CATCHUP_NS behind. Each wait of the sound is a
       // stutter, and the frames already fed to the decoder still come in 1440p: four in ten seconds in a busy 1440p60
@@ -1914,7 +1924,7 @@ const uint8_t *getVideoFrame(VideoPlayer *player, int *width, int *height)
          // (V3.1.0) "both ready slots": the ring's ready ones - one at 4K
          int holdReady = player->vp9Slots - 2 < AV_HOLD_READY ? player->vp9Slots - 2 : AV_HOLD_READY;
          if (holdReady < 1) holdReady = 1;
-         if (player->ended || (behindNs <= 0 && (readyAfter >= holdReady || heldUs >= AV_HOLD_MAX_US)) ||
+         if (player->ended || (caughtUp && (readyAfter >= holdReady || heldUs >= AV_HOLD_MAX_US)) ||
              (player->vp9CatchingUp && behindNs < holdAtNs / 2)) {   // (V3.0.4) 1080p is on its way: the sound goes on
             player->audioHeld = 0;
             holdAction = 2;
