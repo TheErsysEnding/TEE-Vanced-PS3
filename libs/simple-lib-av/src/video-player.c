@@ -88,10 +88,11 @@ typedef struct {
 // the same two starts that held at 53.5 - 58.0 in Tests 8 / 9 measured 43.6 - 44.7 in Test 10 and went 1080p for
 // nothing. The time a frame took on the entropy SPEs and on the pixel SPEs does not depend on that: the capacity is the
 // slower stage's rate - 1000 / entropy ms, pixel SPEs x 1000 / pixel ms. Test 8, after 8 frames: the starts that held
-// 68.5 - 78.6 a second, the ones that did not 43.4 - 53.6; Test 9 (11 - 12 frames) the ones that held 68.9 - 81.4. Below
-// the video's own rate the stream does not hold there
+// 68.5 - 78.6 a second, the ones that did not 43.4 - 53.6; Test 9 (11 - 12 frames) the ones that held 68.9 - 81.4.
+// (Test 12) Test 11: held 68.0 - 78.9, did not 43.7 - 58.1 (nNBsYTzPxbc: 53.6 in Test 8). The line between them, 1.05 times
+// the video's rate (63 at 60 fps) - a stream decodes at about 0.87 of its capacity, so one below that does not hold there
 #define VP9_PROBE_FRAMES   8
-#define VP9_PROBE_SHARE    1.0
+#define VP9_PROBE_SHARE    1.05
 #define VP9_PROBE_MAX_US   1500000ull
 #define AV_HOLD_CATCHUP_NS 1500000000ll     // (V3.0.4) while 1080p is on its way: the sound waits only this far behind
 #define VP9_CATCHUP_US     20000000ull      // ... for this long at most
