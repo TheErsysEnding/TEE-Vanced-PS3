@@ -99,6 +99,10 @@ typedef struct {
 #define VP9_UP_BPS_4K       16000000.0      //   logged with every change so they can be tuned
 #define VP9_KEY_FRAME_BYTES_4K (1200u << 10)   // a 4K key frame above this goes in 1440p: 0.3.x gives each of the two
                                             //   entropy SPEs 5 MB of a 4K frame's records (about 7 times the block)
+// (V3.1.0 Test 5) 4K beside 1440p: the feeder keeps no more than this ahead of the clock once the picture runs. 4K's 10 MB of
+// input held ~6 s of a 17 Mbit/s stream: on TEE's console (2026-11-21) the safety net spoke 2.7 s into a 4K30 video the
+// decoder kept at 25 fps, and 1440p reached the screen 7.4 s after that - every 4K picture already fed came first
+#define VP9_AHEAD_4K_NS     2000000000ll
 #define VP9_SLOTS_4K        3               // the ring at 4K: one ready picture beside the two on screen - every buffer
                                             //   is 13.5 MB, and each one the ring holds the decoder has not
 // (V3.1.0) TEE VP9 0.3.2 leaves out the shown frames no other frame refers to when they would come too late:
@@ -181,6 +185,7 @@ struct VideoPlayer {
    const char      *vp9SwitchWhy;     // ... for the log
    int              vp9SwitchBps;     // ... the busiest section ahead when it was decided (bits a second)
    int              vp9SwitchLowReady;   // (V3.1.0 Test 5) ... the safety net's: lowDemuxer stands at that key frame already
+   volatile int     vp9SafetyPlanned;    // ... feeder -> UI: that change is on its way - the safety net says nothing more meanwhile
    uint64_t         vp9NextCueNs;     // feeder: the next 1440p cue at which the rule is looked at again
    uint64_t         vp9LastSwitchNs;  // media time of the last change
    double           vp9DownBps, vp9UpBps;   // T_down / T_up on the SPEs alone, bits a second (the safety net lowers them)
@@ -559,6 +564,7 @@ static int vp9ConsiderChange(VideoPlayer *player, const VideoAu *au)
          player->vp9LastSwitchNs = lowAt;
          player->vp9SwitchAtNs = -1;          // a change planned for later is this one
          player->vp9SwitchLowReady = 0;
+         player->vp9SafetyPlanned = 0;
          player->vp9StartedAtKeyframe = 0;    // the cluster's first block is a key frame - if not, on to the next one
          if (lowAt <= pts + VP9_SAME_TIME_NS)
             logInfo("[video-player] VP9 quality: %s -> %s at %d.%03d s (a key frame too big for TEE VP9 in %s: "
@@ -578,7 +584,11 @@ static int vp9ConsiderChange(VideoPlayer *player, const VideoAu *au)
    // block. Until Test 4 it waited for the upper stream's next cue (every ~5.5 s) and went from the lower stream's cue at or
    // after it - up to 11 s more of the picture behind, on top of the pictures already fed. No cluster header read: the cue
    // rule below takes the word, as before
-   if (player->vp9SafetyRequest && !player->vp9OnLow) {
+   if (player->vp9SafetyRequest && !player->vp9OnLow && player->vp9SwitchAtNs >= 0 && player->vp9SwitchToLow &&
+       player->vp9SwitchLowReady) {
+      player->vp9SafetyRequest = 0;   // a word while its change is on its way (the UI waits for it, but a word may cross)
+      vp9LowerForSafety(player);
+   } else if (player->vp9SafetyRequest && !player->vp9OnLow) {
       uint64_t lowAt = seekMkvDemuxerToCluster(&player->lowDemuxer.container.mkv, pts);
       if (lowAt != MKV_NO_CLUSTER) {
          player->vp9SafetyRequest = 0;
@@ -589,8 +599,10 @@ static int vp9ConsiderChange(VideoPlayer *player, const VideoAu *au)
             player->vp9SwitchLowReady = 1;   // the lower demuxer stands at that cluster: the change reads on from there
             player->vp9SwitchWhy = "safety net: the picture fell behind";
             player->vp9SwitchBps = player->vp9SafetyBps;
+            player->vp9SafetyPlanned = 1;
          } else {
             player->vp9SwitchLowReady = 0;   // a change down planned sooner: it seeks the lower stream itself
+            player->vp9SafetyPlanned = 1;    // ... and is on its way all the same
          }
       }
    }
@@ -640,6 +652,8 @@ static int vp9ConsiderChange(VideoPlayer *player, const VideoAu *au)
    uint64_t landed = ready ? at : seekVideoDemuxer(toLow ? &player->lowDemuxer : &player->demuxer, at, 0);
    if (ready) player->vp9StartedAtKeyframe = 0;   // a cluster begins on a key frame - if not, on to the next one
    player->vp9OnLow = toLow;
+   __sync_synchronize();
+   player->vp9SafetyPlanned = 0;   // (after vp9OnLow: the UI never sees neither)
    if (toLow) player->totals.toLow++; else player->totals.toHigh++;   // (V3.1.0 Test 3)
    player->vp9LastSwitchNs = landed;
    double down, up;
@@ -663,6 +677,7 @@ static uint64_t vp9SeekTrack(VideoPlayer *player, uint64_t targetNs, int landAft
    int toLow = player->vp9OnLow ? !(peak < up) : peak > down;
    player->vp9SwitchAtNs = -1;
    player->vp9SwitchLowReady = 0;
+   player->vp9SafetyPlanned = 0;
    player->vp9NextCueNs = 0;   // the rule looks again at the first block
    uint64_t landed = seekVideoDemuxer(toLow ? &player->lowDemuxer : &player->demuxer, targetNs, landAfter);
    if (toLow != player->vp9OnLow) {
@@ -689,6 +704,12 @@ static int feedVp9(VideoPlayer *player, int *startedAtKeyframe)
          if (!*startedAtKeyframe) { if (!player->pendingAu.keyframe) continue; *startedAtKeyframe = 1; }
          if (vp9ConsiderChange(player, &player->pendingAu)) continue;   // (Test 14) dropped: the other stream from here
          player->hasPendingAu = 1;
+      }
+      // (V3.1.0 Test 5) 4K beside 1440p, the picture running: the block waits while it lies more than VP9_AHEAD_4K_NS ahead
+      // of the clock - so a change down reaches the screen within that and the lower stream's next key frame
+      if (player->vp9Is4k && player->hasLowDemuxer && !player->vp9OnLow && player->started && !player->paused) {
+         uint64_t clock = presentationClockNs(player, sys_time_get_system_time());
+         if ((int64_t)player->pendingAu.pts > (int64_t)clock + VP9_AHEAD_4K_NS) break;   // (fed later: hasPendingAu stays)
       }
       int result = tvp9_feed(player->vp9, player->pendingAu.data, (size_t)player->pendingAu.size, (int64_t)player->pendingAu.pts);
       if (result == 0) break;            // the decoder has enough: retry this block later
@@ -1095,6 +1116,7 @@ static int restartVp9OnLow(VideoPlayer *player)
    player->vp9SafetyRequest = 0;
    player->vp9BehindSinceUs = player->vp9LastHoldUs = 0;
    player->vp9DropSeconds = 0;
+   player->vp9DropIgnore = VP9_DROP_IGNORE;   // (V3.1.0 Test 5) the restart's own seconds passed over
    player->vp9CatchingUp = 1;
    player->vp9CatchingUpUs = nowUs;
    uint32_t lastFlip = haveDisplayHooks ? displayHooks.nextFlipId() : 0;   // (V3.1.0 Test 3) the frame being drawn
@@ -1141,6 +1163,7 @@ static int restartVp9OnLow(VideoPlayer *player)
    player->vp9LastSwitchNs = landed;
    player->vp9SwitchAtNs = -1;
    player->vp9SwitchLowReady = 0;
+   player->vp9SafetyPlanned = 0;
    player->vp9NextCueNs = 0;
    player->hasPendingAu = 0;
    player->inputEnded = 0;
@@ -1923,6 +1946,7 @@ VideoPlayer *createVideoPlayerVp9(const char *videoPath, const char *lowVideoPat
    player->audioSeekPendingNs = -1;
    player->vp9SwitchAtNs = -1;
    player->vp9SwitchLowReady = 0;
+   player->vp9SafetyPlanned = 0;
    player->vp9LastPts = -1;   // (V3.0.4 Test 2)
    player->freeFrame = freeFrame ? freeFrame : freeFrameToHeap;
    if (!allocFrame) allocFrame = allocFrameFromHeap;
@@ -2384,7 +2408,7 @@ const uint8_t *getVideoFrame(VideoPlayer *player, int *width, int *height)
       // (Test 14) the safety net: 1440p falls behind although the cues let it play - more than VP9_BEHIND_NS for
       // VP9_BEHIND_US, or the sound held twice within VP9_HOLDS_US. Then 1080p from the next cue, and T_down for the
       // rest of the video at 90 % of the bitrate where it happened (the feeder does both)
-      if (player->hasLowDemuxer && !player->vp9OnLow && !player->vp9SafetyRequest) {
+      if (player->hasLowDemuxer && !player->vp9OnLow && !player->vp9SafetyRequest && !player->vp9SafetyPlanned) {
          const char *sign = NULL;
          if (behindNs > VP9_BEHIND_NS) {
             if (!player->vp9BehindSinceUs) player->vp9BehindSinceUs = nowUs;
