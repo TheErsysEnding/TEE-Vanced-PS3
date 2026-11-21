@@ -252,6 +252,8 @@ struct VideoPlayer {
    int      syncVblanks;        // vblanks counted toward the next picture
    int      syncSpeedSet;       // the sound's tempo is not 1.0 at the moment
    uint32_t syncLastMissed;     // (V3.1.0 Test 3) the display's missed-vblank count at the last present (display-sync=flips)
+   uint64_t syncAtPts;          // ... where display sync's timeline stands: the picture on screen, or past it by the frames
+                                //     TEE VP9 left out (their vblanks repeat the picture before them)
    VideoPlayerCounters totals;  // (V3.1.0 Test 3) what the player has done, for the bench (getVideoPlayerCounters)
    // (V3.0.0) VP9: the sound waits for the picture. Its Opus track is a stream of its own, a few KB a second, so a
    // picture short of input (or of decoding time) fell behind a sound that ran on - up to 0.7 s in the hardest
@@ -1831,7 +1833,8 @@ static int pickSyncedFrame(VideoPlayer *player, uint64_t nowUs, uint64_t clock)
    player->syncVblanks -= advance * player->syncPerFrame;
 
    int64_t frameNs = (int64_t)player->demuxer.frameDurationNs;
-   int64_t errorNs = (int64_t)player->currentPts - (int64_t)clock;   // > 0: the picture is ahead of the sound
+   uint64_t at = player->syncAtPts > player->currentPts ? player->syncAtPts : player->currentPts;   // (V3.1.0 Test 3)
+   int64_t errorNs = (int64_t)at - (int64_t)clock;   // > 0: the picture is ahead of the sound
    int best = -1;
    if (errorNs < -frameNs * 6) {   // far behind (a stall): straight to the picture that is due, as without sync
       uint64_t bestPts = 0;
@@ -1849,9 +1852,14 @@ static int pickSyncedFrame(VideoPlayer *player, uint64_t nowUs, uint64_t clock)
          if (player->slots[i].state == SLOT_READY && player->slots[i].pts > after &&
              (next < 0 || player->slots[i].pts < player->slots[next].pts)) next = i;
       if (next < 0) break;   // nothing newer decoded yet: show what is there, or repeat
+      // (V3.1.0 Test 3) the next picture more than 1.5 frames on: TEE VP9 left a frame out (tvp9_skip_before). This step is
+      // that frame's, so the picture on screen stays for it - a repeat in its place, rather than the next picture one
+      // vblank early and a repeat after it
+      if (player->vp9 && frameNs > 0 && (int64_t)(player->slots[next].pts - at) > frameNs * 3 / 2) { at += (uint64_t)frameNs; continue; }
       best = next;
-      after = player->slots[next].pts;
+      after = at = player->slots[next].pts;
    }
+   player->syncAtPts = at;
    return best;
 }
 
@@ -1946,6 +1954,7 @@ const uint8_t *getVideoFrame(VideoPlayer *player, int *width, int *height)
          if (player->slots[i].state == SLOT_READY && player->slots[i].pts <= clock && (best < 0 || player->slots[i].pts >= bestPts)) { best = i; bestPts = player->slots[i].pts; }
       if (synced && best >= 0) {
          player->syncActive = 1; player->syncLastUs = nowUs; player->syncVblanks = 0;
+         player->syncAtPts = bestPts;   // (V3.1.0 Test 3)
          if (haveDisplayHooks) player->syncLastMissed = displayHooks.vblanksMissed();   // (V3.1.0 Test 3)
       }
    }

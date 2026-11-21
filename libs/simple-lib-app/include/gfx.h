@@ -171,9 +171,9 @@ void       retireGfxTexture(GfxTexture *tex);
 uint32_t getGfxNextFlipId(void);
 uint32_t getGfxFlipsDone(void);
 uint32_t getGfxVblankCount(void);
-// the vertical blanks the screen showed a frame again for because the next one was not there: from the times of the flips,
-// in whole vblanks, counted by the flip handler (so a present never reads a vblank count and a flip count that disagree
-// for the moment between the vblank and the handler)
+// the vertical blanks the screen showed a frame again for because the next one was not there: the flip handler counts
+// them from the vblank count at each flip (so a present never reads a vblank count and a flip count that disagree for
+// the moment between the vblank and the handler)
 uint32_t getGfxVblanksMissed(void);
 // the flips since initGfx: how many, how many came more than 25 ms / 41.7 ms after the one before (a missed vblank /
 // two), the longest gap in microseconds - for the bench (apps/yo-player bench.c), read on the UI thread
