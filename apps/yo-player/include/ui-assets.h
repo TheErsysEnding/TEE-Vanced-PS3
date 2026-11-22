@@ -16,6 +16,12 @@ extern const unsigned int  manropeBoldDataSize;
 extern const unsigned char manropeExtraBoldData[];   // 800
 extern const unsigned int  manropeExtraBoldDataSize;
 
+// (V3.1.0) DejaVu Sans Bold, cut down to Latin, punctuation, Hebrew and Arabic with its presentation forms
+// (tools/subset-font.py): the Arabic menu, and Arabic and Hebrew titles. Bitstream Vera license with DejaVu's
+// public-domain changes (src/assets/DejaVu-LICENSE.txt).
+extern const unsigned char dejavuSansBoldData[];
+extern const unsigned int  dejavuSansBoldDataSize;
+
 // Helper textures: white, 8-bit RGBA, the shape lives in the alpha channel; tinted when drawn.
 extern const unsigned char texRoundR8Data[];         // 32x32, filled, radius 8 (caps 8): badges, key chips
 extern const unsigned int  texRoundR8DataSize;

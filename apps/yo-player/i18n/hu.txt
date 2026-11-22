@@ -1,0 +1,322 @@
+# Hungarian (te). Plural: Hungarian keeps the noun singular after a number - both forms the same.
+@name Magyar
+@script latin
+@flag hu
+@order 12
+@plural one
+1	A(z) „%s” még töltődik. Itt játszható le, amint kész.
+2	A(z) „%s” az előtte lévő letöltésekre vár. Itt játszható le, amint kész.
+3	Névjegy
+4	Fiók
+5	Hozzáadás lejátszási listához
+6	Kérdez
+7	Következő videó automatikus lejátszása
+8	Vissza
+9	Mégse
+10	Kategória
+11	Módosítás
+12	Csatorna
+13	Választás
+14	Válaszd ki a nyelvet
+15	Bezárás
+16	Folytatás
+17	Nem sikerült leiratkozni erről: %s.
+18	Törlés
+19	Törlöd a(z) „%s” letöltést a konzolról?
+20	Letöltés
+21	Letöltések
+22	Be nem fejezett letöltések: %d („%s” és mások). Újrakezded őket az elejéről, vagy törlöd?
+23	Töltelék és kitérők
+24	Neked
+25	Játék
+26	Előzmények
+27	Interakcióra emlékeztető
+28	Intró
+29	Megtart
+30	Nyelv
+31	Később
+32	Legújabb: %s
+33	Kedvelt videók
+34	Listanézet
+35	Élő
+36	Betöltés...
+37	Bejelentkezés
+38	Menü
+39	Áthelyezed a(z) „%s” videót az XMB Videó oszlopába? A fájlt a rendszer veszi át: a TEE Vanced utána már nem mutatja és nem játssza le. Az XMB 720p60 vagy 1080p30 felbontásban játssza (egy 1440p vagy 1080p60 letöltést ehhez újra letölt).
+40	Áthelyezés az XMB-be
+41	Zene
+42	Hírek
+43	Még nincs letöltés – egy videón az R3 letölti.
+44	Nincs találat
+45	Ki
+46	Témán kívüli zene
+47	Be
+48	Csatorna megnyitása
+49	Outro és záróképernyők
+50	PS gomb
+51	Oldal
+52	Lejátszás
+53	Lejátszás
+54	Lejátszási listák
+55	Podcastok
+56	Népszerű
+57	Régió
+58	Újrakezdés
+59	Szkenneld be: linkek, streamek\nés kapcsolat
+60	Keresés
+61	Szakasz
+62	Önreklám
+63	Beállítások
+64	Kihagyás
+65	Szponzor
+66	Sport
+67	Letöltés leállítása
+68	Leállítod a(z) „%s” letöltését? Az eddig letöltött rész elvész.
+69	Feliratkozás
+70	Feliratkozások
+71	TEE Vanced %s  ·  megjelent a v%s a GitHubon
+72	Megjelent a TEE Vanced v%s – ez itt a %s. A GitHubon van: TheErsysEnding/TEE-Vanced-PS3, Releases.
+73	Ez a csatorna nem volt a feliratkozások között.
+74	A PS gombot nem sikerült elküldeni: a konzol nem engedte virtuális kontroller regisztrálását.
+75	Az alkalmazás saját szövegei. A YouTube címei és nevei változatlanok maradnak.
+76	Induláskor nem sikerült létrehozni vagy írni az adatmappát, így semmit sem lehet menteni.\n\n%s
+77	A(z) „%s” letöltése nem fejeződött be. Újrakezded az elejéről, vagy törlöd?
+78	Ennek a csempének nincs csatornaazonosítója, így nincs miről leiratkozni.
+79	Az XMB-be
+80	Felkapott
+81	Leiratkozás
+82	Leiratkozol erről: %s?
+83	Leiratkozva – de nem sikerült menteni, újraindítás után a csatorna visszatér.\n\n%s\n\nSzabad hely: %lu KB
+84	Videó
+85	Megnézendő
+86	Mi történjen, amikor egy jelölt szakasz kezdődik. „Kérdez” esetén a szakasz alatt egy kihagyás gomb látszik.
+87	Később a Beállításokban módosíthatod.
+88	ez a csatorna
+89	Az 1440p60 egy nehéz jelenetben kb. két másodperc alatt visszavált 1080p60-ra, az 1440p-hez túl nehéz kezdés pedig rögtön 1080p60-ban indul.
+90	A 4K30 béta: nagy valószínűséggel gyakran visszavált 1440p30-ra. A 4K nehéz jelenetei több munkát jelentenek, mint amit a PS3 időben dekódolni tud.
+91	A 4K30 videók 1440p-ben indulnak, és ott váltanak 4K-ra, ahol a videó elég könnyű.
+92	Az arab és héber videócímek most már megjelennek, jobbról balra.
+93	Tovább
+94	Új: 4K videók másodpercenként 30 képkockával, az SPE-ken a TEE VP9 dekóderrel.
+95	Kérlek, mondjátok el a tapasztalataitokat:
+96	Olvasd be a kódot a telefonoddal: linkek, streamek és kapcsolat.
+97	Támogasd TheErsysEndinget:
+98	TEE Vanced %s  ·  újdonságok
+99	Az alkalmazás 22 nyelven, az arab jobbról balra: válaszd ki a sajátodat az első indításkor vagy később a Beállítások > Nyelv alatt.
+100	Újdonságok
+101	%d hangsáv || %d hangsáv
+102	A fiókod által követett %d csatorna, A-tól Z-ig. Az X megnyit egy csatornát, a Háromszög leiratkozik. || A fiókod által követett %d csatorna, A-tól Z-ig. Az X megnyit egy csatornát, a Háromszög leiratkozik.
+103	%d csatorna, A-tól Z-ig || %d csatorna, A-tól Z-ig
+104	még %d perc || még %d perc
+105	%d videó || %d videó
+106	%s (automatikus fordítás)
+107	%s – de nem sikerült menteni, újraindítás után eltűnik.\n\n%s
+108	%s – de nem sikerült menteni, újraindítás után eltűnik.\n\n%s\n\nSzabad hely: %lu KB
+109	%s Ellenőrizd a kapcsolatot, és próbáld újra.
+110	%s napja || %s napja
+111	%s órája || %s órája
+112	%s perce || %s perce
+113	%s hónapja || %s hónapja
+114	%s másodperce || %s másodperce
+115	%s feliratkozó || %s feliratkozó
+116	%s videó || %s videó
+117	%s megtekintés || %s megtekintés
+118	%s néző || %s néző
+119	%s hete || %s hete
+120	%s éve || %s éve
+121	720p60 / 1080p30  ·  MP4 az XMB-hez
+122	A-tól Z-ig
+123	A Google oldalán nem engedélyezték a hozzáférést. Nyomd meg az X-et az újrapróbáláshoz.
+124	Hozzáadás ide
+125	Hozzáadva a Megnézendőkhöz
+126	Összes csatorna
+127	Hang
+128	Hang %d/%d: %s
+129	Hangsáv
+130	Hang: %s  -  Négyzet: %d sáv || Hang: %s  -  Négyzet: %d sáv
+131	Ausztrália
+132	Ausztria
+133	Auto (%s)
+134	Auto - %s
+135	Az Auto %s minőségben játssza – a legjobbhoz válaszd a %dp-t a lejátszó beállításaiban (START).
+136	Automatikus lejátszás: ki
+137	Automatikus lejátszás: be
+138	Vissza az élőhöz
+139	Háttér
+140	Háttér átlátszatlansága
+141	Belgium
+142	Fekete
+143	Kék
+144	Brazília
+145	Bulgária
+146	Foglalt – próbáld újra
+147	Kanada
+148	Fejezet
+149	%d. fejezet / %d
+150	Fejezetek
+151	Fejezetek: nincs
+152	Minőség ellenőrzése...
+153	Válaszd ki a Google-fiókodat, és engedélyezd a hozzáférést
+154	Ezt a fájlt nem sikerült olvasni, így semmi sem változott:\n\n%s
+155	Nem sikerült újraépíteni a streamet
+156	Horvátország
+157	Ciánkék
+158	Csehország
+159	Törlöd a(z) %s lejátszási listát és %d videóját? || Törlöd a(z) %s lejátszási listát és %d videóját?
+160	Dánia
+161	Leírás
+162	Kész
+163	A letöltés %d%%-nál megszakadt: „%s%s”
+164	Letöltés az XMB-hez
+165	Letöltve: „%s%s”
+166	Letöltés folyamatban
+167	Letöltés: „%s%s”
+168	Letöltés folyamatban · %d%%
+169	Írd be ezt a kódot
+170	A fiókod által követett összes csatorna, A-tól Z-ig.
+171	Finnország
+172	Az XMB-hez a videó annak Videó oszlopába kerül, és a fájlt a rendszer veszi át: a TEE Vanced utána már nem mutatja és nem játssza le. Az XMB 720p60 vagy 1080p30 felbontásban játssza.
+173	Franciaország
+174	Németország
+175	Kód lekérése a Google-tól...
+176	Az XMB Videó oszlopába kerül, amely a konzol saját lejátszójával játssza le.
+177	A Google Fordító elutasította a feliratokat – próbáld később
+178	A Google nem érhető el. Nyomd meg az X-et az újrapróbáláshoz.
+179	Görögország
+180	Zöld
+181	Elrejtés
+182	Magyarország
+183	Az XMB Videó oszlopában: „%s%s”
+184	Írország
+185	Olaszország
+186	A részleteket nem sikerült lekérni.
+187	Japán
+188	Ugrás
+189	ÉLŐ
+190	Legújabb
+191	Bíbor
+192	Mexikó
+193	Mozgatás
+194	A lejátszási lista neve
+195	Hollandia
+196	Új
+197	Új kód
+198	Új lejátszási lista...
+199	Legújabb feltöltések elöl
+200	Nincsenek fejezetek
+201	Nincs leírás.
+202	Nincs más minőség
+203	Még nincs lejátszási lista – nyomd meg a START-ot egy újhoz, vagy az L3-at egy videón, hogy rögtön egy új listába tedd.
+204	Nincs felirat
+205	Nincs megtekintés
+206	Nincs
+207	Norvégia
+208	Nincs lejátszható tartalom
+209	Még semmi – a kereséseid itt jelennek meg
+210	Legrégebbi
+211	A YouTube-on és ezen a PS3-on
+212	Ezen a PS3-on
+213	A telefonodon vagy számítógépeden nyisd meg
+214	Megnyitás
+215	Beállítások
+216	Körvonal
+217	A PS gomb nem érhető el
+218	%d. oldal / %d%s
+219	Szünet
+220	Lejátszás alatt
+221	%s minőségben játssza a minőségbeállításod szerint (%dp).
+222	A TEE Vanced-ben (Letöltések) játssza, a TEE Decoderrel.
+223	A TEE Vanced-ben (Letöltések) játssza, Opus hanggal. Az 1440p nélküli videó 1080p60-at kap.
+224	Lengyelország
+225	Portugália
+226	Bemutató %s
+227	Nyomd meg:
+228	Az R3 elrejti
+229	Minőség
+230	Ismeretlen minőség
+231	Minőség: %s
+232	Minőség: nincs más
+233	Legutóbbi keresések
+234	Ajánlott neked
+235	Piros
+236	Relevancia
+237	Eltávolítva a Megnézendőkből
+238	Újra
+239	Visszatekerés
+240	Románia
+241	Oroszország
+242	Szkenneld be a telefonoddal
+243	Görgetés
+244	Keresés a YouTube-on
+245	Kiválasztás
+246	Szerbia
+247	Árnyék
+248	Bejelentkezés a YouTube-ba
+249	Kijelentkezés
+250	Bejelentkezve a YouTube-ba. Ezek a listák a fiókodból jönnek – ahogy a menü Feliratkozások, Megnézendő, Előzmények és Lejátszási listák pontja is.
+251	Bejelentkezve. A listáid most a YouTube-fiókodból jönnek.
+252	Méret
+253	Kihagyás: %s
+254	Kihagyva: %s
+255	Rendezés
+256	Dél-Korea
+257	Spanyolország
+258	Élőben közvetítve %s
+259	Feliratkozva
+260	A feliratkozási lista megtelt – legfeljebb %d csatorna lehet.
+261	Feliratstílus
+262	Feliratok
+263	Feliratok kikapcsolva
+264	Felirat nem érhető el
+265	Feliratok: %s
+266	Svédország
+267	Svájc
+268	Szövegszín
+269	Szövegszél
+270	Ennél több lejátszási listát nem tárol ez az alkalmazás.
+271	Ez a lejátszási lista megtelt.
+272	A PS3-nak nincs olyan streamje ebből, amit le tudna játszani.
+273	A legjobb, amit a PS3 ebből lejátszik.
+274	A legjobb, amit a PS3 lejátszik. A legnehezebb pillanatokban néhány másodpercre 1080p60-ra eshet.
+275	A csatornalistát nem sikerült betölteni. Az O visszalép.
+276	Ennek a csatornának nincs használható azonosítója, ezért nem lehet feliratkozni rá.
+277	Ennek a csatornának nincs használható azonosítója, ezért nem lehet feliratkozni rá. (Azonosító: „%s”)
+278	Ez a kód lejárt. Nyomd meg az X-et egy újért.
+279	Ennél az élő adásnál ki van kapcsolva a visszatekerés
+280	A sáv nem érhető el - %s
+281	Fordított felirat nem érhető el
+282	Fordítás leállítva – a többi az eredeti nyelven
+283	A Felkapott és az Élő ennek az országnak a YouTube-járól jön; a Keresés és a Sport csak részben változik. Az alkalmazás saját nyelvét a Beállítások > Nyelv alatt állítod be.
+284	Törökország
+285	Gépelés
+286	Ukrajna
+287	Egyesült Királyság
+288	Egyesült Államok
+289	Leiratkozva
+290	Megtekintések
+291	MEGNÉZVE
+292	Várakozik
+293	Várakozás a bejelentkezésedre. Ez az oldal magától továbblép.
+294	A Megnézendő megtelt
+295	Megnézve
+296	Amit a YouTube-on néztél
+297	Fehér
+298	Visszavonja ennek a konzolnak a Google-bejelentkezését
+299	Sárga
+300	A YouTube nem adta hozzá a videót a Megnézendőkhöz.
+301	A YouTube nem távolította el a videót a Megnézendőkből.
+302	A YouTube nem fogadta el a feliratkozást.
+303	A YouTube nem fogadta el a leiratkozást.
+304	A fiókod nem követ egy csatornát sem.
+305	A feliratkozásaid, a Megnézendő, az előzmények és az ajánlások ekkor a YouTube-fiókodból jönnek. A jelszavadat csak a Google saját oldalán írod be.
+306	nem sikerült megnyitni a streamet
+307	nem sikerült újra megnyitni a videót
+308	nem sikerült elindítani a folyamatot
+309	nem sikerült hangsávot váltani
+310	használatban
+311	nincs lejátszható MP4 videó
+312	hang nélkül
+313	a lekérés sikertelen
+314	a gépeléshez
+315	ismeretlen link vagy azonosító
+316	±1 perc

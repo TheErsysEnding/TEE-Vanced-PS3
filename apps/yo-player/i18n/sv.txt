@@ -1,0 +1,322 @@
+# Swedish (du).
+@name Svenska
+@script latin
+@flag se
+@order 9
+@plural one
+1	"%s" laddas fortfarande ned. Den spelas här så snart den är klar.
+2	"%s" väntar på nedladdningarna före den. Den spelas här så snart den är klar.
+3	Om
+4	Konto
+5	Lägg till i spellista
+6	Fråga
+7	Spela nästa video automatiskt
+8	Tillbaka
+9	Avbryt
+10	Kategori
+11	Ändra
+12	Kanal
+13	Välj
+14	Välj ditt språk
+15	Stäng
+16	Fortsätt titta
+17	Kunde inte avsluta prenumerationen på %s.
+18	Ta bort
+19	Ta bort nedladdningen "%s" från konsolen?
+20	Ladda ned
+21	Nedladdningar
+22	Ofärdiga nedladdningar: %d ("%s" med flera). Starta om dem från början eller ta bort dem?
+23	Utfyllnad och sidospår
+24	För dig
+25	Spel
+26	Historik
+27	Påminnelse om interaktion
+28	Intro
+29	Behåll
+30	Språk
+31	Senare
+32	Senaste: %s
+33	Gillade videor
+34	Listvy
+35	Live
+36	Laddar...
+37	Logga in
+38	Meny
+39	Flytta "%s" till XMB:s videokolumn? Systemet tar över filen: TEE Vanced visar eller spelar den inte längre. XMB spelar den i 720p60 eller 1080p30 (en nedladdning i 1440p eller 1080p60 hämtas igen i det formatet).
+40	Flytta till XMB
+41	Musik
+42	Nyheter
+43	Inga nedladdningar än – R3 på en video laddar ned den.
+44	Inga resultat
+45	Av
+46	Musik utan samband
+47	På
+48	Öppna kanalen
+49	Outro och slutskärmar
+50	PS-knappen
+51	Sida
+52	Spela
+53	Uppspelning
+54	Spellistor
+55	Poddar
+56	Populärt
+57	Region
+58	Starta om
+59	Skanna för länkar, streamar\noch kontakt
+60	Sök
+61	Segment
+62	Egenreklam
+63	Inställningar
+64	Hoppa över
+65	Sponsor
+66	Sport
+67	Stoppa nedladdning
+68	Stoppa nedladdningen av "%s"? Det som hämtats hittills slängs.
+69	Prenumerera
+70	Prenumerationer
+71	TEE Vanced %s  ·  v%s finns på GitHub
+72	TEE Vanced v%s har kommit – det här är %s. Den finns på GitHub: TheErsysEnding/TEE-Vanced-PS3, Releases.
+73	Den kanalen fanns inte i prenumerationslistan.
+74	PS-knappen kunde inte skickas: konsolen vägrade registrera en virtuell handkontroll.
+75	Appens egna texter. Titlar och namn från YouTube förblir som de är.
+76	Datamappen kunde inte skapas eller skrivas vid start, så inget kan sparas.\n\n%s
+77	Nedladdningen av "%s" blev inte klar. Starta om den från början eller ta bort den?
+78	Den här rutan har inget kanal-ID, så det finns ingen prenumeration att avsluta.
+79	Till XMB
+80	Trendar
+81	Avsluta prenumeration
+82	Avsluta prenumerationen på %s?
+83	Avslutad – men den kunde inte sparas, så kanalen är tillbaka efter en omstart.\n\n%s\n\nLedigt utrymme: %lu KB
+84	Video
+85	Titta senare
+86	Vad som händer när ett markerat segment börjar. Med "Fråga" visas en knapp för att hoppa över så länge segmentet pågår.
+87	Du kan ändra det senare i Inställningar.
+88	den här kanalen
+89	1440p60 faller tillbaka till 1080p60 inom ungefär två sekunder i en tung scen, och en start som är för tung för 1440p börjar direkt i 1080p60.
+90	4K30 är en beta: den faller mycket troligt ofta tillbaka till 1440p30. Tunga scener i 4K är mer än PS3:an hinner avkoda.
+91	4K30-videor startar i 1440p och går upp till 4K där videon är lätt nog.
+92	Arabiska och hebreiska videotitlar visas nu, från höger till vänster.
+93	Fortsätt
+94	Nytt: 4K-videor med 30 bilder per sekund, på SPE:erna med TEE VP9-avkodaren.
+95	Berätta gärna om era erfarenheter:
+96	Skanna koden med mobilen: länkar, streamar och kontakt.
+97	Stöd TheErsysEnding:
+98	TEE Vanced %s  ·  nyheter
+99	Appen på 22 språk, arabiska från höger till vänster: välj ditt vid första start eller senare i Inställningar > Språk.
+100	Nyheter
+101	%d ljudspår || %d ljudspår
+102	%d kanal som ditt konto följer, A till Ö. X öppnar en kanal, Triangel avslutar prenumerationen. || %d kanaler som ditt konto följer, A till Ö. X öppnar en kanal, Triangel avslutar prenumerationen.
+103	%d kanal, A till Ö || %d kanaler, A till Ö
+104	%d min kvar || %d min kvar
+105	%d video || %d videor
+106	%s (automatiskt översatt)
+107	%s – men det kunde inte sparas, så det är borta efter en omstart.\n\n%s
+108	%s – men det kunde inte sparas, så det är borta efter en omstart.\n\n%s\n\nLedigt utrymme: %lu KB
+109	%s Kontrollera anslutningen och försök igen.
+110	för %s dag sedan || för %s dagar sedan
+111	för %s timme sedan || för %s timmar sedan
+112	för %s minut sedan || för %s minuter sedan
+113	för %s månad sedan || för %s månader sedan
+114	för %s sekund sedan || för %s sekunder sedan
+115	%s prenumerant || %s prenumeranter
+116	%s video || %s videor
+117	%s visning || %s visningar
+118	%s tittar || %s tittar
+119	för %s vecka sedan || för %s veckor sedan
+120	för %s år sedan || för %s år sedan
+121	720p60 / 1080p30  ·  MP4 för XMB
+122	A till Ö
+123	Åtkomst tilläts inte på Googles sida. Tryck på X för att försöka igen.
+124	Lägg till här
+125	Tillagd i Titta senare
+126	Alla kanaler
+127	Ljud
+128	Ljud %d/%d: %s
+129	Ljudspår
+130	Ljud: %s  -  Fyrkant: %d spår || Ljud: %s  -  Fyrkant: %d spår
+131	Australien
+132	Österrike
+133	Auto (%s)
+134	Auto - %s
+135	Auto spelar den i %s – välj %dp i spelarens alternativ (START) för bästa kvalitet.
+136	Autouppspelning: av
+137	Autouppspelning: på
+138	Tillbaka till live
+139	Bakgrund
+140	Bakgrundens opacitet
+141	Belgien
+142	Svart
+143	Blå
+144	Brasilien
+145	Bulgarien
+146	Upptagen – försök igen
+147	Kanada
+148	Kapitel
+149	Kapitel %d av %d
+150	Kapitel
+151	Kapitel: inga
+152	Kontrollerar kvaliteten...
+153	Välj ditt Google-konto och tillåt åtkomst
+154	Den här filen kunde inte läsas, så inget ändrades:\n\n%s
+155	Strömmen kunde inte byggas om
+156	Kroatien
+157	Cyan
+158	Tjeckien
+159	Ta bort spellistan %s och dess %d video? || Ta bort spellistan %s och dess %d videor?
+160	Danmark
+161	Beskrivning
+162	Klar
+163	Nedladdningen misslyckades vid %d%%: "%s%s"
+164	Ladda ned för XMB
+165	Nedladdad: "%s%s"
+166	Laddar ned
+167	Laddar ned "%s%s"
+168	Laddar ned · %d%%
+169	Ange den här koden
+170	Alla kanaler som ditt konto följer, A till Ö.
+171	Finland
+172	För XMB hamnar videon i dess videokolumn, och systemet tar över filen: TEE Vanced visar eller spelar den inte längre. XMB spelar den i 720p60 eller 1080p30.
+173	Frankrike
+174	Tyskland
+175	Hämtar en kod från Google...
+176	Hamnar i XMB:s videokolumn, som spelar den med konsolens egen spelare.
+177	Google Översätt nekade undertexterna – försök senare
+178	Google gick inte att nå. Tryck på X för att försöka igen.
+179	Grekland
+180	Grön
+181	Dölj
+182	Ungern
+183	I XMB:s videokolumn: "%s%s"
+184	Irland
+185	Italien
+186	Detaljerna kunde inte hämtas.
+187	Japan
+188	Hoppa
+189	LIVE
+190	Senaste
+191	Magenta
+192	Mexiko
+193	Flytta
+194	Namnge spellistan
+195	Nederländerna
+196	Ny
+197	Ny kod
+198	Ny spellista...
+199	Nyaste uppladdningarna först
+200	Inga kapitel
+201	Ingen beskrivning.
+202	Ingen annan kvalitet
+203	Inga spellistor än – tryck på START för att skapa en, eller L3 på en video för att lägga den direkt i en ny lista.
+204	Inga undertexter
+205	Inga visningar
+206	Ingen
+207	Norge
+208	Inget som kan spelas
+209	Inget än – dina sökningar visas här
+210	Äldsta
+211	På YouTube och på den här PS3:an
+212	På den här PS3:an
+213	Öppna på mobilen eller datorn
+214	Öppna
+215	Alternativ
+216	Kontur
+217	PS-knappen är inte tillgänglig
+218	Sida %d / %d%s
+219	Paus
+220	Spelas
+221	Spelas i %s med din kvalitetsinställning (%dp).
+222	Spelas i TEE Vanced (Nedladdningar), på TEE Decoder.
+223	Spelas i TEE Vanced (Nedladdningar), med Opus-ljud. En video utan 1440p får 1080p60.
+224	Polen
+225	Portugal
+226	Premiär %s
+227	Tryck på
+228	Tryck på R3 för att dölja
+229	Kvalitet
+230	Kvalitet okänd
+231	Kvalitet: %s
+232	Kvalitet: ingen annan
+233	Senaste sökningar
+234	Rekommenderat för dig
+235	Röd
+236	Relevans
+237	Borttagen från Titta senare
+238	Spela igen
+239	Spola tillbaka
+240	Rumänien
+241	Ryssland
+242	Skanna med mobilen
+243	Rulla
+244	Sök på YouTube
+245	Välj
+246	Serbien
+247	Skugga
+248	Logga in på YouTube
+249	Logga ut
+250	Inloggad på YouTube. De här listorna kommer från ditt konto – precis som Prenumerationer, Titta senare, Historik och Spellistor i menyn.
+251	Inloggad. Dina listor kommer nu från ditt YouTube-konto.
+252	Storlek
+253	Hoppa över %s
+254	Hoppade över %s
+255	Sortera
+256	Sydkorea
+257	Spanien
+258	Streamad %s
+259	Prenumererar
+260	Prenumerationslistan är full – %d kanaler är maxgränsen.
+261	Undertextstil
+262	Undertexter
+263	Undertexter av
+264	Undertexter inte tillgängliga
+265	Undertexter: %s
+266	Sverige
+267	Schweiz
+268	Textfärg
+269	Textkant
+270	Fler spellistor än så sparar inte appen.
+271	Den spellistan är full.
+272	PS3:an har ingen ström av den som den kan spela.
+273	Det bästa PS3:an spelar av den.
+274	Det bästa PS3:an spelar. I de tyngsta ögonblicken kan den falla till 1080p60 några sekunder.
+275	Kanallistan kunde inte läsas in. O går tillbaka.
+276	Den här kanalen har inget användbart ID, så den går inte att prenumerera på.
+277	Den här kanalen har inget användbart ID, så den går inte att prenumerera på. (ID: "%s")
+278	Den här koden har gått ut. Tryck på X för en ny.
+279	Den här livestreamen har tillbakaspolning avstängd
+280	Spåret är inte tillgängligt - %s
+281	Översatta undertexter inte tillgängliga
+282	Översättningen stoppad – resten på originalspråket
+283	Trendar och Live kommer från det här landets YouTube; Sök och Sport ändras bara delvis. Appens eget språk ställer du in under Inställningar > Språk.
+284	Turkiet
+285	Skriv
+286	Ukraina
+287	Storbritannien
+288	USA
+289	Prenumeration avslutad
+290	Visningar
+291	SEDD
+292	Väntar
+293	Väntar på att du loggar in. Sidan går vidare av sig själv.
+294	Titta senare är full
+295	Sedd
+296	Det du har tittat på på YouTube
+297	Vit
+298	Drar tillbaka konsolens inloggning hos Google
+299	Gul
+300	YouTube lade inte till videon i Titta senare.
+301	YouTube tog inte bort videon från Titta senare.
+302	YouTube tog inte emot prenumerationen.
+303	YouTube tog inte emot avslutet av prenumerationen.
+304	Ditt konto följer inga kanaler.
+305	Dina prenumerationer, Titta senare, historik och rekommendationer kommer då från ditt YouTube-konto. Ditt lösenord skriver du bara på Googles egen sida.
+306	kunde inte öppna strömmen
+307	kunde inte öppna videon igen
+308	kunde inte starta processen
+309	kunde inte byta ljudspår
+310	används
+311	ingen spelbar MP4-video
+312	inget ljud
+313	hämtningen misslyckades
+314	för att skriva
+315	okänd länk eller okänt ID
+316	±1 min

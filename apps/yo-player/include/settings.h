@@ -24,6 +24,24 @@ VideoDecoderSetting getVideoDecoderSetting(void);
 int getTeeDecoderSpes(void);
 // settings.txt vp9-spes=6|5: the TEE VP9 building block's SPEs for 1440p - 6 (2 + 4, no sound) or 5 (1 + 4, sound)
 int getVp9Spes(void);
+// (V3.1.0 Test 3) settings.txt display-sync=flips|wall (1 / 0, see setVideoDisplaySync), log=async|sync (1 / 0: the log
+// written by a thread of its own, startLogWriter), vp9-release=early|late (1 / 0, setVideoVp9ReleaseEarly)
+int getDisplaySyncByFlips(void);
+int getLogAsync(void);
+int getVp9ReleaseEarly(void);
+// (V3.1.0 Test 4) experimental - may freeze the console, so not in the file it writes; only with someone at the console:
+// gfx-share=off|on (0 / 1): the RSX's command buffer shared with TEE VP9's RSX part (gfx.h setGfxShareMode - main.c reads it
+// with readEarlySetting before initGfx, a bench job's global gfx-share= winning); vp9-rsx=off|1440|on (0 / 1 / 2): TEE VP9
+// predicts on the RSX, up to 1440p or 4K too (needs gfx-share=on); rsx-test=<word>: a test of its failure paths ("" none)
+int getGfxShare(void);
+int getVp9Rsx(void);
+const char *getRsxTest(void);
+// key= from settings.txt before loadSettings has run: 1 with its first word in value (cut to cap - 1 bytes), 0 without it
+int readEarlySetting(const char *key, char *value, int cap);
+// (V3.1.0) settings.txt language=<code>: the menu's language (i18n.h). 1 with the code when one was chosen, 0 at the
+// first start (the picker asks). saveLanguageSetting writes it: 0 saved, -1 not (UI thread).
+int getLanguageSetting(char *code, int cap);
+int saveLanguageSetting(const char *code);
 // settings.txt download-quality=1440|1080|xmb: the R3 page's last choice (0, 1, 2 - downloads.h DownloadQuality)
 int getDownloadQuality(void);
 int setDownloadQuality(int quality);

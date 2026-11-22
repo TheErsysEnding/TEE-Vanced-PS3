@@ -44,6 +44,7 @@ typedef enum {
 
 void initSidebar(void);
 void termSidebar(void);
+void relabelSidebar(void);   // (V3.1.0) the names anew in the language now in use; the rail's state stays
 
 // which entry the content on screen belongs to - drives the "you are here" mark
 void setSidebarCurrent(SidebarItem item);

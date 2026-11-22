@@ -1,0 +1,322 @@
+# Vietnamese (bạn). One form for every number.
+@name Tiếng Việt
+@script latin
+@flag vn
+@order 16
+@plural none
+1	"%s" vẫn đang tải xuống. Video sẽ phát ở đây khi xong.
+2	"%s" đang chờ các lượt tải trước. Video sẽ phát ở đây khi xong.
+3	Giới thiệu
+4	Tài khoản
+5	Thêm vào danh sách phát
+6	Hỏi
+7	Tự động phát video tiếp theo
+8	Quay lại
+9	Hủy
+10	Danh mục
+11	Đổi
+12	Kênh
+13	Chọn
+14	Chọn ngôn ngữ
+15	Đóng
+16	Xem tiếp
+17	Không thể hủy đăng ký %s.
+18	Xóa
+19	Xóa bản tải xuống "%s" khỏi máy?
+20	Tải xuống
+21	Nội dung tải xuống
+22	Bản tải chưa xong: %d ("%s" và các bản khác). Tải lại từ đầu hay xóa?
+23	Nội dung lấp chỗ và lạc đề
+24	Dành cho bạn
+25	Trò chơi
+26	Lịch sử
+27	Nhắc tương tác
+28	Phần mở đầu
+29	Giữ
+30	Ngôn ngữ
+31	Để sau
+32	Mới nhất: %s
+33	Video đã thích
+34	Xem dạng danh sách
+35	Trực tiếp
+36	Đang tải...
+37	Đăng nhập
+38	Menu
+39	Chuyển "%s" vào cột Video của XMB? Hệ thống sẽ lấy tệp: TEE Vanced sẽ không còn hiển thị hay phát nó. XMB phát ở 720p60 hoặc 1080p30 (bản tải 1440p hoặc 1080p60 sẽ được tải lại theo dạng đó).
+40	Chuyển vào XMB
+41	Âm nhạc
+42	Tin tức
+43	Chưa có bản tải xuống – nhấn R3 trên một video để tải.
+44	Không có kết quả
+45	Tắt
+46	Nhạc không liên quan
+47	Bật
+48	Mở kênh
+49	Phần kết và màn hình cuối
+50	Nút PS
+51	Trang
+52	Phát
+53	Phát lại
+54	Danh sách phát
+55	Podcast
+56	Phổ biến
+57	Khu vực
+58	Bắt đầu lại
+59	Quét để xem liên kết, livestream\nvà liên hệ
+60	Tìm kiếm
+61	Đoạn
+62	Tự quảng cáo
+63	Cài đặt
+64	Bỏ qua
+65	Nhà tài trợ
+66	Thể thao
+67	Dừng tải xuống
+68	Dừng tải "%s"? Phần đã tải sẽ bị bỏ.
+69	Đăng ký
+70	Kênh đăng ký
+71	TEE Vanced %s  ·  v%s đã có trên GitHub
+72	TEE Vanced v%s đã ra mắt – bản này là %s. Có trên GitHub: TheErsysEnding/TEE-Vanced-PS3, Releases.
+73	Kênh này không có trong danh sách đăng ký.
+74	Không gửi được nút PS: máy từ chối đăng ký tay cầm ảo.
+75	Văn bản của chính ứng dụng. Tiêu đề và tên từ YouTube giữ nguyên.
+76	Không thể tạo hoặc ghi thư mục dữ liệu khi khởi động, nên không lưu được gì.\n\n%s
+77	Bản tải "%s" chưa xong. Tải lại từ đầu hay xóa?
+78	Ô này không có ID kênh, nên không có gì để hủy đăng ký.
+79	Vào XMB
+80	Thịnh hành
+81	Hủy đăng ký
+82	Hủy đăng ký %s?
+83	Đã hủy đăng ký – nhưng không lưu được, kênh sẽ quay lại sau khi khởi động lại.\n\n%s\n\nDung lượng trống: %lu KB
+84	Video
+85	Xem sau
+86	Điều xảy ra khi một đoạn được đánh dấu bắt đầu. Với "Hỏi", nút bỏ qua hiện trong suốt đoạn đó.
+87	Bạn có thể đổi sau trong Cài đặt.
+88	kênh này
+89	1440p60 hạ xuống 1080p60 trong khoảng hai giây ở cảnh nặng, và phần mở đầu quá nặng cho 1440p sẽ bắt đầu ngay ở 1080p60.
+90	4K30 là bản beta: rất có thể sẽ thường hạ xuống 1440p30. Cảnh nặng ở 4K vượt quá mức PS3 giải mã kịp.
+91	Video 4K30 bắt đầu ở 1440p và lên 4K ở những chỗ video đủ nhẹ.
+92	Tiêu đề video tiếng Ả Rập và tiếng Do Thái nay đã hiển thị, từ phải sang trái.
+93	Tiếp tục
+94	Mới: video 4K 30 khung hình mỗi giây, trên các SPE với bộ giải mã TEE VP9.
+95	Hãy chia sẻ trải nghiệm của bạn:
+96	Quét mã bằng điện thoại: liên kết, livestream và liên hệ.
+97	Ủng hộ TheErsysEnding:
+98	TEE Vanced %s  ·  có gì mới
+99	Ứng dụng có 22 ngôn ngữ, tiếng Ả Rập từ phải sang trái: chọn ngôn ngữ của bạn khi mở lần đầu hoặc sau đó trong Cài đặt > Ngôn ngữ.
+100	Có gì mới
+101	%d bản âm thanh
+102	%d kênh tài khoản của bạn đang theo dõi, từ A đến Z. X mở kênh, Tam giác hủy đăng ký.
+103	%d kênh, từ A đến Z
+104	còn %d phút
+105	%d video
+106	%s (dịch tự động)
+107	%s – nhưng không lưu được, sẽ mất sau khi khởi động lại.\n\n%s
+108	%s – nhưng không lưu được, sẽ mất sau khi khởi động lại.\n\n%s\n\nDung lượng trống: %lu KB
+109	%s Hãy kiểm tra kết nối rồi thử lại.
+110	%s ngày trước
+111	%s giờ trước
+112	%s phút trước
+113	%s tháng trước
+114	%s giây trước
+115	%s người đăng ký
+116	%s video
+117	%s lượt xem
+118	%s người đang xem
+119	%s tuần trước
+120	%s năm trước
+121	720p60 / 1080p30  ·  MP4 cho XMB
+122	Từ A đến Z
+123	Quyền truy cập không được cho phép trên trang Google. Nhấn X để thử lại.
+124	Thêm vào đây
+125	Đã thêm vào Xem sau
+126	Tất cả kênh
+127	Âm thanh
+128	Âm thanh %d/%d: %s
+129	Bản âm thanh
+130	Âm thanh: %s  -  Vuông: %d bản
+131	Úc
+132	Áo
+133	Tự động (%s)
+134	Tự động - %s
+135	Chế độ Tự động phát ở %s – chọn %dp trong tùy chọn trình phát (START) để có chất lượng tốt nhất.
+136	Tự động phát: tắt
+137	Tự động phát: bật
+138	Quay lại trực tiếp
+139	Nền
+140	Độ mờ của nền
+141	Bỉ
+142	Đen
+143	Xanh dương
+144	Brazil
+145	Bulgaria
+146	Đang bận – hãy thử lại
+147	Canada
+148	Chương
+149	Chương %d / %d
+150	Chương
+151	Chương: không có
+152	Đang kiểm tra chất lượng...
+153	Chọn tài khoản Google và cho phép truy cập
+154	Không đọc được tệp này, nên không có gì thay đổi:\n\n%s
+155	Không thể dựng lại luồng phát
+156	Croatia
+157	Xanh lơ
+158	Séc
+159	Xóa danh sách phát %s cùng %d video?
+160	Đan Mạch
+161	Mô tả
+162	Xong
+163	Tải xuống thất bại ở %d%%: "%s%s"
+164	Tải xuống cho XMB
+165	Đã tải xuống: "%s%s"
+166	Đang tải xuống
+167	Đang tải "%s%s"
+168	Đang tải xuống · %d%%
+169	Nhập mã này
+170	Tất cả kênh tài khoản của bạn đang theo dõi, từ A đến Z.
+171	Phần Lan
+172	Với XMB, video vào cột Video của nó và hệ thống lấy tệp: TEE Vanced sẽ không còn hiển thị hay phát nó. XMB phát ở 720p60 hoặc 1080p30.
+173	Pháp
+174	Đức
+175	Đang lấy mã từ Google...
+176	Vào cột Video của XMB, phát bằng trình phát của chính máy.
+177	Google Dịch đã từ chối phụ đề – hãy thử lại sau
+178	Không kết nối được Google. Nhấn X để thử lại.
+179	Hy Lạp
+180	Xanh lá
+181	Ẩn
+182	Hungary
+183	Trong cột Video của XMB: "%s%s"
+184	Ireland
+185	Ý
+186	Không lấy được thông tin chi tiết.
+187	Nhật Bản
+188	Chuyển tới
+189	TRỰC TIẾP
+190	Mới nhất
+191	Đỏ tía
+192	Mexico
+193	Di chuyển
+194	Đặt tên danh sách phát
+195	Hà Lan
+196	Mới
+197	Mã mới
+198	Danh sách phát mới...
+199	Video tải lên mới nhất trước
+200	Không có chương
+201	Không có mô tả.
+202	Không có chất lượng khác
+203	Chưa có danh sách phát – nhấn START để tạo, hoặc L3 trên một video để đưa thẳng vào danh sách mới.
+204	Không có phụ đề
+205	Chưa có lượt xem
+206	Không có
+207	Na Uy
+208	Không có gì phát được
+209	Chưa có gì – các lượt tìm kiếm sẽ hiện ở đây
+210	Cũ nhất
+211	Trên YouTube và trên PS3 này
+212	Trên PS3 này
+213	Trên điện thoại hoặc máy tính, mở
+214	Mở
+215	Tùy chọn
+216	Viền
+217	Nút PS không dùng được
+218	Trang %d / %d%s
+219	Tạm dừng
+220	Đang phát
+221	Phát ở %s theo cài đặt chất lượng của bạn (%dp).
+222	Phát trong TEE Vanced (Nội dung tải xuống), trên TEE Decoder.
+223	Phát trong TEE Vanced (Nội dung tải xuống), với âm thanh Opus. Video không có 1440p sẽ lấy 1080p60.
+224	Ba Lan
+225	Bồ Đào Nha
+226	Công chiếu %s
+227	Nhấn
+228	Nhấn R3 để ẩn
+229	Chất lượng
+230	Không rõ chất lượng
+231	Chất lượng: %s
+232	Chất lượng: không có khác
+233	Tìm kiếm gần đây
+234	Đề xuất cho bạn
+235	Đỏ
+236	Mức độ liên quan
+237	Đã xóa khỏi Xem sau
+238	Phát lại
+239	Tua lại
+240	Romania
+241	Nga
+242	Quét bằng điện thoại
+243	Cuộn
+244	Tìm trên YouTube
+245	Chọn
+246	Serbia
+247	Bóng
+248	Đăng nhập YouTube
+249	Đăng xuất
+250	Đã đăng nhập YouTube. Các danh sách này đến từ tài khoản của bạn – cũng như Kênh đăng ký, Xem sau, Lịch sử và Danh sách phát trong menu.
+251	Đã đăng nhập. Danh sách của bạn giờ đến từ tài khoản YouTube.
+252	Cỡ chữ
+253	Bỏ qua %s
+254	Đã bỏ qua %s
+255	Sắp xếp
+256	Hàn Quốc
+257	Tây Ban Nha
+258	Đã phát trực tiếp %s
+259	Đã đăng ký
+260	Danh sách đăng ký đã đầy – tối đa %d kênh.
+261	Kiểu phụ đề
+262	Phụ đề
+263	Tắt phụ đề
+264	Không có phụ đề
+265	Phụ đề: %s
+266	Thụy Điển
+267	Thụy Sĩ
+268	Màu chữ
+269	Viền chữ
+270	Ứng dụng này không giữ thêm danh sách phát.
+271	Danh sách phát này đã đầy.
+272	PS3 không có luồng nào của video này mà nó phát được.
+273	Mức tốt nhất PS3 phát được của video này.
+274	Mức tốt nhất PS3 phát được. Ở lúc nặng nhất có thể hạ xuống 1080p60 vài giây.
+275	Không tải được danh sách kênh. O để quay lại.
+276	Kênh này không có ID dùng được, nên không thể đăng ký.
+277	Kênh này không có ID dùng được, nên không thể đăng ký. (ID: "%s")
+278	Mã này đã hết hạn. Nhấn X để lấy mã mới.
+279	Buổi phát trực tiếp này đã tắt tua lại
+280	Không có bản âm thanh - %s
+281	Không có phụ đề đã dịch
+282	Đã dừng dịch – phần còn lại ở ngôn ngữ gốc
+283	Thịnh hành và Trực tiếp lấy từ YouTube của quốc gia này; Tìm kiếm và Thể thao chỉ thay đổi một phần. Ngôn ngữ của chính ứng dụng đặt trong Cài đặt > Ngôn ngữ.
+284	Thổ Nhĩ Kỳ
+285	Nhập
+286	Ukraina
+287	Vương quốc Anh
+288	Hoa Kỳ
+289	Đã hủy đăng ký
+290	Lượt xem
+291	ĐÃ XEM
+292	Đang chờ
+293	Đang chờ bạn đăng nhập. Trang này sẽ tự tiếp tục.
+294	Xem sau đã đầy
+295	Đã xem
+296	Những gì bạn đã xem trên YouTube
+297	Trắng
+298	Thu hồi đăng nhập Google của máy này
+299	Vàng
+300	YouTube đã không thêm video vào Xem sau.
+301	YouTube đã không xóa video khỏi Xem sau.
+302	YouTube đã không nhận lượt đăng ký.
+303	YouTube đã không nhận việc hủy đăng ký.
+304	Tài khoản của bạn không theo dõi kênh nào.
+305	Kênh đăng ký, Xem sau, lịch sử và đề xuất khi đó sẽ đến từ tài khoản YouTube của bạn. Mật khẩu chỉ được nhập trên trang của chính Google.
+306	không mở được luồng phát
+307	không mở lại được video
+308	không khởi động được tiến trình
+309	không đổi được bản âm thanh
+310	đang dùng
+311	không có video MP4 phát được
+312	không có âm thanh
+313	lấy dữ liệu thất bại
+314	để nhập
+315	liên kết hoặc ID không nhận ra
+316	±1 phút

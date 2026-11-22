@@ -1,0 +1,322 @@
+# Czech (ty). Plural forms: one (1) | few (2-4) | other (0, 5 and more).
+@name Čeština
+@script latin
+@flag cz
+@order 10
+@plural cs
+1	„%s“ se ještě stahuje. Přehraje se tady, jakmile bude hotové.
+2	„%s“ čeká na stahování před ním. Přehraje se tady, jakmile bude hotové.
+3	O aplikaci
+4	Účet
+5	Přidat do playlistu
+6	Zeptat se
+7	Automaticky přehrát další video
+8	Zpět
+9	Zrušit
+10	Kategorie
+11	Změnit
+12	Kanál
+13	Vybrat
+14	Vyber si jazyk
+15	Zavřít
+16	Pokračovat ve sledování
+17	Odběr kanálu %s se nepodařilo zrušit.
+18	Smazat
+19	Smazat stažené video „%s“ z konzole?
+20	Stáhnout
+21	Stažené
+22	Nedokončená stahování: %d („%s“ a další). Začít je znovu od začátku, nebo je smazat?
+23	Vata a odbočky
+24	Pro vás
+25	Hry
+26	Historie
+27	Připomínka interakce
+28	Úvod
+29	Ponechat
+30	Jazyk
+31	Později
+32	Nejnovější: %s
+33	Videa, která se mi líbí
+34	Zobrazení seznamu
+35	Živě
+36	Načítám...
+37	Přihlásit se
+38	Nabídka
+39	Přesunout „%s“ do sloupce Video v XMB? Systém si soubor převezme: TEE Vanced ho pak už nebude ukazovat ani přehrávat. XMB ho přehraje v 720p60 nebo 1080p30 (stažení v 1440p nebo 1080p60 se v té podobě stáhne znovu).
+40	Přesunout do XMB
+41	Hudba
+42	Zprávy
+43	Zatím nic staženo – R3 na libovolném videu ho stáhne.
+44	Žádné výsledky
+45	Vyp.
+46	Hudba mimo téma
+47	Zap.
+48	Otevřít kanál
+49	Závěr a koncové obrazovky
+50	Tlačítko PS
+51	Stránka
+52	Přehrát
+53	Přehrávání
+54	Playlisty
+55	Podcasty
+56	Oblíbené
+57	Oblast
+58	Začít znovu
+59	Naskenuj: odkazy, streamy\na kontakt
+60	Hledat
+61	Úsek
+62	Vlastní propagace
+63	Nastavení
+64	Přeskočit
+65	Sponzor
+66	Sport
+67	Zastavit stahování
+68	Zastavit stahování „%s“? Co se zatím stáhlo, se zahodí.
+69	Odebírat
+70	Odběry
+71	TEE Vanced %s  ·  v%s je venku na GitHubu
+72	Vyšel TEE Vanced v%s – tohle je %s. Najdeš ho na GitHubu: TheErsysEnding/TEE-Vanced-PS3, Releases.
+73	Ten kanál v seznamu odběrů nebyl.
+74	Tlačítko PS se nepodařilo odeslat: konzole odmítla zaregistrovat virtuální ovladač.
+75	Vlastní texty aplikace. Názvy a jména z YouTube zůstávají, jak jsou.
+76	Při spuštění se nepodařilo vytvořit nebo zapsat složku s daty, takže nelze nic uložit.\n\n%s
+77	Stahování „%s“ se nedokončilo. Začít znovu od začátku, nebo ho smazat?
+78	Tato dlaždice nemá ID kanálu, takže není co zrušit.
+79	Do XMB
+80	Trendy
+81	Zrušit odběr
+82	Zrušit odběr kanálu %s?
+83	Odběr zrušen – ale nepodařilo se ho uložit, po restartu bude kanál zpět.\n\n%s\n\nVolné místo: %lu KB
+84	Video
+85	Přehrát později
+86	Co se stane, když začne označený úsek. U „Zeptat se“ se po dobu úseku ukáže tlačítko pro přeskočení.
+87	Později to můžeš změnit v Nastavení.
+88	tento kanál
+89	1440p60 v náročné scéně spadne do zhruba dvou sekund na 1080p60 a start, který je pro 1440p moc těžký, začne rovnou v 1080p60.
+90	4K30 je beta: velmi pravděpodobně bude často padat na 1440p30. Náročné scény ve 4K jsou víc, než PS3 stihne dekódovat.
+91	Videa 4K30 začínají v 1440p a přejdou na 4K tam, kde je video dost lehké.
+92	Arabské a hebrejské názvy videí se teď zobrazují, zprava doleva.
+93	Pokračovat
+94	Novinka: videa 4K s 30 snímky za sekundu, na SPE s dekodérem TEE VP9.
+95	Podělte se o své zkušenosti:
+96	Naskenuj kód telefonem: odkazy, streamy a kontakt.
+97	Podpoř TheErsysEnding:
+98	TEE Vanced %s  ·  co je nového
+99	Aplikace ve 22 jazycích, arabština zprava doleva: vyber si svůj při prvním spuštění nebo později v Nastavení > Jazyk.
+100	Co je nového
+101	%d zvuková stopa || %d zvukové stopy || %d zvukových stop
+102	Kanály, které tvůj účet sleduje: %d, od A do Z. X otevře kanál, Trojúhelník zruší odběr. || Kanály, které tvůj účet sleduje: %d, od A do Z. X otevře kanál, Trojúhelník zruší odběr. || Kanály, které tvůj účet sleduje: %d, od A do Z. X otevře kanál, Trojúhelník zruší odběr.
+103	%d kanál, od A do Z || %d kanály, od A do Z || %d kanálů, od A do Z
+104	zbývá %d min || zbývají %d min || zbývá %d min
+105	%d video || %d videa || %d videí
+106	%s (automaticky přeloženo)
+107	%s – ale nepodařilo se to uložit, takže to po restartu zmizí.\n\n%s
+108	%s – ale nepodařilo se to uložit, takže to po restartu zmizí.\n\n%s\n\nVolné místo: %lu KB
+109	%s Zkontroluj připojení a zkus to znovu.
+110	před %s dnem || před %s dny || před %s dny
+111	před %s hodinou || před %s hodinami || před %s hodinami
+112	před %s minutou || před %s minutami || před %s minutami
+113	před %s měsícem || před %s měsíci || před %s měsíci
+114	před %s sekundou || před %s sekundami || před %s sekundami
+115	%s odběratel || %s odběratelé || %s odběratelů
+116	%s video || %s videa || %s videí
+117	%s zhlédnutí || %s zhlédnutí || %s zhlédnutí
+118	%s sleduje || %s sledují || %s sleduje
+119	před %s týdnem || před %s týdny || před %s týdny
+120	před %s rokem || před %s lety || před %s lety
+121	720p60 / 1080p30  ·  MP4 pro XMB
+122	Od A do Z
+123	Na stránce Google nebyl přístup povolen. Stiskni X a zkus to znovu.
+124	Přidat sem
+125	Přidáno do Přehrát později
+126	Všechny kanály
+127	Zvuk
+128	Zvuk %d/%d: %s
+129	Zvuková stopa
+130	Zvuk: %s  -  Čtverec: %d stopa || Zvuk: %s  -  Čtverec: %d stopy || Zvuk: %s  -  Čtverec: %d stop
+131	Austrálie
+132	Rakousko
+133	Auto (%s)
+134	Auto - %s
+135	Auto ho přehraje v %s – pro nejlepší kvalitu vyber %dp v možnostech přehrávače (START).
+136	Automatické přehrávání: vyp.
+137	Automatické přehrávání: zap.
+138	Zpět na živé vysílání
+139	Pozadí
+140	Krytí pozadí
+141	Belgie
+142	Černá
+143	Modrá
+144	Brazílie
+145	Bulharsko
+146	Zaneprázdněno – zkus to znovu
+147	Kanada
+148	Kapitola
+149	Kapitola %d z %d
+150	Kapitoly
+151	Kapitoly: žádné
+152	Kontrola kvality...
+153	Vyber svůj účet Google a povol přístup
+154	Tento soubor nešlo přečíst, takže se nic nezměnilo:\n\n%s
+155	Stream se nepodařilo znovu sestavit
+156	Chorvatsko
+157	Azurová
+158	Česko
+159	Smazat playlist %s a jeho %d video? || Smazat playlist %s a jeho %d videa? || Smazat playlist %s a jeho %d videí?
+160	Dánsko
+161	Popis
+162	Hotovo
+163	Stahování selhalo na %d%%: „%s%s“
+164	Stáhnout pro XMB
+165	Staženo: „%s%s“
+166	Stahuje se
+167	Stahuje se „%s%s“
+168	Stahuje se · %d%%
+169	Zadej tento kód
+170	Všechny kanály, které tvůj účet sleduje, od A do Z.
+171	Finsko
+172	Pro XMB jde video do jeho sloupce Video a systém si soubor převezme: TEE Vanced ho pak už nebude ukazovat ani přehrávat. XMB ho přehraje v 720p60 nebo 1080p30.
+173	Francie
+174	Německo
+175	Získávám kód od Googlu...
+176	Jde do sloupce Video v XMB, který ho přehraje vlastním přehrávačem konzole.
+177	Překladač Google odmítl titulky – zkus to později
+178	Google není dostupný. Stiskni X a zkus to znovu.
+179	Řecko
+180	Zelená
+181	Skrýt
+182	Maďarsko
+183	Ve sloupci Video v XMB: „%s%s“
+184	Irsko
+185	Itálie
+186	Podrobnosti se nepodařilo načíst.
+187	Japonsko
+188	Přejít
+189	ŽIVĚ
+190	Nejnovější
+191	Purpurová
+192	Mexiko
+193	Posunout
+194	Pojmenuj playlist
+195	Nizozemsko
+196	Nový
+197	Nový kód
+198	Nový playlist...
+199	Nejdřív nejnovější nahraná videa
+200	Žádné kapitoly
+201	Bez popisu.
+202	Žádná jiná kvalita
+203	Zatím žádné playlisty – stiskni START a vytvoř jeden, nebo L3 na videu a dej ho rovnou do nového seznamu.
+204	Žádné titulky
+205	Žádná zhlédnutí
+206	Žádný
+207	Norsko
+208	Nic k přehrání
+209	Zatím nic – tvá hledání se objeví tady
+210	Nejstarší
+211	Na YouTube a na této PS3
+212	Na této PS3
+213	Na telefonu nebo počítači otevři
+214	Otevřít
+215	Možnosti
+216	Obrys
+217	Tlačítko PS není k dispozici
+218	Stránka %d / %d%s
+219	Pauza
+220	Přehrává se
+221	Přehrává se v %s podle tvého nastavení kvality (%dp).
+222	Přehrává se v TEE Vanced (Stažené), na TEE Decoderu.
+223	Přehrává se v TEE Vanced (Stažené), se zvukem Opus. Video bez 1440p dostane 1080p60.
+224	Polsko
+225	Portugalsko
+226	Premiéra %s
+227	Stiskni
+228	Stiskni R3 pro skrytí
+229	Kvalita
+230	Kvalita neznámá
+231	Kvalita: %s
+232	Kvalita: žádná jiná
+233	Nedávná hledání
+234	Doporučeno pro vás
+235	Červená
+236	Relevance
+237	Odebráno z Přehrát později
+238	Přehrát znovu
+239	Přetáčení
+240	Rumunsko
+241	Rusko
+242	Naskenuj telefonem
+243	Posouvat
+244	Hledat na YouTube
+245	Vybrat
+246	Srbsko
+247	Stín
+248	Přihlásit se k YouTube
+249	Odhlásit
+250	Přihlášeno k YouTube. Tyto seznamy jsou z tvého účtu – stejně jako Odběry, Přehrát později, Historie a Playlisty v nabídce.
+251	Přihlášeno. Tvé seznamy teď pocházejí z tvého účtu YouTube.
+252	Velikost
+253	Přeskočit: %s
+254	Přeskočeno: %s
+255	Řadit
+256	Jižní Korea
+257	Španělsko
+258	Vysíláno %s
+259	Odebíráš
+260	Seznam odběrů je plný – maximum je %d kanálů.
+261	Styl titulků
+262	Titulky
+263	Titulky vypnuté
+264	Titulky nejsou k dispozici
+265	Titulky: %s
+266	Švédsko
+267	Švýcarsko
+268	Barva textu
+269	Okraj textu
+270	Víc playlistů si tato aplikace neuloží.
+271	Ten playlist je plný.
+272	PS3 nemá žádný stream tohoto videa, který by uměla přehrát.
+273	To nejlepší, co z něj PS3 přehraje.
+274	To nejlepší, co PS3 přehraje. V nejnáročnějších chvílích může na pár sekund spadnout na 1080p60.
+275	Seznam kanálů se nepodařilo načíst. O se vrátí.
+276	Tento kanál nemá použitelné ID, takže ho nelze odebírat.
+277	Tento kanál nemá použitelné ID, takže ho nelze odebírat. (ID: „%s“)
+278	Platnost tohoto kódu vypršela. Stiskni X pro nový.
+279	Toto živé vysílání má přetáčení vypnuté
+280	Stopa není k dispozici - %s
+281	Přeložené titulky nejsou k dispozici
+282	Překlad zastaven – zbytek v původním jazyce
+283	Trendy a Živě pocházejí z YouTube této země; Hledání a Sport se mění jen částečně. Jazyk samotné aplikace nastavíš v Nastavení > Jazyk.
+284	Turecko
+285	Psát
+286	Ukrajina
+287	Spojené království
+288	Spojené státy
+289	Odběr zrušen
+290	Zhlédnutí
+291	ZHLÉDNUTO
+292	Čeká
+293	Čekám, až se přihlásíš. Stránka pokračuje sama.
+294	Přehrát později je plné
+295	Zhlédnuto
+296	Co jsi sledoval na YouTube
+297	Bílá
+298	Zruší přihlášení této konzole u Googlu
+299	Žlutá
+300	YouTube nepřidal video do Přehrát později.
+301	YouTube neodebral video z Přehrát později.
+302	YouTube nepřijal odběr.
+303	YouTube nepřijal zrušení odběru.
+304	Tvůj účet nesleduje žádné kanály.
+305	Tvé odběry, Přehrát později, historie a doporučení pak budou z tvého účtu YouTube. Heslo zadáváš jen na vlastní stránce Googlu.
+306	stream se nepodařilo otevřít
+307	video se nepodařilo znovu otevřít
+308	proces se nepodařilo spustit
+309	zvukovou stopu se nepodařilo přepnout
+310	používá se
+311	žádné přehratelné video MP4
+312	bez zvuku
+313	načtení selhalo
+314	pro psaní
+315	neznámý odkaz nebo ID
+316	±1 min

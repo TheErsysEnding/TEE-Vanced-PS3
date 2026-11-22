@@ -1,0 +1,322 @@
+# French (tu, as TEE Witch). Plural: one is 0 and 1.
+@name Français
+@script latin
+@flag fr
+@order 3
+@plural fr
+1	« %s » est encore en téléchargement. Il se lit ici dès qu'il est terminé.
+2	« %s » attend les téléchargements d'avant. Il se lit ici dès qu'il est terminé.
+3	À propos
+4	Compte
+5	Ajouter à une playlist
+6	Demander
+7	Lire la vidéo suivante automatiquement
+8	Retour
+9	Annuler
+10	Catégorie
+11	Changer
+12	Chaîne
+13	Choisir
+14	Choisis ta langue
+15	Fermer
+16	Reprendre la lecture
+17	Impossible de se désabonner de %s.
+18	Supprimer
+19	Supprimer le téléchargement « %s » de la console ?
+20	Télécharger
+21	Téléchargements
+22	Téléchargements inachevés : %d (« %s » et d'autres). Les relancer depuis le début ou les supprimer ?
+23	Remplissage et digressions
+24	Pour toi
+25	Jeux vidéo
+26	Historique
+27	Rappel d'interaction
+28	Intro
+29	Garder
+30	Langue
+31	Plus tard
+32	Dernière : %s
+33	Vidéos « J'aime »
+34	Vue en liste
+35	En direct
+36	Chargement...
+37	Connexion
+38	Menu
+39	Déplacer « %s » dans la colonne Vidéo du XMB ? Le système prend le fichier : TEE Vanced ne l'affichera ni ne le lira plus. Le XMB le lit en 720p60 ou 1080p30 (un téléchargement 1440p ou 1080p60 est récupéré à nouveau dans ce format).
+40	Déplacer vers le XMB
+41	Musique
+42	Actualités
+43	Aucun téléchargement pour l'instant – R3 sur une vidéo la télécharge.
+44	Aucun résultat
+45	Non
+46	Musique hors sujet
+47	Oui
+48	Ouvrir la chaîne
+49	Outro et écrans de fin
+50	Touche PS
+51	Page
+52	Lire
+53	Lecture
+54	Playlists
+55	Podcasts
+56	Populaires
+57	Région
+58	Recommencer
+59	Scanne pour les liens, lives\net contact
+60	Recherche
+61	Segment
+62	Autopromotion
+63	Paramètres
+64	Passer
+65	Sponsor
+66	Sport
+67	Arrêter le téléchargement
+68	Arrêter le téléchargement de « %s » ? Ce qui est déjà téléchargé sera supprimé.
+69	S'abonner
+70	Abonnements
+71	TEE Vanced %s  ·  la v%s est sortie sur GitHub
+72	TEE Vanced v%s est sortie – ceci est la %s. Elle est sur GitHub : TheErsysEnding/TEE-Vanced-PS3, Releases.
+73	Cette chaîne n'était pas dans la liste des abonnements.
+74	Impossible d'envoyer la touche PS : la console a refusé d'enregistrer une manette virtuelle.
+75	Les textes de l'appli. Les titres et noms de YouTube restent tels quels.
+76	Le dossier de données n'a pas pu être créé ni modifié au démarrage, rien ne peut donc être enregistré.\n\n%s
+77	Le téléchargement de « %s » ne s'est pas terminé. Le relancer depuis le début ou le supprimer ?
+78	Cette vignette n'a pas d'ID de chaîne, il n'y a donc rien à désabonner.
+79	Vers le XMB
+80	Tendances
+81	Se désabonner
+82	Se désabonner de %s ?
+83	Désabonné – mais impossible d'enregistrer : la chaîne reviendra après un redémarrage.\n\n%s\n\nEspace libre : %lu Ko
+84	Vidéo
+85	À regarder plus tard
+86	Ce qui se passe quand un segment marqué commence. Avec « Demander », un bouton pour passer s'affiche tant que le segment dure.
+87	Tu peux la changer plus tard dans les Paramètres.
+88	cette chaîne
+89	Le 1440p60 repasse en 1080p60 en deux secondes environ dans une scène chargée, et un début trop lourd pour le 1440p démarre tout de suite en 1080p60.
+90	La 4K30 est une bêta : elle repassera très probablement souvent en 1440p30. Les scènes chargées en 4K dépassent ce que la PS3 peut décoder à temps.
+91	Les vidéos 4K30 démarrent en 1440p et montent en 4K là où la vidéo est assez légère.
+92	Les titres de vidéos en arabe et en hébreu s'affichent maintenant, de droite à gauche.
+93	Continuer
+94	Nouveau : des vidéos 4K à 30 images par seconde, sur les SPE avec le décodeur TEE VP9.
+95	Partagez votre expérience avec :
+96	Scanne le code avec ton téléphone : liens, lives et contact.
+97	Soutiens TheErsysEnding :
+98	TEE Vanced %s  ·  nouveautés
+99	L'appli en 22 langues, l'arabe de droite à gauche : choisis la tienne au premier démarrage ou plus tard dans Paramètres > Langue.
+100	Nouveautés
+101	%d piste audio || %d pistes audio
+102	%d chaîne suivie par ton compte, de A à Z. X ouvre une chaîne, Triangle te désabonne. || %d chaînes suivies par ton compte, de A à Z. X ouvre une chaîne, Triangle te désabonne.
+103	%d chaîne, de A à Z || %d chaînes, de A à Z
+104	%d min restante || %d min restantes
+105	%d vidéo || %d vidéos
+106	%s (traduction automatique)
+107	%s – mais impossible d'enregistrer : ce sera perdu après un redémarrage.\n\n%s
+108	%s – mais impossible d'enregistrer : ce sera perdu après un redémarrage.\n\n%s\n\nEspace libre : %lu Ko
+109	%s Vérifie la connexion et réessaie.
+110	il y a %s jour || il y a %s jours
+111	il y a %s heure || il y a %s heures
+112	il y a %s minute || il y a %s minutes
+113	il y a %s mois || il y a %s mois
+114	il y a %s seconde || il y a %s secondes
+115	%s abonné || %s abonnés
+116	%s vidéo || %s vidéos
+117	%s vue || %s vues
+118	%s spectateur || %s spectateurs
+119	il y a %s semaine || il y a %s semaines
+120	il y a %s an || il y a %s ans
+121	720p60 / 1080p30  ·  MP4 pour le XMB
+122	De A à Z
+123	L'accès n'a pas été autorisé sur la page de Google. Appuie sur X pour réessayer.
+124	Ajouter ici
+125	Ajoutée à « À regarder plus tard »
+126	Toutes les chaînes
+127	Audio
+128	Audio %d/%d : %s
+129	Piste audio
+130	Audio : %s  -  Carré : %d piste || Audio : %s  -  Carré : %d pistes
+131	Australie
+132	Autriche
+133	Auto (%s)
+134	Auto - %s
+135	Auto la lit en %s – choisis %dp dans les options du lecteur (START) pour la meilleure qualité.
+136	Lecture automatique : non
+137	Lecture automatique : oui
+138	Retour au direct
+139	Fond
+140	Opacité du fond
+141	Belgique
+142	Noir
+143	Bleu
+144	Brésil
+145	Bulgarie
+146	Occupé – réessaie
+147	Canada
+148	Chapitre
+149	Chapitre %d sur %d
+150	Chapitres
+151	Chapitres : aucun
+152	Vérification de la qualité...
+153	Choisis ton compte Google et autorise l'accès
+154	Impossible de lire ce fichier, rien n'a donc été modifié :\n\n%s
+155	Impossible de reconstruire le flux
+156	Croatie
+157	Cyan
+158	Tchéquie
+159	Supprimer la playlist %s et sa %d vidéo ? || Supprimer la playlist %s et ses %d vidéos ?
+160	Danemark
+161	Description
+162	Terminé
+163	Échec du téléchargement à %d%% : « %s%s »
+164	Télécharger pour le XMB
+165	Téléchargé : « %s%s »
+166	Téléchargement
+167	Téléchargement de « %s%s »
+168	Téléchargement · %d%%
+169	Saisis ce code
+170	Toutes les chaînes suivies par ton compte, de A à Z.
+171	Finlande
+172	Pour le XMB, la vidéo va dans sa colonne Vidéo et le système prend le fichier : TEE Vanced ne l'affichera ni ne le lira plus. Le XMB la lit en 720p60 ou 1080p30.
+173	France
+174	Allemagne
+175	Récupération d'un code auprès de Google...
+176	Va dans la colonne Vidéo du XMB, qui la lit avec le lecteur de la console.
+177	Google Traduction a refusé les sous-titres – réessaie plus tard
+178	Google est injoignable. Appuie sur X pour réessayer.
+179	Grèce
+180	Vert
+181	Masquer
+182	Hongrie
+183	Dans la colonne Vidéo du XMB : « %s%s »
+184	Irlande
+185	Italie
+186	Impossible de récupérer ses détails.
+187	Japon
+188	Aller
+189	LIVE
+190	Plus récentes
+191	Magenta
+192	Mexique
+193	Déplacer
+194	Nommer la playlist
+195	Pays-Bas
+196	Nouvelle
+197	Nouveau code
+198	Nouvelle playlist...
+199	Dernières vidéos d'abord
+200	Aucun chapitre
+201	Aucune description.
+202	Aucune autre qualité
+203	Pas encore de playlist – appuie sur START pour en créer une, ou sur L3 sur une vidéo pour la ranger dans une nouvelle liste.
+204	Pas de sous-titres
+205	Aucune vue
+206	Aucun
+207	Norvège
+208	Rien de lisible
+209	Rien pour l'instant – tes recherches s'afficheront ici
+210	Plus anciennes
+211	Sur YouTube et sur cette PS3
+212	Sur cette PS3
+213	Sur ton téléphone ou ordinateur, ouvre
+214	Ouvrir
+215	Options
+216	Contour
+217	Touche PS indisponible
+218	Page %d / %d%s
+219	Pause
+220	En lecture
+221	Lue en %s avec ton réglage de qualité (%dp).
+222	Se lit dans TEE Vanced (Téléchargements), avec le TEE Decoder.
+223	Se lit dans TEE Vanced (Téléchargements), avec le son Opus. Une vidéo sans 1440p est prise en 1080p60.
+224	Pologne
+225	Portugal
+226	Première %s
+227	Appuie sur
+228	Appuie sur R3 pour masquer
+229	Qualité
+230	Qualité inconnue
+231	Qualité : %s
+232	Qualité : aucune autre
+233	Recherches récentes
+234	Recommandé pour toi
+235	Rouge
+236	Pertinence
+237	Retirée de « À regarder plus tard »
+238	Revoir
+239	Retour arrière
+240	Roumanie
+241	Russie
+242	Scanne avec ton téléphone
+243	Défiler
+244	Rechercher sur YouTube
+245	Choisir
+246	Serbie
+247	Ombre
+248	Se connecter à YouTube
+249	Se déconnecter
+250	Connecté à YouTube. Ces listes viennent de ton compte – comme Abonnements, À regarder plus tard, Historique et Playlists dans le menu.
+251	Connecté. Tes listes viennent maintenant de ton compte YouTube.
+252	Taille
+253	Passer : %s
+254	Passé : %s
+255	Trier
+256	Corée du Sud
+257	Espagne
+258	Diffusé %s
+259	Abonné
+260	La liste d'abonnements est pleine – %d chaînes au maximum.
+261	Style des sous-titres
+262	Sous-titres
+263	Sous-titres désactivés
+264	Sous-titres indisponibles
+265	Sous-titres : %s
+266	Suède
+267	Suisse
+268	Couleur du texte
+269	Bord du texte
+270	C'est le nombre maximal de playlists que garde cette appli.
+271	Cette playlist est pleine.
+272	La PS3 n'a aucun flux de cette vidéo qu'elle puisse lire.
+273	Le mieux que la PS3 en lit.
+274	Le mieux que la PS3 lit. Dans les moments les plus chargés, elle peut passer en 1080p60 quelques secondes.
+275	Impossible de charger la liste des chaînes. O revient en arrière.
+276	Cette chaîne n'a pas d'ID utilisable, impossible de s'y abonner.
+277	Cette chaîne n'a pas d'ID utilisable, impossible de s'y abonner. (ID : « %s »)
+278	Ce code a expiré. Appuie sur X pour en obtenir un nouveau.
+279	Ce direct a le retour arrière désactivé
+280	Piste indisponible - %s
+281	Sous-titres traduits indisponibles
+282	Traduction arrêtée – le reste dans la langue d'origine
+283	Tendances et Live viennent du YouTube de ce pays ; Recherche et Sport ne changent qu'en partie. La langue de l'appli se règle dans Paramètres > Langue.
+284	Turquie
+285	Saisir
+286	Ukraine
+287	Royaume-Uni
+288	États-Unis
+289	Désabonné
+290	Vues
+291	VU
+292	En attente
+293	En attente de ta connexion. Cette page continue toute seule.
+294	« À regarder plus tard » est plein
+295	Vu
+296	Ce que tu as regardé sur YouTube
+297	Blanc
+298	Retire la connexion de cette console chez Google
+299	Jaune
+300	YouTube n'a pas ajouté la vidéo à « À regarder plus tard ».
+301	YouTube n'a pas retiré la vidéo de « À regarder plus tard ».
+302	YouTube n'a pas accepté l'abonnement.
+303	YouTube n'a pas accepté le désabonnement.
+304	Ton compte ne suit aucune chaîne.
+305	Tes abonnements, À regarder plus tard, historique et recommandations viendront alors de ton compte YouTube. Ton mot de passe ne se saisit que sur la page de Google.
+306	impossible d'ouvrir le flux
+307	impossible de rouvrir la vidéo
+308	impossible de lancer le traitement
+309	impossible de changer de piste audio
+310	active
+311	aucune vidéo MP4 lisible
+312	sans son
+313	échec de la résolution
+314	pour saisir
+315	lien ou ID non reconnu
+316	±1 min

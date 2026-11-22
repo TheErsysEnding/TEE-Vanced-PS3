@@ -4,6 +4,8 @@
 // focus ring and its glow, since nothing inside a row shows the focus the way a settings segment does.
 
 #include "screens/playlist-screen.h"
+#include "i18n.h"   // (V3.1.0) tr: the texts in the language in use
+#include "yt-text.h"   // (V3.1.0) localizeYouTubeText
 #include "storage.h"
 #include "account.h"            // signed in: the account's playlists above the console's
 #include "sidebar.h"            // the rail, when the screen was opened from it: collapsed, or open over it
@@ -123,9 +125,12 @@ static void followSelection(void)
    if (state.top < 0) state.top = 0;
 }
 
+// (V3.1.0) the console's keyboard shows its title in the system's fonts, which have no Arabic: English there
+static const char *oskTitle(void) { return i18nScript() == I18N_ARABIC ? "Name the playlist" : tr("Name the playlist"); }
+
 static void showNotice(const char *text, int isConfirm)
 {
-   uiSetTextLabel(&noticeLabel, UI_BODY_WEIGHT, text);   // can quote a playlist name: external text
+   uiSetLongTextLabel(&noticeLabel, UI_BODY_WEIGHT, text);   // can quote a playlist name: external text
    state.confirmDelete = isConfirm;
    state.noticeVisible = 1;
 }
@@ -138,9 +143,9 @@ static void refreshRows(void)
       // a name is whatever was typed into the keyboard, in any script: drawn raw, and in FONT_POP as a
       // whole when Manrope lacks any of its characters
       uiSetTextLabel(&rowLabels[i], ROW_WEIGHT, getPlaylistName(i));
-      char counted[32];
+      char counted[96];
       int items = getPlaylistItemCount(i);
-      snprintf(counted, sizeof counted, items == 1 ? "%d video" : "%d videos", items);
+      snprintf(counted, sizeof counted, trn(items, "%d video", "%d videos"), items);
       setLabelText(&countLabels[i], counted);
    }
    state.renderedCount = count;
@@ -154,8 +159,9 @@ static void refreshRows(void)
          AccountPlaylistInfo *list = &accountRows[state.accountCount];
          if (!getAccountPlaylistAt(i, list)) break;
          uiSetTextLabel(&accountRowLabels[state.accountCount], ROW_WEIGHT, list->title);
-         char counted[48];
-         snprintf(counted, sizeof counted, list->count[0] ? "YouTube \xC2\xB7 %s" : "YouTube", list->count);
+         char counted[160], words[96];   // (V3.1.0) YouTube's "48 videos" in the app's language
+         localizeYouTubeText(list->count, words, sizeof words);
+         snprintf(counted, sizeof counted, words[0] ? "YouTube \xC2\xB7 %s" : "YouTube", words);
          uiSetTextLabel(&accountCountLabels[state.accountCount], UI_META_WEIGHT, counted);
          state.accountCount++;
       }
@@ -170,7 +176,7 @@ static void onNameTyped(const char *text)
 {
    if (!text || !text[0]) return;
    int created = createPlaylist(text);
-   if (created < 0) { showNotice("That is as many playlists as this app keeps.", 0); return; }
+   if (created < 0) { showNotice(tr("That is as many playlists as this app keeps."), 0); return; }
 
    if (mode == MODE_CHOOSE) {
       addToPlaylist(created, &pendingItem);
@@ -184,7 +190,7 @@ static void onNameTyped(const char *text)
 static void activateRow(void)
 {
    if (mode == MODE_CHOOSE && state.selected == CHOOSE_NEW_ROW) {
-      oskInputBegin("Name the playlist", "", onNameTyped);
+      oskInputBegin(oskTitle(), "", onNameTyped);
       return;
    }
 
@@ -201,7 +207,7 @@ static void activateRow(void)
 
    if (mode == MODE_CHOOSE) {
       int rc = addToPlaylist(playlist, &pendingItem);
-      if (rc == PLAYLIST_FULL) { showNotice("That playlist is full.", 0); return; }
+      if (rc == PLAYLIST_FULL) { showNotice(tr("That playlist is full."), 0); return; }
       popScreen();   // filed, silently: the list it went into is the confirmation
       return;
    }
@@ -236,14 +242,14 @@ static void initPlaylistScreen(void)
 
    uiInitLabel(&titleLabel, UI_PAGE_TITLE_WEIGHT, CONTENT_X, 0, UI_SAFE_RIGHT - CONTENT_X, UI_PAGE_TITLE_SIZE,
                activeTheme->textPrimary, TEXT_NOWRAP_ELLIPSIS,
-               mode == MODE_CHOOSE ? "Add to playlist" : "Playlists");
+               mode == MODE_CHOOSE ? tr("Add to playlist") : tr("Playlists"));
    // one line at this size (about 930 px), but wrapped inside the safe area rather than clipped should a font
    // ever draw it wider - it was an unwrapped line that simply stopped at its width
-   uiInitLabel(&emptyLabel, UI_BODY_WEIGHT, CONTENT_X, 0, UI_SAFE_RIGHT - CONTENT_X, UI_BODY_SIZE,
-               activeTheme->textSecondary, TEXT_WRAP,
-               "No playlists yet - press START to make one, or L3 on any video to file it straight into a new list.");
+   uiInitLongLabel(&emptyLabel, UI_BODY_WEIGHT, CONTENT_X, 0, UI_SAFE_RIGHT - CONTENT_X, UI_BODY_SIZE,
+                   activeTheme->textSecondary, TEXT_WRAP,
+                   tr("No playlists yet - press START to make one, or L3 on any video to file it straight into a new list."));
    // the one row that makes something rather than opens it, in the accent's text colour
-   uiInitLabel(&newLabel, ROW_WEIGHT, 0, 0, textW, ROW_TEXT, activeTheme->accentText, TEXT_NOWRAP_ELLIPSIS, "New playlist...");
+   uiInitLabel(&newLabel, ROW_WEIGHT, 0, 0, textW, ROW_TEXT, activeTheme->accentText, TEXT_NOWRAP_ELLIPSIS, tr("New playlist..."));
 
    for (int i = 0; i < MAX_PLAYLISTS; i++) {
       uiInitTextLabel(&rowLabels[i], ROW_WEIGHT,     0, 0, textW, ROW_TEXT,     activeTheme->textPrimary,   TEXT_NOWRAP_ELLIPSIS, "");
@@ -261,21 +267,21 @@ static void initPlaylistScreen(void)
                    activeTheme->textPrimary, TEXT_WRAP, "");
    // the notice's own line: the console's buttons, where the old text spelled "Press X to close"
    uiInitHints(&closeHints);
-   uiAddHint(&closeHints, GLYPH_CROSS, "Close");
+   uiAddHint(&closeHints, GLYPH_CROSS, tr("Close"));
    uiInitHints(&confirmHints);
-   uiAddHint(&confirmHints, GLYPH_CROSS,  "Delete");
-   uiAddHint(&confirmHints, GLYPH_CIRCLE, "Cancel");
+   uiAddHint(&confirmHints, GLYPH_CROSS,  tr("Delete"));
+   uiAddHint(&confirmHints, GLYPH_CIRCLE, tr("Cancel"));
 
    initIcon(&rowIcon, ICON_DOCS, ICON_SIZE);
    initIcon(&newIcon, ICON_PLUS_CIRCLED, ICON_SIZE);
 
    uiInitHints(&hints);
-   uiAddHint(&hints, GLYPH_CROSS,  mode == MODE_CHOOSE ? "Add here" : "Open");
-   uiAddHint(&hints, GLYPH_CIRCLE, "Back");
+   uiAddHint(&hints, GLYPH_CROSS,  mode == MODE_CHOOSE ? tr("Add here") : tr("Open"));
+   uiAddHint(&hints, GLYPH_CIRCLE, tr("Back"));
    if (mode == MODE_BROWSE) {
-      uiAddHint(&hints, GLYPH_START,  "New");
-      uiAddHint(&hints, GLYPH_SQUARE, "Delete");
-      uiAddHint(&hints, GLYPH_DPAD_LEFT, "Menu");   // opened from the rail, the rail opens here as on Home
+      uiAddHint(&hints, GLYPH_START,  tr("New"));
+      uiAddHint(&hints, GLYPH_SQUARE, tr("Delete"));
+      uiAddHint(&hints, GLYPH_DPAD_LEFT, tr("Menu"));   // opened from the rail, the rail opens here as on Home
    }
 
    memset(&navigateRepeat, 0, sizeof navigateRepeat);
@@ -331,7 +337,7 @@ static void updatePlaylistScreen(void)
    }
 
    if (mode == MODE_BROWSE && isPadButtonPressed(PAD_BTN_START)) {
-      oskInputBegin("Name the playlist", "", onNameTyped);
+      oskInputBegin(oskTitle(), "", onNameTyped);
       return;
    }
 
@@ -339,9 +345,10 @@ static void updatePlaylistScreen(void)
       if (isAccountRow(state.selected)) return;   // a YouTube playlist is not deleted from here
       int playlist = playlistForRow(state.selected);
       if (playlist >= 0 && playlist < getPlaylistCount()) {
-         char message[160];
-         snprintf(message, sizeof message, "Delete the playlist %s and its %d video(s)?",
-                  getPlaylistName(playlist), getPlaylistItemCount(playlist));
+         char message[512];
+         int items = getPlaylistItemCount(playlist);
+         snprintf(message, sizeof message, trn(items, "Delete the playlist %s and its %d video?",
+                                               "Delete the playlist %s and its %d videos?"), getPlaylistName(playlist), items);
          state.deleteTarget = playlist;
          showNotice(message, 1);
       }

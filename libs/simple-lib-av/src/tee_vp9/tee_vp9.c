@@ -36,12 +36,15 @@
 #define DQ            64             /* shown frames from their entropy answer to the output queue */
 #define OUTQ          16             /* finished pictures the app has not fetched */
 #define RELQ          64
-#define REC_CAP       (5u << 20)     /* one frame's records (the largest key frame of the test streams: 4.6 MB) */
-#define OUT_CAP       (9u << 19)     /* per entropy SPE and slot: its part of one frame's records */
-#define MV_BYTES      (40 * 40 * VP9_MV_SB_BYTES)
+/* (0.3.0) the buffers follow the largest stream (cfg_caps): up to 2560 x 1472 as in 0.2 - one frame's records 5 MB
+   (the largest key frame of the test streams: 4.6 MB), an entropy SPE's part of them 4.5 MB, the vectors of 40 x 40
+   superblocks; larger (4K: the largest frame of the YouTube samples has 7.0 MB of records) 9 MB and 5 MB */
+#define REC_CAP       (d->rec_cap)   /* one frame's records, the superblock store in its end */
+#define OUT_CAP       (d->out_cap)   /* per entropy SPE and slot: its part of one frame's records */
+#define MV_BYTES      (d->mv_bytes)
 #define STORE_ROWS    4              /* the superblock store (PIXJ_SBSTORE): a ring of 4 superblock rows ... */
-#define STORE_COLS    40             /* ... up to 2560 pixels wide, in the end of the task's records buffer */
-#define STORE_BYTES   ((uint32_t)STORE_ROWS * STORE_COLS * PIX_STORE_SB)
+#define STORE_COLS    (d->store_cols)  /* ... as wide as the widest stream, in the end of the task's records buffer */
+#define STORE_BYTES   ((uint32_t)STORE_ROWS * (uint32_t)STORE_COLS * PIX_STORE_SB)
 #define REC_TILE_HI   0x5449         /* a tile's record in the entropy stage's output (vp9_dec.h: VP9_REC_TILE_*) */
 #define REC_TILE_LO   0x4C45
 #define FRAME_KEY     0
@@ -97,13 +100,17 @@ struct tvp9 {
 	/* the stream's size, known from its first frame after tvp9_open / tvp9_flush */
 	int geo, w, h, aw, ah, sy, sc, sbr;
 	size_t ysize, csize, fb_cap, pic_bytes;
+	uint32_t rec_cap, out_cap, mv_bytes;   /* (0.3.0) cfg_caps */
+	int store_cols;
 	uint8_t *pic_mem;
 	int pic_own;
 	fbuf fb[NFB_MAX];
 	uint8_t *progmem;                /* per frame buffer 256 bytes: its progress, and a split frame's two */
 
-	/* the entropy stage */
-	uint8_t *outmem[MAX_ENT][DEPTH];
+	/* the entropy stage. (0.3.1) Every SPE writes a frame's records into a pool of its own: OUT_CAP set aside when
+	   the frame is sent, what it wrote from its answer on, free again when the frame is taken */
+	uint8_t *emem[MAX_ENT];
+	uint32_t epool, eoff[MAX_ENT][DEPTH], elen[MAX_ENT][DEPTH];
 	uint32_t *rowoffmem[DEPTH];
 	uint8_t *mvmem[2], *xchgmem;
 	int e_next, e_done, e_ans[MAX_ENT], e_got[DEPTH];   /* frames sent / taken / answered by SPE k; answers in a slot */
@@ -113,7 +120,9 @@ struct tvp9 {
 
 	/* the pixel stage */
 	ptask tasks[NTASK_MAX];
-	uint8_t *recbuf[NTASK_MAX], *lfm[NTASK_MAX];
+	uint8_t *lfm[NTASK_MAX];
+	uint8_t *rmem;                   /* (0.3.1) the tasks' records and superblock stores in one pool: a task what its frame */
+	uint32_t rpool, roff[NTASK_MAX], rlen[NTASK_MAX];   /* needs, from take_frame to the end of its pixel jobs */
 	int q[2 * NTASK_MAX], qn;        /* pixel jobs ready, in decode order: task * 2 + part */
 	int run[MAX_PIX];                /* the job each pixel SPE runs (task * 2 + part), -1: none */
 	int slotfb[8];
@@ -161,8 +170,14 @@ struct tvp9 {
 	int mute;                        /* frames taken now are not shown: no key frame has come since */
 	int muted;                       /* pictures not handed out so far */
 
+	/* (0.3.2) tvp9_skip_before: shown frames no other frame refers to, with a time stamp below it, are parsed only */
+	volatile int64_t skip_pts;           /* the app writes, the decoder reads (INT64_MIN: none) */
+	volatile int st_skipped;
+
 	/* statistics (the decoder thread writes, anyone reads) */
 	volatile int st_frames, st_pictures, st_dropped;
+	volatile int st_ent_waits, st_rec_waits;   /* (0.3.1) frames that waited for room in a pool */
+	uint32_t ewait_at, rwait_at;
 	volatile double st_entropy_ticks, st_pixel_ticks, st_busy_ticks;
 
 	vp9_job jobs[MAX_ENT][DEPTH];
@@ -214,6 +229,62 @@ static int cfg_pictures(const tvp9_config *c)
 	return c->pictures < 6 ? 6 : c->pictures > NFB_MAX ? NFB_MAX : c->pictures;
 }
 
+/* (0.3.0) the buffer sizes for streams up to max_width x max_height (see REC_CAP).
+   (0.3.1) The pools of the records (struct tvp9: emem, rmem): up to 2560 x 1472 as large as the slots and task
+   buffers of 0.3.0 together, so that every frame finds its place as before and nothing waits. Larger: a frame's worst
+   case once and a typical frame's share for the others - the YouTube 4K samples have 0.3 - 1.5 MB of records a frame
+   (both entropy SPEs; the fireworks passage 1 - 4 MB), key frames up to 7 MB, and 2 MB of superblock store a task.
+   An entropy SPE: two frames' worst case (10 MB); the tasks: 9 MB + 2.5 MB for every task after the first */
+static void cfg_caps(const tvp9_config *c, uint32_t *rec, uint32_t *out, uint32_t *mv, int *store_cols, uint32_t *epool,
+                     uint32_t *rpool)
+{
+	const uint32_t sbc = (uint32_t)(c->max_width + 63) / 64, sbr = (uint32_t)(c->max_height + 63) / 64;
+	const int big = sbc * sbr > 40u * 23u;
+	const uint32_t nt = (uint32_t)cfg_tasks(c);
+
+	*rec = big ? 9u << 20 : 5u << 20;
+	*out = big ? 5u << 20 : 9u << 19;
+	*mv = (sbc * sbr > 40u * 40u ? sbc * sbr : 40u * 40u) * VP9_MV_SB_BYTES;
+	*store_cols = sbc > 40 ? (int)sbc : 40;
+	*epool = big ? 2 * *out : DEPTH * *out;   /* (big: one frame parsed, one waiting in the mailbox) */
+	*rpool = big ? *rec + (nt - 1) * (5u << 19) : nt * *rec;
+	if (c->entropy_pool)
+		*epool = c->entropy_pool < *out ? *out : (c->entropy_pool + 127) & ~127u;
+	if (c->records_pool)
+		*rpool = c->records_pool < *rec ? *rec : (c->records_pool + 127) & ~127u;
+}
+
+/* (0.3.1) a place for need bytes in a pool of cap bytes beside the n blocks [off, off + len) in use, oldest first:
+   the block's own place of 0.3.0 first (home - given only for a pool of 0.3.0's size, where it is always free;
+   POOL_NO_HOME else), then behind the newest block, then the start (a ring), then behind an older block (the room an
+   answer left). 1 found (*at) */
+#define POOL_NO_HOME 0xFFFFFFFFu
+static int pool_place(const uint32_t *off, const uint32_t *len, int n, uint32_t cap, uint32_t home, uint32_t need,
+                      uint32_t *at)
+{
+	uint32_t cand[NTASK_MAX + 2];
+	int nc = 0;
+
+	cand[nc++] = home;
+	if (n > 0)
+		cand[nc++] = (off[n - 1] + len[n - 1] + 127) & ~127u;
+	cand[nc++] = 0;
+	for (int i = n - 2; i >= 0 && nc < NTASK_MAX + 2; i--)
+		cand[nc++] = (off[i] + len[i] + 127) & ~127u;
+	for (int k = 0; k < nc; k++) {
+		const uint32_t x = cand[k];
+		int ok = x <= cap && need <= cap - x;
+
+		for (int i = 0; ok && i < n; i++)
+			ok = x + need <= off[i] || off[i] + len[i] <= x;
+		if (ok) {
+			*at = x;
+			return 1;
+		}
+	}
+	return 0;
+}
+
 /* a frame buffer of a w x h stream: every plane aligned to 64 / 32 with its border */
 static size_t fb_size(int w, int h, int *sy, int *sc, size_t *ysize, size_t *csize)
 {
@@ -247,9 +318,12 @@ static size_t lfm_bytes(const tvp9_config *c)
 size_t tvp9_memory_size(const tvp9_config *c)
 {
 	const int nent = c->entropy_spes == 1 ? 1 : 2;
+	uint32_t rec, out, mv, epool, rpool;
+	int scols;
 
-	return sizeof(tvp9) + (size_t)nent * DEPTH * OUT_CAP + (size_t)DEPTH * VP9_ROWOFF_BYTES + 2 * (size_t)MV_BYTES + VP9_XCHG_BYTES +
-	       (size_t)cfg_tasks(c) * (REC_CAP + lfm_bytes(c)) + (size_t)NFB_MAX * 256 + (c->input_bytes ? c->input_bytes : 6u << 20);
+	cfg_caps(c, &rec, &out, &mv, &scols, &epool, &rpool);
+	return sizeof(tvp9) + (size_t)nent * epool + (size_t)DEPTH * VP9_ROWOFF_BYTES + 2 * (size_t)mv + VP9_XCHG_BYTES + rpool +
+	       (size_t)cfg_tasks(c) * lfm_bytes(c) + (size_t)NFB_MAX * 256 + (c->input_bytes ? c->input_bytes : 6u << 20);
 }
 
 /* ---- a frame's header, as far as a player needs it ----------------------------------------------------------- */
@@ -645,7 +719,7 @@ static void rsx_lost(tvp9 *d, const char *why)
 		return;
 	d->rsx_lost = 1;
 	for (uint32_t k = d->dq_r; k != d->dq_w; k++)
-		if (d->fb[d->dq[k % DQ].fb].writing && !d->dq[k % DQ].key && !d->dq[k % DQ].bad) {
+		if (d->dq[k % DQ].fb >= 0 && d->fb[d->dq[k % DQ].fb].writing && !d->dq[k % DQ].key && !d->dq[k % DQ].bad) {
 			d->dq[k % DQ].bad = 1;          /* (a key frame under way is whole: it has no predictions) */
 			n++;
 		}
@@ -720,6 +794,8 @@ static int geometry(tvp9 *d, int w, int h)
    from superblock column seam on (-1: all); returns the bytes, 0 when they do not add up or do not fit. *seam_out
    (when not NULL): the tile column start that splits the records' bytes most evenly, 0 with fewer than two tile
    columns. (test.c's rows_order) */
+/* frame slot s's records from the entropy SPEs into superblock-row order at dst (NULL: only counted), all of them or
+   one side of the seam; the bytes, 0 when they do not fit cap or are not in order */
 static uint32_t rows_order(tvp9 *d, int s, uint8_t *dst, uint32_t cap, int seam, int side, int *seam_out)
 {
 	struct {
@@ -740,12 +816,13 @@ static uint32_t rows_order(tvp9 *d, int s, uint8_t *dst, uint32_t cap, int seam,
 		for (uint32_t i = 0; i < er->ntiles; i++) {
 			const int idx = er->tile_idx[i];
 			const uint32_t start = er->tile_off[i], end = i + 1 < er->ntiles ? er->tile_off[i + 1] : er->out_bytes;
-			const uint32_t *tr = (const uint32_t *)(d->outmem[k][s] + start);
+			const uint8_t *mem = d->emem[k] + d->eoff[k][s];
+			const uint32_t *tr = (const uint32_t *)(mem + start);
 
 			if (idx >= VP9_RES_TILES || t[idx].mem || ((start | end) & 15) || end < start + 32 || end > OUT_CAP ||
 			    tr[0] != ((uint32_t)REC_TILE_HI << 16 | REC_TILE_LO))
 				return 0;
-			t[idx].mem = d->outmem[k][s];
+			t[idx].mem = mem;
 			t[idx].start = start;
 			t[idx].end = end;
 			t[idx].r0 = (int)(tr[2] >> 16) >> 3;
@@ -798,14 +875,17 @@ static uint32_t rows_order(tvp9 *d, int s, uint8_t *dst, uint32_t cap, int seam,
 			b = r + 1 < t[idx].r1 ? ro[r + 1] : t[idx].end;
 			if (a < t[idx].start + 16 || b > t[idx].end || a > b || ((a | b) & 15) || n + 16 + (b - a) > cap)
 				return 0;
-			memcpy(dst + n, t[idx].mem + t[idx].start, 16);
-			memcpy(dst + n + 16, t[idx].mem + a, b - a);
+			if (dst) {
+				memcpy(dst + n, t[idx].mem + t[idx].start, 16);
+				memcpy(dst + n + 16, t[idx].mem + a, b - a);
+			}
 			n += 16 + (b - a);
 		}
 	return n;
 }
 
-/* a shown frame on its way out: its buffer stays until the app releases the picture */
+/* a shown frame on its way out: its buffer stays until the app releases the picture. fb -1 (0.3.2): a frame that was
+   skipped (tvp9_skip_before) - its number is used when it comes to the front, nothing is handed out */
 static int show_later(tvp9 *d, int fb, int key, int64_t pts)
 {
 	if (d->dq_w - d->dq_r >= DQ) {
@@ -818,11 +898,12 @@ static int show_later(tvp9 *d, int fb, int key, int64_t pts)
 	}
 	d->dq[d->dq_w % DQ].fb = fb;
 	d->dq[d->dq_w % DQ].key = key;
-	d->dq[d->dq_w % DQ].bad = d->mute;
-	d->muted += d->mute;
+	d->dq[d->dq_w % DQ].bad = fb >= 0 && d->mute;
+	d->muted += fb >= 0 && d->mute;
 	d->dq[d->dq_w % DQ].pts = pts;
 	d->dq_w++;
-	d->fb[fb].disp++;
+	if (fb >= 0)
+		d->fb[fb].disp++;
 	return 0;
 }
 
@@ -834,8 +915,9 @@ static int take_frame(tvp9 *d, int i)
 	const int s = i % DEPTH;
 	const vp9_result *er = &d->results[0][s];
 	const int64_t pts = d->inq[d->slot_in[s] % INQ].pts;
-	int fb, t, refs[3], intra, seam = 0;
-	uint32_t n;
+	int fb, t, refs[3], intra, seam = 0, tiles, store;
+	uint32_t n, na = 0, nb = 0, oa = 0, used, at;
+	uint8_t *rec;
 	ptask *tk;
 	pix_job *j;
 	pix_prog *pp;
@@ -871,6 +953,13 @@ static int take_frame(tvp9 *d, int i)
 		     (unsigned)er->height, d->w, d->h);
 		return -1;
 	}
+	/* (0.3.2) the player is behind (tvp9_skip_before) and no frame refers to this one: its pixels are not made. The
+	   entropy stage has parsed it all the same - its probabilities and motion vectors go on to the next frame - and
+	   no reference slot changes, so every later picture stays exact */
+	if (er->show_frame && !er->refresh_frame_flags && pts < d->skip_pts) {
+		d->st_skipped++;
+		return show_later(d, -1, 0, pts) == 0 ? 1 : -1;
+	}
 	for (fb = 0; fb < d->nfb && (d->fb[fb].refs || d->fb[fb].writing || d->fb[fb].readers || d->fb[fb].disp); fb++)
 		;
 	for (t = 0; t < d->ntask && d->tasks[t].used; t++)
@@ -885,24 +974,73 @@ static int take_frame(tvp9 *d, int i)
 		}
 	}
 	tk = &d->tasks[t];
-	n = rows_order(d, s, d->recbuf[t], REC_CAP, 0, -1, &seam);
+	/* (0.3.1) the records counted first, then copied once into the task's place in the records pool */
+	n = rows_order(d, s, NULL, 0xFFFFFFFFu, 0, -1, &seam);
 	if (!n) {
 		fail(d, "frame %d: its records do not go into superblock-row order (%u + %u bytes)", d->st_frames,
 		     (unsigned)d->results[0][s].out_bytes, d->nent > 1 ? (unsigned)d->results[1][s].out_bytes : 0);
 		return -1;
 	}
 	/* split by tile columns: the left half's records first, the right half's after them (the same bytes in all) */
-	tk->tiles = d->npix >= 2 && seam > 0;
-	if (tk->tiles) {
-		const uint32_t na = rows_order(d, s, d->recbuf[t], REC_CAP, seam, 0, NULL);
-		const uint32_t oa = (na + 127) & ~127u;
-		const uint32_t nb = oa < REC_CAP ? rows_order(d, s, d->recbuf[t] + oa, REC_CAP - oa, seam, 1, NULL) : 0;
-
+	tiles = d->npix >= 2 && seam > 0;
+	if (tiles) {
+		na = rows_order(d, s, NULL, 0xFFFFFFFFu, seam, 0, NULL);
+		oa = (na + 127) & ~127u;
+		nb = rows_order(d, s, NULL, 0xFFFFFFFFu, seam, 1, NULL);
 		if (!na || !nb || na + nb != n) {
 			fail(d, "frame %d: its records do not split at superblock column %d (%u + %u of %u bytes)", d->st_frames, seam,
 			     (unsigned)na, (unsigned)nb, (unsigned)n);
 			return -1;
 		}
+	}
+	used = tiles ? oa + nb : n;
+	{
+		/* the superblock store 256 bytes behind the records, as in 0.3.0 only when both fit REC_CAP. No room now: the
+		   frame waits for a running task's end; none runs and still no room: too large for the pool */
+		const uint32_t with = ((used + 256 + 127) & ~127u) + STORE_BYTES, plain = (used + 127) & ~127u;
+		const uint32_t home = d->rpool >= (uint32_t)d->ntask * REC_CAP ? (uint32_t)t * REC_CAP : POOL_NO_HOME;
+		uint32_t off[NTASK_MAX], len[NTASK_MAX];
+		int ord[NTASK_MAX], nl = 0;
+
+		for (int k = 0; k < d->ntask; k++)
+			if (d->tasks[k].used) {         /* (oldest first: in decode order) */
+				int j = nl++;
+
+				for (; j > 0 && d->tasks[ord[j - 1]].order > d->tasks[k].order; j--) {
+					ord[j] = ord[j - 1];
+					off[j] = off[j - 1];
+					len[j] = len[j - 1];
+				}
+				ord[j] = k;
+				off[j] = d->roff[k];
+				len[j] = d->rlen[k];
+			}
+		if (!d->c.no_store && with <= REC_CAP && pool_place(off, len, nl, d->rpool, home, with, &at))
+			store = 1;
+		else if ((d->c.no_store || with > REC_CAP || nl == 0) && pool_place(off, len, nl, d->rpool, home, plain, &at))
+			store = 0;
+		else if (nl > 0) {
+			if (d->rwait_at != (uint32_t)i + 1) {
+				d->rwait_at = (uint32_t)i + 1;
+				d->st_rec_waits++;
+			}
+			return 0;
+		} else {
+			fail(d, "frame %d: its records (%u bytes) do not fit the records pool (%u bytes)", d->st_frames, (unsigned)used,
+			     (unsigned)d->rpool);
+			return -1;
+		}
+		d->roff[t] = at;
+		d->rlen[t] = store ? with : plain;
+	}
+	rec = d->rmem + at;
+	if (tiles ? rows_order(d, s, rec, oa, seam, 0, NULL) != na || rows_order(d, s, rec + oa, nb, seam, 1, NULL) != nb
+	          : rows_order(d, s, rec, n, 0, -1, NULL) != n) {
+		fail(d, "frame %d: its records changed between counting and copying", d->st_frames);
+		return -1;
+	}
+	tk->tiles = tiles;
+	if (tiles) {
 		tk->na = na;
 		tk->nb = nb;
 		tk->oa = oa;
@@ -928,15 +1066,11 @@ static int take_frame(tvp9 *d, int i)
 	j->lf_mode_deltas[0] = er->lf_mode_deltas[0];
 	j->lf_mode_deltas[1] = er->lf_mode_deltas[1];
 	j->records_bytes = n;
-	j->records_ea = (uint64_t)tv9p_ea(d->recbuf[t]);
-	if (!d->c.no_store) {               /* (set before the halves' jobs are copied from this one) */
-		const uint32_t used = tk->tiles ? tk->oa + tk->nb : n;
-
-		if (used + 256 <= REC_CAP - STORE_BYTES) {
-			j->flags |= PIXJ_SBSTORE;
-			j->store_ea = (uint64_t)tv9p_ea(d->recbuf[t] + REC_CAP - STORE_BYTES);
-			j->store_rows = STORE_ROWS;
-		}
+	j->records_ea = (uint64_t)tv9p_ea(rec);
+	if (store) {                        /* (set before the halves' jobs are copied from this one) */
+		j->flags |= PIXJ_SBSTORE;
+		j->store_ea = (uint64_t)tv9p_ea(rec + d->rlen[t] - STORE_BYTES);
+		j->store_rows = STORE_ROWS;
 	}
 	j->lfm_ea = (uint64_t)tv9p_ea(d->lfm[t]);
 	j->cur = d->fb[fb].pf;
@@ -959,9 +1093,9 @@ static int take_frame(tvp9 *d, int i)
 	tk->rr.mi_rows = ((int)er->height + 7) >> 3;
 	tk->rr.mi_cols = ((int)er->width + 7) >> 3;
 	tk->rr.parts = 1 + tk->tiles;
-	tk->rr.rec[0] = d->recbuf[t];
+	tk->rr.rec[0] = rec;
 	tk->rr.bytes[0] = tk->tiles ? tk->na : n;
-	tk->rr.rec[1] = d->recbuf[t] + tk->oa;
+	tk->rr.rec[1] = rec + tk->oa;
 	tk->rr.bytes[1] = tk->nb;
 	tk->rr.pos[0] = tk->rr.pos[1] = 0;
 	pp->rows = 0;                       /* nothing of this buffer's new frame is final yet */
@@ -1072,6 +1206,25 @@ static void soft_restart(tvp9 *d)
 }
 
 /* everything that can go on without an answer; returns 1 when something did */
+/* (0.3.1) room for the next frame (slot) in every entropy SPE's pool: OUT_CAP each, beside the frames sent and not
+   taken yet. 1 found (at[k]) */
+static int ent_place(const tvp9 *d, int slot, uint32_t *at)
+{
+	for (int k = 0; k < d->nent; k++) {
+		uint32_t off[DEPTH], len[DEPTH];
+		int nl = 0;
+
+		for (int i = d->e_done; i < d->e_next && nl < DEPTH; i++) {
+			off[nl] = d->eoff[k][i % DEPTH];
+			len[nl++] = d->elen[k][i % DEPTH];
+		}
+		if (!pool_place(off, len, nl, d->epool, d->epool >= DEPTH * OUT_CAP ? (uint32_t)slot * OUT_CAP : POOL_NO_HOME, OUT_CAP,
+		                &at[k]))
+			return 0;
+	}
+	return 1;
+}
+
 static int advance(tvp9 *d)
 {
 	const int stopping = d->failed || d->cmd_flush || d->cmd_close;
@@ -1099,11 +1252,20 @@ static int advance(tvp9 *d)
 		const int slot = d->e_next % DEPTH;
 		in_frame *const f = &d->inq[d->in_sent % INQ];
 
+		uint32_t at[MAX_ENT];
+
 		if (f->newsize) {                   /* (0.2.2) the frames before it go through first, then the size changes */
 			if (!pipeline_idle(d))
 				break;
 			soft_restart(d);
 			f->newsize = 0;
+		}
+		if (!ent_place(d, slot, at)) {      /* (0.3.1) room comes with an answer or a frame taken */
+			if (d->ewait_at != (uint32_t)d->e_next + 1) {
+				d->ewait_at = (uint32_t)d->e_next + 1;
+				d->st_ent_waits++;
+			}
+			break;
 		}
 
 		d->fseq++;
@@ -1116,7 +1278,9 @@ static int advance(tvp9 *d)
 			j->frame_size = f->size;
 			j->data_size = f->padded;
 			j->data_ea = (uint64_t)tv9p_ea(d->inbuf + f->off);
-			j->out_ea = (uint64_t)tv9p_ea(d->outmem[k][slot]);
+			d->eoff[k][slot] = at[k];
+			d->elen[k][slot] = OUT_CAP;
+			j->out_ea = (uint64_t)tv9p_ea(d->emem[k] + at[k]);
 			j->out_cap = OUT_CAP;
 			j->part = (uint32_t)k;
 			j->parts = (uint32_t)d->nent;
@@ -1187,11 +1351,13 @@ static int advance(tvp9 *d)
 			moved = 1;
 		}
 	/* the shown frames whose pixels are done, in order, to the app */
-	while (!stopping && d->dq_r != d->dq_w && !d->fb[d->dq[d->dq_r % DQ].fb].writing) {
+	while (!stopping && d->dq_r != d->dq_w && (d->dq[d->dq_r % DQ].fb < 0 || !d->fb[d->dq[d->dq_r % DQ].fb].writing)) {
 		out_pic *o = &d->outq[d->out_w % OUTQ];
 
-		if (d->dq[d->dq_r % DQ].bad) {      /* (rsx_lost) not a picture to show: its buffer is free again, its number is used */
-			undisp(d, d->dq[d->dq_r % DQ].fb);
+		if (d->dq[d->dq_r % DQ].fb < 0 || d->dq[d->dq_r % DQ].bad) {
+			/* (rsx_lost) not a picture to show: its buffer is free again, its number is used; (0.3.2) a skipped frame */
+			if (d->dq[d->dq_r % DQ].fb >= 0)
+				undisp(d, d->dq[d->dq_r % DQ].fb);
 			d->pic_index++;
 			d->dq_r++;
 			moved = 1;
@@ -1257,6 +1423,9 @@ static void restart(tvp9 *d)
 	d->mute = 0;                        /* (the next stream starts with a key frame; rsx_lost stays) */
 	d->muted = 0;
 	d->st_frames = d->st_pictures = d->st_dropped = d->st_rsx_frames = 0;
+	d->st_ent_waits = d->st_rec_waits = 0;
+	d->st_skipped = 0;
+	d->ewait_at = d->rwait_at = 0;
 	d->st_entropy_ticks = d->st_pixel_ticks = d->st_busy_ticks = 0;
 	d->gen++;                           /* pictures of before are not the app's any more */
 	tv9p_sync();
@@ -1303,6 +1472,9 @@ static void decoder_thread(void *arg)
 					fail(d, "an unexpected answer 0x%x from entropy SPE %d", (unsigned)word, spe);
 					d->hung = 1;
 				} else {
+					const uint32_t ob = d->results[spe][slot].out_bytes;
+
+					d->elen[spe][slot] = ob < OUT_CAP ? (ob + 127) & ~127u : OUT_CAP;   /* (0.3.1) the rest is free */
 					d->e_got[slot]++;
 					d->e_ans[spe]++;
 				}
@@ -1323,14 +1495,12 @@ static void decoder_thread(void *arg)
 static void free_all(tvp9 *d)
 {
 	for (int k = 0; k < MAX_ENT; k++)
-		for (int s = 0; s < DEPTH; s++)
-			tv9p_free(d->outmem[k][s]);
+		tv9p_free(d->emem[k]);
+	tv9p_free(d->rmem);
 	for (int s = 0; s < DEPTH; s++)
 		tv9p_free(d->rowoffmem[s]);
-	for (int k = 0; k < NTASK_MAX; k++) {
-		tv9p_free(d->recbuf[k]);
+	for (int k = 0; k < NTASK_MAX; k++)
 		tv9p_free(d->lfm[k]);
-	}
 	tv9p_free(d->mvmem[0]);
 	tv9p_free(d->mvmem[1]);
 	tv9p_free(d->xchgmem);
@@ -1354,7 +1524,7 @@ tvp9 *tvp9_open(const tvp9_config *c, char *err, int errlen)
 	d = NULL;
 	if (!c || (c->entropy_spes != 1 && c->entropy_spes != 2) || c->pixel_spes < 1 || c->pixel_spes > MAX_PIX ||
 	    c->entropy_spes + c->pixel_spes > TV9P_MAX_SPES || c->max_width < 64 || c->max_height < 64 ||
-	    c->max_width > STORE_COLS * 64 || c->max_height > 2560)
+	    c->max_width > 4096 || c->max_height > 2304)
 		OPEN_FAIL("the configuration is not one the decoder takes");
 	d = tv9p_alloc(sizeof(*d), 128);
 	if (!d)
@@ -1368,6 +1538,7 @@ tvp9 *tvp9_open(const tvp9_config *c, char *err, int errlen)
 	d->nfb = cfg_pictures(c);
 	d->in_cap = c->input_bytes ? (c->input_bytes + 127) & ~127u : 6u << 20;
 	d->fb_cap = fb_size(c->max_width, c->max_height, NULL, NULL, NULL, NULL);
+	cfg_caps(c, &d->rec_cap, &d->out_cap, &d->mv_bytes, &d->store_cols, &d->epool, &d->rpool);
 	d->pic_bytes = tvp9_picture_memory_size(c);
 	tv9p_set_log(c->log);
 	if (c->picture_memory) {
@@ -1379,14 +1550,12 @@ tvp9 *tvp9_open(const tvp9_config *c, char *err, int errlen)
 		d->pic_own = 1;
 	}
 	for (int k = 0; k < d->nent; k++)
-		for (int s = 0; s < DEPTH; s++)
-			ok &= (d->outmem[k][s] = tv9p_alloc(OUT_CAP, 128)) != NULL;
+		ok &= (d->emem[k] = tv9p_alloc(d->epool, 128)) != NULL;
+	ok &= (d->rmem = tv9p_alloc(d->rpool, 128)) != NULL;
 	for (int s = 0; s < DEPTH; s++)
 		ok &= (d->rowoffmem[s] = tv9p_alloc(VP9_ROWOFF_BYTES, 128)) != NULL;
-	for (int k = 0; k < d->ntask; k++) {
-		ok &= (d->recbuf[k] = tv9p_alloc(REC_CAP, 128)) != NULL;
+	for (int k = 0; k < d->ntask; k++)
 		ok &= (d->lfm[k] = tv9p_alloc(lfm_bytes(c), 128)) != NULL;
-	}
 	ok &= (d->mvmem[0] = tv9p_alloc(MV_BYTES, 128)) != NULL;
 	ok &= (d->mvmem[1] = tv9p_alloc(MV_BYTES, 128)) != NULL;
 	ok &= (d->xchgmem = tv9p_alloc(VP9_XCHG_BYTES, 128)) != NULL;
@@ -1407,6 +1576,8 @@ tvp9 *tvp9_open(const tvp9_config *c, char *err, int errlen)
 		rsx_mc_row_flush(0);
 		rsx_mc_row_marker(1);
 		rsx_mc_sizes(0);
+		/* (0.3.1; before the surfaces: one a slot) above 2560 x 1472 two: as fast as three on the 4K samples, 12 MB less */
+		rsx_mc_slots(c->rsx_slots ? c->rsx_slots : d->rec_cap > (5u << 20) ? 2 : RSX_MC_SLOTS);
 		if (rsx_mc_prealloc((c->max_width + 63) & ~63, (c->max_height + 63) & ~63) != 0)
 			OPEN_FAIL("no memory for the RSX's prediction surfaces");
 		d->rsx_on = 1;
@@ -1419,6 +1590,7 @@ tvp9 *tvp9_open(const tvp9_config *c, char *err, int errlen)
 	for (int p = 0; p < MAX_PIX; p++)
 		d->run[p] = -1;
 	restart(d);
+	d->skip_pts = INT64_MIN;
 	if (tv9p_init() != 0)
 		OPEN_FAIL("the SPU programs or the event queue did not come");
 	if (tv9p_spes_start(d->nent, d->npix) != 0) {
@@ -1432,9 +1604,10 @@ tvp9 *tvp9_open(const tvp9_config *c, char *err, int errlen)
 		OPEN_FAIL("the decoder's thread did not start");
 	}
 #undef OPEN_FAIL
-	tv9p_log("TEE VP9 %s: %d entropy + %d pixel SPEs, %d picture buffers (%u MB), %u MB beside them; %d frames ahead, %d tasks",
-	         TEE_VP9_VERSION, d->nent, d->npix, d->nfb, (unsigned)(d->pic_bytes >> 20), (unsigned)(tvp9_memory_size(c) >> 20), d->lead,
-	         d->ntask);
+	tv9p_log("TEE VP9 %s: %d entropy + %d pixel SPEs, %d picture buffers (%u MB), %u MB beside them (records: %d x %.1f MB "
+	         "entropy, %.1f MB tasks); %d frames ahead, %d tasks", TEE_VP9_VERSION, d->nent, d->npix, d->nfb,
+	         (unsigned)(d->pic_bytes >> 20), (unsigned)(tvp9_memory_size(c) >> 20), d->nent, d->epool / 1048576.0,
+	         d->rpool / 1048576.0, d->lead, d->ntask);
 	return d;
 }
 
@@ -1486,6 +1659,7 @@ int tvp9_flush(tvp9 *d)
 	d->fed_w = d->fed_h = 0;
 	d->ring_w = 0;
 	d->eos = 0;
+	d->skip_pts = INT64_MIN;            /* (0.3.2) the new position's clock is not known yet */
 	d->drained = 0;                     /* (the decoder's thread sets it only while no flush is asked for) */
 	tv9p_sync();
 	d->cmd_flush = 0;
@@ -1586,6 +1760,12 @@ int tvp9_pictures_decoded(const tvp9 *d)
 	return d ? d->st_pictures : 0;
 }
 
+void tvp9_skip_before(tvp9 *d, int64_t pts)
+{
+	if (d)
+		d->skip_pts = pts;              /* (one aligned 64-bit store: the decoder's thread reads it whole) */
+}
+
 void tvp9_get_stats(const tvp9 *d, tvp9_stats *s)
 {
 	const double mhz = tv9p_tick_mhz();
@@ -1597,9 +1777,13 @@ void tvp9_get_stats(const tvp9 *d, tvp9_stats *s)
 	s->pictures = d->st_pictures;
 	s->dropped = d->st_dropped;
 	s->rsx_frames = d->st_rsx_frames;
+	s->entropy_waits = d->st_ent_waits;
+	s->records_waits = d->st_rec_waits;
+	s->skipped = d->st_skipped;
 	if (s->frames > 0 && mhz > 0) {
-		/* the SPEs count decrementer ticks, the PPU its timebase: the same 79.8 MHz on the PS3 */
-		s->entropy_ms = d->st_entropy_ticks / s->frames / mhz / 1000.0;
+		/* the SPEs count decrementer ticks, the PPU its timebase: the same 79.8 MHz on the PS3. (0.3.2) The entropy
+		   stage parses the skipped frames too */
+		s->entropy_ms = d->st_entropy_ticks / (s->frames + s->skipped) / mhz / 1000.0;
 		s->pixel_ms = d->st_pixel_ticks / s->frames / mhz / 1000.0;
 		if (d->st_busy_ticks > 0)
 			s->fps = s->frames / (d->st_busy_ticks / mhz / 1e6);

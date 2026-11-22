@@ -1,0 +1,322 @@
+# Romanian (tu). Plural forms: one (1) | few (0, 2-19, x01-x19) | other (20 and more: "de").
+@name Română
+@script latin
+@flag ro
+@order 11
+@plural ro
+1	„%s” încă se descarcă. Se redă aici imediat ce e gata.
+2	„%s” așteaptă descărcările dinaintea lui. Se redă aici imediat ce e gata.
+3	Despre
+4	Cont
+5	Adaugă în playlist
+6	Întreabă
+7	Redă automat următorul videoclip
+8	Înapoi
+9	Anulează
+10	Categorie
+11	Schimbă
+12	Canal
+13	Alege
+14	Alege-ți limba
+15	Închide
+16	Continuă vizionarea
+17	Nu s-a putut anula abonarea la %s.
+18	Șterge
+19	Ștergi descărcarea „%s” de pe consolă?
+20	Descarcă
+21	Descărcări
+22	Descărcări neterminate: %d („%s” și altele). Le pornești din nou de la început sau le ștergi?
+23	Umplutură și digresiuni
+24	Pentru tine
+25	Jocuri
+26	Istoric
+27	Memento de interacțiune
+28	Intro
+29	Păstrează
+30	Limbă
+31	Mai târziu
+32	Cel mai nou: %s
+33	Videoclipuri apreciate
+34	Vizualizare listă
+35	Live
+36	Se încarcă...
+37	Conectare
+38	Meniu
+39	Muți „%s” în coloana Video din XMB? Sistemul preia fișierul: TEE Vanced nu îl mai afișează și nu îl mai redă. XMB îl redă la 720p60 sau 1080p30 (o descărcare 1440p sau 1080p60 se descarcă din nou în acest format).
+40	Mută în XMB
+41	Muzică
+42	Știri
+43	Încă nu există descărcări – R3 pe orice videoclip îl descarcă.
+44	Niciun rezultat
+45	Oprit
+46	Muzică fără legătură
+47	Pornit
+48	Deschide canalul
+49	Final și ecrane de final
+50	Butonul PS
+51	Pagina
+52	Redă
+53	Redare
+54	Playlisturi
+55	Podcasturi
+56	Populare
+57	Regiune
+58	Repornește
+59	Scanează pentru linkuri, live-uri\nși contact
+60	Caută
+61	Segment
+62	Autopromovare
+63	Setări
+64	Omite
+65	Sponsor
+66	Sport
+67	Oprește descărcarea
+68	Oprești descărcarea „%s”? Ce s-a descărcat până acum se aruncă.
+69	Abonează-te
+70	Abonamente
+71	TEE Vanced %s  ·  v%s a apărut pe GitHub
+72	A apărut TEE Vanced v%s – aceasta e %s. E pe GitHub: TheErsysEnding/TEE-Vanced-PS3, Releases.
+73	Acel canal nu era în lista de abonamente.
+74	Butonul PS nu a putut fi trimis: consola a refuzat să înregistreze un controller virtual.
+75	Textele aplicației. Titlurile și numele de pe YouTube rămân cum sunt.
+76	Dosarul de date nu a putut fi creat sau scris la pornire, așa că nu se poate salva nimic.\n\n%s
+77	Descărcarea „%s” nu s-a terminat. O pornești din nou de la început sau o ștergi?
+78	Această casetă nu are ID de canal, deci nu există abonament de anulat.
+79	În XMB
+80	Tendințe
+81	Anulează abonarea
+82	Anulezi abonarea la %s?
+83	Abonare anulată – dar nu s-a putut salva, canalul revine după o repornire.\n\n%s\n\nSpațiu liber: %lu KB
+84	Videoclip
+85	Vizionează mai târziu
+86	Ce se întâmplă când începe un segment marcat. La „Întreabă” apare un buton de omitere cât durează segmentul.
+87	O poți schimba mai târziu din Setări.
+88	acest canal
+89	1440p60 coboară la 1080p60 în aproximativ două secunde într-o scenă grea, iar un început prea greu pentru 1440p pornește direct în 1080p60.
+90	4K30 este o versiune beta: foarte probabil va coborî des la 1440p30. Scenele grele în 4K sunt mai mult decât poate decoda PS3 la timp.
+91	Videoclipurile 4K30 pornesc în 1440p și urcă la 4K unde videoclipul e destul de ușor.
+92	Titlurile video în arabă și ebraică se afișează acum, de la dreapta la stânga.
+93	Continuă
+94	Nou: videoclipuri 4K la 30 de cadre pe secundă, pe SPE-uri cu decodorul TEE VP9.
+95	Vă rugăm să ne spuneți cum merge:
+96	Scanează codul cu telefonul: linkuri, live-uri și contact.
+97	Susține-l pe TheErsysEnding:
+98	TEE Vanced %s  ·  ce e nou
+99	Aplicația în 22 de limbi, araba de la dreapta la stânga: alege-o pe a ta la prima pornire sau mai târziu în Setări > Limbă.
+100	Ce e nou
+101	%d pistă audio || %d piste audio || %d de piste audio
+102	Canale urmărite de contul tău: %d, de la A la Z. X deschide un canal, Triunghi anulează abonarea. || Canale urmărite de contul tău: %d, de la A la Z. X deschide un canal, Triunghi anulează abonarea. || Canale urmărite de contul tău: %d, de la A la Z. X deschide un canal, Triunghi anulează abonarea.
+103	%d canal, de la A la Z || %d canale, de la A la Z || %d de canale, de la A la Z
+104	a rămas %d min || au rămas %d min || au rămas %d min
+105	%d videoclip || %d videoclipuri || %d de videoclipuri
+106	%s (tradus automat)
+107	%s – dar nu s-a putut salva, dispare după o repornire.\n\n%s
+108	%s – dar nu s-a putut salva, dispare după o repornire.\n\n%s\n\nSpațiu liber: %lu KB
+109	%s Verifică conexiunea și încearcă din nou.
+110	acum %s zi || acum %s zile || acum %s de zile
+111	acum %s oră || acum %s ore || acum %s de ore
+112	acum %s minut || acum %s minute || acum %s de minute
+113	acum %s lună || acum %s luni || acum %s de luni
+114	acum %s secundă || acum %s secunde || acum %s de secunde
+115	%s abonat || %s abonați || %s de abonați
+116	%s videoclip || %s videoclipuri || %s de videoclipuri
+117	%s vizionare || %s vizionări || %s de vizionări
+118	%s spectator || %s spectatori || %s de spectatori
+119	acum %s săptămână || acum %s săptămâni || acum %s de săptămâni
+120	acum %s an || acum %s ani || acum %s de ani
+121	720p60 / 1080p30  ·  MP4 pentru XMB
+122	De la A la Z
+123	Accesul nu a fost permis pe pagina Google. Apasă X pentru a încerca din nou.
+124	Adaugă aici
+125	Adăugat la Vizionează mai târziu
+126	Toate canalele
+127	Audio
+128	Audio %d/%d: %s
+129	Pistă audio
+130	Audio: %s  -  Pătrat: %d pistă || Audio: %s  -  Pătrat: %d piste || Audio: %s  -  Pătrat: %d de piste
+131	Australia
+132	Austria
+133	Auto (%s)
+134	Auto - %s
+135	Auto îl redă la %s – alege %dp în opțiunile playerului (START) pentru cea mai bună calitate.
+136	Redare automată: dezactivată
+137	Redare automată: activată
+138	Înapoi la live
+139	Fundal
+140	Opacitatea fundalului
+141	Belgia
+142	Negru
+143	Albastru
+144	Brazilia
+145	Bulgaria
+146	Ocupat – încearcă din nou
+147	Canada
+148	Capitol
+149	Capitolul %d din %d
+150	Capitole
+151	Capitole: niciunul
+152	Se verifică calitatea...
+153	Alege contul Google și permite accesul
+154	Acest fișier nu a putut fi citit, deci nu s-a schimbat nimic:\n\n%s
+155	Fluxul nu a putut fi refăcut
+156	Croația
+157	Cyan
+158	Cehia
+159	Ștergi playlistul %s și %d videoclip? || Ștergi playlistul %s și cele %d videoclipuri? || Ștergi playlistul %s și cele %d de videoclipuri?
+160	Danemarca
+161	Descriere
+162	Gata
+163	Descărcarea a eșuat la %d%%: „%s%s”
+164	Descarcă pentru XMB
+165	Descărcat: „%s%s”
+166	Se descarcă
+167	Se descarcă „%s%s”
+168	Se descarcă · %d%%
+169	Introdu acest cod
+170	Toate canalele urmărite de contul tău, de la A la Z.
+171	Finlanda
+172	Pentru XMB, videoclipul merge în coloana sa Video, iar sistemul preia fișierul: TEE Vanced nu îl mai afișează și nu îl mai redă. XMB îl redă la 720p60 sau 1080p30.
+173	Franța
+174	Germania
+175	Se obține un cod de la Google...
+176	Merge în coloana Video din XMB, care îl redă cu playerul consolei.
+177	Google Traducere a refuzat subtitrările – încearcă mai târziu
+178	Google nu a putut fi contactat. Apasă X pentru a încerca din nou.
+179	Grecia
+180	Verde
+181	Ascunde
+182	Ungaria
+183	În coloana Video din XMB: „%s%s”
+184	Irlanda
+185	Italia
+186	Detaliile nu au putut fi preluate.
+187	Japonia
+188	Salt
+189	LIVE
+190	Cele mai noi
+191	Magenta
+192	Mexic
+193	Mută
+194	Denumește playlistul
+195	Țările de Jos
+196	Nou
+197	Cod nou
+198	Playlist nou...
+199	Mai întâi cele mai noi încărcări
+200	Fără capitole
+201	Fără descriere.
+202	Nicio altă calitate
+203	Încă nu ai playlisturi – apasă START ca să creezi unul, sau L3 pe un videoclip ca să-l pui direct într-o listă nouă.
+204	Fără subtitrări
+205	Nicio vizionare
+206	Niciunul
+207	Norvegia
+208	Nimic de redat
+209	Încă nimic – căutările tale apar aici
+210	Cele mai vechi
+211	Pe YouTube și pe acest PS3
+212	Pe acest PS3
+213	Pe telefon sau calculator, deschide
+214	Deschide
+215	Opțiuni
+216	Contur
+217	Butonul PS nu e disponibil
+218	Pagina %d / %d%s
+219	Pauză
+220	Se redă
+221	Se redă la %s cu setarea ta de calitate (%dp).
+222	Se redă în TEE Vanced (Descărcări), pe TEE Decoder.
+223	Se redă în TEE Vanced (Descărcări), cu sunet Opus. Un videoclip fără 1440p primește 1080p60.
+224	Polonia
+225	Portugalia
+226	Premieră %s
+227	Apasă
+228	Apasă R3 pentru a ascunde
+229	Calitate
+230	Calitate necunoscută
+231	Calitate: %s
+232	Calitate: nicio alta
+233	Căutări recente
+234	Recomandate pentru tine
+235	Roșu
+236	Relevanță
+237	Eliminat din Vizionează mai târziu
+238	Redă din nou
+239	Derulare înapoi
+240	România
+241	Rusia
+242	Scanează cu telefonul
+243	Derulează
+244	Caută pe YouTube
+245	Selectează
+246	Serbia
+247	Umbră
+248	Conectează-te la YouTube
+249	Deconectare
+250	Conectat la YouTube. Aceste liste vin din contul tău – la fel ca Abonamente, Vizionează mai târziu, Istoric și Playlisturi din meniu.
+251	Conectat. Listele tale vin acum din contul YouTube.
+252	Mărime
+253	Omite: %s
+254	Omis: %s
+255	Sortează
+256	Coreea de Sud
+257	Spania
+258	Transmis %s
+259	Abonat
+260	Lista de abonamente e plină – maximul este de %d canale.
+261	Stilul subtitrărilor
+262	Subtitrări
+263	Subtitrări dezactivate
+264	Subtitrări indisponibile
+265	Subtitrări: %s
+266	Suedia
+267	Elveția
+268	Culoarea textului
+269	Marginea textului
+270	Mai multe playlisturi nu păstrează această aplicație.
+271	Acel playlist e plin.
+272	PS3 nu are niciun flux al acestui videoclip pe care să-l poată reda.
+273	Cel mai bun lucru pe care PS3 îl redă din el.
+274	Cel mai bun lucru pe care PS3 îl redă. În cele mai grele momente poate coborî câteva secunde la 1080p60.
+275	Lista de canale nu a putut fi încărcată. O revine.
+276	Acest canal nu are un ID utilizabil, deci nu te poți abona la el.
+277	Acest canal nu are un ID utilizabil, deci nu te poți abona la el. (ID: „%s”)
+278	Acest cod a expirat. Apasă X pentru unul nou.
+279	Acest live are derularea înapoi dezactivată
+280	Pistă indisponibilă - %s
+281	Subtitrări traduse indisponibile
+282	Traducere oprită – restul în limba originală
+283	Tendințe și Live vin de pe YouTube-ul acestei țări; Căutarea și Sport se schimbă doar parțial. Limba aplicației se setează în Setări > Limbă.
+284	Turcia
+285	Scrie
+286	Ucraina
+287	Regatul Unit
+288	Statele Unite
+289	Abonare anulată
+290	Vizionări
+291	VIZIONAT
+292	În așteptare
+293	Se așteaptă conectarea ta. Pagina continuă singură.
+294	Vizionează mai târziu e plin
+295	Vizionat
+296	Ce ai urmărit pe YouTube
+297	Alb
+298	Retrage conectarea acestei console la Google
+299	Galben
+300	YouTube nu a adăugat videoclipul la Vizionează mai târziu.
+301	YouTube nu a eliminat videoclipul din Vizionează mai târziu.
+302	YouTube nu a acceptat abonarea.
+303	YouTube nu a acceptat anularea abonării.
+304	Contul tău nu urmărește niciun canal.
+305	Abonamentele, Vizionează mai târziu, istoricul și recomandările vin atunci din contul tău YouTube. Parola o introduci doar pe pagina Google.
+306	fluxul nu a putut fi deschis
+307	videoclipul nu a putut fi redeschis
+308	procesul nu a putut porni
+309	pista audio nu a putut fi schimbată
+310	în uz
+311	niciun videoclip MP4 redabil
+312	fără sunet
+313	preluarea a eșuat
+314	pentru a scrie
+315	link sau ID necunoscut
+316	±1 min

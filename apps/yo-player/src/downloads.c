@@ -1,6 +1,7 @@
 // downloads - background queue that remuxes a video's streams into one .mp4 on disk (see downloads.h).
 
 #include "downloads.h"
+#include "i18n.h"   // (V3.1.0) tr: the texts in the language in use
 #include "stream-select.h"      // pickBestVideo / pickBestAudio
 #include "mux-mp4.h"
 #include "demux.h"              // VideoDemuxer + readVideoAu / readAudioAu
@@ -75,7 +76,7 @@ static struct {
    char             activeFormat[24];   // "1440p60 · VP9" once the stream is picked
    volatile int     cancelActive;  // (V3.0.0) cancelDownload: abort the running download only
    int              outcome;       // (V3.0.0) the running download's end: OUTCOME_* (failed until it says otherwise)
-   char             resultText[224];    // ... the last one's, as the chip says it
+   char             resultText[512];    // ... the last one's, as the chip says it
    int              resultOk;
    volatile unsigned resultSeq;   // +1 for every new result (the UI thread picks it up)
    volatile unsigned revision;     // (V3.0.0) the Downloads page's: a download landed or was deleted
@@ -730,10 +731,10 @@ static void downloadWorker(uint64_t arg)
          const char *more = strcmp(title, item.title) != 0 ? "..." : "";
          int toXmb = item.quality == DOWNLOAD_XMB || item.fromGallery || item.remuxLocal;
          if (dl.outcome == OUTCOME_DONE)
-            snprintf(dl.resultText, sizeof dl.resultText, toXmb ? "In the XMB's Video column: \"%s%s\"" : "Downloaded \"%s%s\"",
+            snprintf(dl.resultText, sizeof dl.resultText, toXmb ? tr("In the XMB's Video column: \"%s%s\"") : tr("Downloaded \"%s%s\""),
                      title, more);
          else
-            snprintf(dl.resultText, sizeof dl.resultText, "Download failed at %d%%: \"%s%s\"",
+            snprintf(dl.resultText, sizeof dl.resultText, tr("Download failed at %d%%: \"%s%s\""),
                      dl.percent < 0 ? 0 : dl.percent > 99 ? 99 : dl.percent, title, more);
          dl.resultOk = dl.outcome == OUTCOME_DONE;
          dl.resultSeq++;
@@ -822,7 +823,7 @@ static void formatOverlay(char *out, int cap)
    truncateUtf8(clipped, DISPLAY_TITLE_MAX);
    int truncated = strcmp(clipped, dl.activeTitle) != 0;
 
-   snprintf(out, cap, "Downloading \"%s%s\"", clipped, truncated ? "..." : "");
+   snprintf(out, cap, tr("Downloading \"%s%s\""), clipped, truncated ? "..." : "");
 }
 
 void updateDownloadOverlay(void)
@@ -837,7 +838,7 @@ void updateDownloadOverlay(void)
       resultShownUs = 0;
    }
    if (!dl.initialized || !dl.active) return;
-   char text[128];
+   char text[320];
    formatOverlay(text, sizeof text);
    // a video title: drawn raw, and all of it in FONT_POP when Manrope lacks one of its characters. It only
    // rasterises when the title changes, the "(+N)" when the count does, and the percent never (its digits

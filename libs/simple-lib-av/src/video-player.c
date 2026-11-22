@@ -11,6 +11,7 @@
 #include "decode-h264.h"
 #include "decode-aac.h"
 #include "tee_vp9/tee_vp9.h"   // TEE's VP9 decoder on the SPEs (vendored unchanged, see tee_vp9.sha256)
+#include "tee_vp9/rsx_mc.h"    // (V3.1.0 Test 4) its RSX part: rsx_mc_drop_prealloc, rsx_mc_test_inject
 #include "../tee_opus/tee_opus.h"   // TEE's Opus decoder on the PPU: VP9's sound (vendored unchanged)
 #include "audio.h"
 #include "thread.h"
@@ -42,6 +43,10 @@ typedef struct {
    int      state;
    tvp9_picture vp9;    // VP9: the decoder's picture this slot shows, drawn from the decoder's own memory
    int      hasVp9;     // vp9 holds a picture that goes back to the decoder when the slot is done with
+   // (V3.1.0 Test 3) the flip of the last frame that drew it (getVideoFrameLayout): RETIRING goes once that flip happened
+   uint32_t drawnFlip;
+   int      drawn;
+   uint64_t retiringUs; // when it left the screen (a flip that never comes holds it no longer than RETIRE_FENCE_MAX_US)
 } FrameSlot;
 
 // VP9 (TEE VP9 building block): the slots hold the decoder's pictures, not copies of them. A held picture keeps
@@ -62,15 +67,113 @@ typedef struct {
 #define VP9_BEHIND_NS      150000000ll      // the safety net: the picture this far behind its sound ...
 #define VP9_BEHIND_US      1000000ull       // ... for this long - or two holds of the sound within VP9_HOLDS_US
 #define VP9_HOLDS_US       6000000ull
+// (V3.1.0 Test 5) ... or a second in which a tenth of the pictures due did not come on screen (VP9_SHORT_MIN at the least)
+// - left out by TEE VP9, dropped as late, missing at their present or passed over by display sync -, VP9_DROP_SECONDS
+// seconds in a row. By the video's own rate, so 30 fps the same as 60: until Test 4 it was 8 a second dropped as late or
+// missing, a 60 fps rule that at 30 fps waited for 8 of 30 - and the frames TEE VP9 left out it did not count at all
+// (TEE, 2026-11-21: a 4K30 video at barely 25 fps went down far too late)
+#define VP9_SHORT_MIN      2
+#define VP9_DROP_SECONDS   2
+#define VP9_SETTLE_NS      2000000000ull    // ... though not this soon after a change of stream (until Test 4: 6 s) - TEE VP9
+                                            //   0.3.x takes a new size in about 5 frames of decoding time (tee_vp9.h)
+#define VP9_DROP_IGNORE    2                // ... nor in the first seconds after a seek
+// (V3.1.0 Test 9) the start probe: 1440p beside 1080p, the picture waits after a start or a seek until TEE VP9 has decoded
+// VP9_PROBE_FRAMES frames there (at most VP9_PROBE_MAX_US); below VP9_PROBE_SHARE of the video's rate while busy, this
+// stream is too heavy here, and the video starts in 1080p from the same key frame - before a picture of 1440p is shown.
+// From TEE's console (Test 8, after 8 frames, the key frame among them): starts that held 50.6 - 54.9 pictures/s while
+// busy at 60 fps, starts that did not 41.6 - 44.1 (nNBsYTzPxbc at 1:00 then 24 - 40 of 60 for 5 s until the safety net's
+// 1080p). Not for 4K: after 8, 16 or 32 frames the 4K30 starts that held (23.5 - 30.9) and the one that did not (30.2 -
+// 31.6) were alike - 4K goes by T_down, the safety net behind it
+// (Test 11) By the decoder's own capacity, not its rate while busy: that rate swung with how the first blocks came in -
+// the same two starts that held at 53.5 - 58.0 in Tests 8 / 9 measured 43.6 - 44.7 in Test 10 and went 1080p for
+// nothing. The time a frame took on the entropy SPEs and on the pixel SPEs does not depend on that: the capacity is the
+// slower stage's rate - 1000 / entropy ms, pixel SPEs x 1000 / pixel ms. Test 8, after 8 frames: the starts that held
+// 68.5 - 78.6 a second, the ones that did not 43.4 - 53.6; Test 9 (11 - 12 frames) the ones that held 68.9 - 81.4.
+// (Test 12) Test 11: held 68.0 - 78.9, did not 43.7 - 58.1 (nNBsYTzPxbc: 53.6 in Test 8). The line between them, 1.05 times
+// the video's rate (63 at 60 fps) - a stream decodes at about 0.87 of its capacity, so one below that does not hold there
+#define VP9_PROBE_FRAMES   8
+#define VP9_PROBE_SHARE    1.05
+#define VP9_PROBE_MAX_US   1500000ull
+#define AV_HOLD_CATCHUP_NS 1500000000ll     // (V3.0.4) while 1080p is on its way: the sound waits only this far behind
+#define VP9_CATCHUP_US     20000000ull      // ... for this long at most
+// (V3.0.4 Test 2) TEE VP9 stops on a key frame whose records - the entropy stage's output, about 7 times the block -
+// outgrow its 5 MB buffer: LHGughAkidk's at 5.5 s (933 KB, records 6.8 MB) and 55 s (748 KB, 5.3 MB) in 2560x1350.
+// A 1440p key frame larger than this goes in 1080p (vp9ConsiderChange), from the 1080p key frame at the same time.
+// For scale: the largest of LXb3EKWsInQ's are 499 KB, of the Elden Ring DLC's (tqE50cUXGCs) 748, 662 and 640 KB.
+#define VP9_KEY_FRAME_BYTES (600u << 10)
+#define VP9_KEY_FRAME_MIN   (256u << 10)    // ... a stop on a smaller one lowers the limit, to no less than this
+#define VP9_KEYS_KEPT       8               // ... the last 1440p key frames fed: the one a stop came on
+#define VP9_RESTARTS        3               // ... a player opens TEE VP9 anew after a stop at most this often
+#define VP9_SAME_TIME_NS    8000000ull      // (Test 3) ... two key frames this close are at the same time (half a frame)
+
+// (V3.1.0) 4K - YouTube's 2160p VP9 at 24 / 25 / 30 fps (itag 313) - on TEE VP9 0.3.2, the SPEs alone, with the
+// video's 1440p VP9 stream beside it for the busy stretches the way 1080p is beside 1440p. The VP9 project measured
+// (0.3.1, SPEs alone, 7 pictures, 4 tasks): a London rain walk at 18 Mbit/s 33.8 pictures a second, Costa Rica at 25
+// Mbit/s 31.3, a forest in wind at 22 Mbit/s 25.5, fireworks at 44 Mbit/s 14.6 - an ordinary 4K30 video holds, a
+// heavy one does not. A 60 fps video has no 4K30 stream (its 4K is 60 fps: 315), so it never comes here.
+#define VP9_4K_ROWS         1472            // a stream taller (or wider than 2560) is 4K: the decoder is opened for its size
+// (V3.1.0 Test 6) T_down / T_up for 4K on the SPEs alone, from TEE's console: at ~17.5 Mbit/s 4K30 does not hold - a
+// Norway film (KLuTLF3x9sA / sTsjt8J4OmA, 17.6 Mbit/s) 23 of 30 pictures a second (the decoder 29.5 a second while busy, its
+// pixel stage the limit), London (Ueqm3PQKYPk, 17.4 - 17.9) the sound waiting at 137 s. Until Test 5 20 / 16 Mbit/s, the VP9
+// project's estimate - such a video started in 4K, and its safety net could go down only at 1440p's next key frame (6 s
+// on in the Norway film: 5.4 s more at 23 pictures a second). A passage the next 10 s of which are this busy starts in 1440p
+#define VP9_DOWN_BPS_4K     16000000.0
+#define VP9_UP_BPS_4K       13000000.0
+#define VP9_KEY_FRAME_BYTES_4K (1200u << 10)   // a 4K key frame above this goes in 1440p: 0.3.x gives each of the two
+                                            //   entropy SPEs 5 MB of a 4K frame's records (about 7 times the block)
+// (V3.1.0 Test 5) 4K beside 1440p: the feeder keeps no more than this ahead of the clock once the picture runs. 4K's 10 MB of
+// input held ~6 s of a 17 Mbit/s stream: on TEE's console (2026-11-21) the safety net spoke 2.7 s into a 4K30 video the
+// decoder kept at 25 fps, and 1440p reached the screen 7.4 s after that - every 4K picture already fed came first.
+// (Test 7) 1440p beside 1080p the same: at LXb3EKWsInQ's busy scene (Test 6) the feeder stood 4 s ahead when the safety net
+// spoke at 22 s, and 1080p came at 27.3 s
+#define VP9_AHEAD_NS     2000000000ll
+#define VP9_SLOTS_4K        3               // the ring at 4K: one ready picture beside the two on screen - every buffer
+                                            //   is 13.5 MB, and each one the ring holds the decoder has not
+// (V3.1.0) TEE VP9 0.3.2 leaves out the shown frames no other frame refers to when they would come too late:
+// tvp9_skip_before(clock + this), the VP9 project's measured margin (+ 0 ms leaves almost nothing out in time - the
+// decision falls a few frames ahead -, + 200 ms leaves out more without being better)
+#define VP9_SKIP_LEAD_NS    100000000ll
 
 // (Test 2) what the decoder is opened with, the first that fits: picture buffers (its default 10 + 2 for the ring
 // above, 6.5 MB each at 1440p) and how much input it may hold before it says "full". YouTube's 1440p60 averages
 // about 10 Mbit/s but runs at 27 - 37 Mbit/s for half a minute in a busy scene (Elden Ring DLC at 17:11, Test 1):
 // more than the PS3 downloads. The input is the cushion that rides such a stretch out: 20 MB is its queue of
 // 256 frames (about 4 s) at the peak rate, the module's default 6 MB a little over 1 s of it.
-static const struct { int pictures; uint32_t inputMb; } VP9_SETUPS[] = { { 12, 20 }, { 10, 20 }, { 10, 6 } };
+// (V3.1.0 Test 4) and the sizes of its pools of records in MB (0: the decoder's own)
+typedef struct { int pictures, tasks; uint32_t inputMb, entropyPoolMb, recordsPoolMb; } Vp9Setup;   // tasks 0: the decoder's own (5)
+static const Vp9Setup VP9_SETUPS[] = { { 12, 0, 20, 0, 0 }, { 10, 0, 20, 0, 0 }, { 10, 0, 6, 0, 0 } };
+// (V3.1.0) 4K, with the decoder's tasks (frames in its pixel stage, their records in its pool): 8 pictures of 13.5 MB
+// and 10 MB of input are 159 MB - about what 1440p's first setup takes (154 MB; 18 MB stayed free beside it on TEE's
+// console, Test 3) -, then the VP9 project's measured ones (7 pictures and 4 tasks 142 MB, 6 and 3 126 MB with 6 MB)
+static const Vp9Setup VP9_SETUPS_4K[] = { { 8, 4, 10, 0, 0 }, { 7, 4, 10, 0, 0 }, { 7, 4, 6, 0, 0 }, { 6, 3, 6, 0, 0 } };
+// (V3.1.0 Test 4) with the RSX part (vp9-rsx=): it takes 20 - 29 MB beside the decoder's own (prediction surfaces in
+// tvp9_open; at the first key frame a 3 MB vertex ring and 1 MB of rows a slot), so less input and a picture less. 1440p
+// (MB = 2^20, from tee_vp9.c's and rsx_mc.c's sizes): 11 pictures and 8 MB of input 158 MB in all, 10 and 8 MB 152, 10 and
+// 6 MB 150 - the VP9 project's measured one; the first setup above would need 177. 4K: 7 pictures, 3 tasks, 3 MB of input and
+// pools of 6 / 12 MB 156 MB (not measured), then the VP9 project's recommendation, 6 pictures and 3 tasks (152 MB)
+static const Vp9Setup VP9_SETUPS_RSX[] = { { 11, 0, 8, 0, 0 }, { 10, 0, 8, 0, 0 }, { 10, 0, 6, 0, 0 } };
+static const Vp9Setup VP9_SETUPS_4K_RSX[] = { { 7, 3, 3, 6, 12 }, { 6, 3, 3, 0, 0 } };
 
 static int vp9Spes = 6;           // see setVideoVp9Spes
+// (V3.1.0 Test 3) the display's counters (setVideoDisplayHooks) and the switches of display-sync= and vp9-release=
+static VideoDisplayHooks displayHooks;
+static int haveDisplayHooks;
+static int syncByFlips = 1;
+static int releaseEarly = 1;
+#define RETIRE_FENCE_MAX_US 250000ull   // a flip that has not happened by then (the flip handler stopped?) holds no picture
+// (V3.1.0 Test 4) TEE VP9's RSX part (setVideoVp9Rsx). Its state in the block is file-static (rsx_mc.c), so at most one
+// decoder has it at a time, and a player left behind turns it off for the run
+static int vp9RsxMode;                     // 0 off, 1 up to 1440p, 2 4K too
+static const char *vp9RsxTest = "";        // settings.txt rsx-test=
+static volatile int vp9RsxSessionOff;      // off for the rest of the run (disableVp9RsxForSession)
+static volatile int vp9RsxLive;            // decoders open with rsx = 1
+static int vp9RsxRingTaken;                // an RSX part started once: the block keeps its 3 MB vertex ring from here on
+#define VP9_RSX_TRUST_PICTURES 30          // pictures an rsx = 1 decoder has to get its RSX part going in, else built anew
+#define VP9_RSX_FREE_MB        8           // what has to stay free once the RSX part has what it takes at the first key frame
+#define VP9_RSX_PAUSE_US       2000000     // the screen's pause and the RSX's drain around tvp9_close
+#define VP9_RSX_STALL_ROWS     1500        // rsx-test=stall-3000: the RSX stands still 3 s after this many rows (about 1 s)
+static uint32_t vp9KeyFrameLimit = VP9_KEY_FRAME_BYTES;   // (V3.0.4 Test 2) lowered for the rest of the run by a stop
+static uint32_t vp9KeyFrameLimit4k = VP9_KEY_FRAME_BYTES_4K;   // (V3.1.0) ... the same for 4K's key frames
 
 struct VideoPlayer {
    VideoDemuxer demuxer;
@@ -105,6 +208,8 @@ struct VideoPlayer {
    int              vp9SwitchToLow;   // ... and goes this way
    const char      *vp9SwitchWhy;     // ... for the log
    int              vp9SwitchBps;     // ... the busiest section ahead when it was decided (bits a second)
+   int              vp9SwitchLowReady;   // (V3.1.0 Test 5) ... the safety net's: lowDemuxer stands at that key frame already
+   volatile int     vp9SafetyPlanned;    // ... feeder -> UI: that change is on its way - the safety net says nothing more meanwhile
    uint64_t         vp9NextCueNs;     // feeder: the next 1440p cue at which the rule is looked at again
    uint64_t         vp9LastSwitchNs;  // media time of the last change
    double           vp9DownBps, vp9UpBps;   // T_down / T_up on the SPEs alone, bits a second (the safety net lowers them)
@@ -113,10 +218,37 @@ struct VideoPlayer {
    volatile int     vp9SafetyBps;     // ... the bitrate of the section it fell behind in
    uint64_t         vp9BehindSinceUs; // UI: since when the picture has been more than VP9_BEHIND_NS behind (0 = it is not)
    uint64_t         vp9LastHoldUs;    // UI: when the sound's last hold began (two close together: the safety net)
+   int              vp9DropSeconds;   // (V3.0.4) UI: seconds in a row in which a tenth of the pictures due was missing (Test 5)
+   int              vp9DropIgnore;    // ... stats seconds still to pass over (a seek's)
+   int              vp9CatchingUp;    // (V3.0.4) UI: 1080p is asked for - the sound runs on until the picture caught up
+   uint64_t         vp9CatchingUpUs;  // ... since when
+   struct { uint64_t pts; int size; } vp9Keys[VP9_KEYS_KEPT];   // ... feeder: the last 1440p key frames fed
+   int              vp9KeyCount;      // ... how many (the ring's write count, 0 again at a seek)
+   int64_t          vp9LastPts;       // ... decode thread: the last picture's time (-1: none since the open or a seek)
+   tvp9_config      vp9Config;        // ... what TEE VP9 was opened with: restartVp9OnLow opens it the same way
+   int              vp9Restarts;      // ... how often it was opened anew
    int              vp9RsxOn;         // the decoder's rsx_frames grew: the RSX thresholds apply
    int              vp9RsxFrames;     // ... its value at the last stats line
+   int              vp9FramesAtStats; // (V3.1.0 Test 4) ... and the frames' (rsx_frames stood still while they grew: given up)
+   int              vp9ProbeStage;    // (V3.1.0 Test 8) decode thread: the start probe's lines logged since the open or a seek
+   volatile int     vp9ProbeHold;     // (V3.1.0 Test 9) UI: the pre-roll waits for the start probe (decode thread arms it)
+   uint64_t         vp9ProbeSinceUs;  // ... UI: since when it waits (0: not yet)
+   uint64_t         vp9ProbeAtNs;     // ... the key frame the upper stream started from (the start, a seek's landing)
+   volatile int     vp9ProbeForceLow; // ... UI -> decode thread: too heavy there - the seek it posts lands on the lower stream
+   int              vp9Rsx;           // ... TEE VP9 is open with its RSX part (rsx = 1)
+   int              vp9MemoryAppMapped;   // ... vp9Memory came from the UI's allocator (freeFrame); rsx = 1: memalign, free()
+   volatile int     vp9RsxTrusted;    // ... its RSX part predicts and the block has mapped the pictures: they are drawn
+   int              vp9RsxUntrusted;  // ... pictures before that (VP9_RSX_TRUST_PICTURES: the player fails, built anew)
+   int              vp9RsxShown;      // ... pictures since (rsx-test=brake-after-30)
+   int              vp9RsxMemLogged;  // ... the memory line after its first picture
+   volatile int     failedOnRsx;      // ... the player failed because its RSX part did not start (didVideoPlayerFailOnRsx)
+   int              vp9Is4k;          // (V3.1.0) the main stream is 4K: its thresholds, key-frame limit and ring
+   int              vp9Slots;         // ... the slots the ring may fill (VP9_SLOTS, VP9_SLOTS_4K)
+   const char      *vp9HighName, *vp9LowName;   // ... "1440p" and "1080p", or "2160p" and "1440p" (the log's words)
    uint64_t     vp9StatsUs;       // when the decoder's numbers last went to the log
+   uint64_t     vp9CountersUs;    // (V3.1.0 Test 3) ... and into totals
    uint64_t     vp9FirstPts;      // the rate measurement for a WebM without a frame duration
+   int          vp9FirstIndex;    // ... and its picture number: (V3.1.0) a frame left out has a number too
    int          vp9RatePictures;
 
    VideoAu      pendingAu;        // demuxed AU not yet accepted by the decoder (queues were full)
@@ -130,6 +262,7 @@ struct VideoPlayer {
    volatile int     running;      // decode thread runs while set
    volatile int     decodeExited; // the decode thread has left (destroyVideoPlayer waits for this, bounded)
    volatile int     ended;        // demux hit end of stream
+   volatile int     failed;       // (V3.0.4) ... or the decoder stopped with an error (hasVideoPlayerFailed)
 
    // audio pipeline (absent for files without an AAC track: video plays silent)
    AacDecoder      *aacDecoder;
@@ -174,7 +307,10 @@ struct VideoPlayer {
    // presentation statistics (getVideoFrame, under lock): a line goes to the log for every second in which a
    // picture was dropped as late or none was ready - the stutter a viewer sees, with what was behind it
    uint64_t statsSecondUs;
+   uint64_t statsClockNs;       // (V3.1.0 Test 5) the clock when the second began: the pictures due in it
    int      statsShown, statsLate, statsRepeats, statsStarved, statsReadyMin;
+   int      statsMissed;        // (V3.1.0 Test 3) presents with none ready at which a picture was due (statsStarved counts
+                                //   those at which none was due too: half of them at 30 fps on a 60 Hz screen)
 
    // display sync (see pickSyncedFrame): a video whose frame rate matches the screen's (60 fps on 59.94 Hz, 30 on
    // 59.94 at two vblanks a picture) shows exactly one picture per vblank, and the sound's tempo is steered by a
@@ -186,6 +322,10 @@ struct VideoPlayer {
    uint64_t syncLastUs;         // when the last present ran
    int      syncVblanks;        // vblanks counted toward the next picture
    int      syncSpeedSet;       // the sound's tempo is not 1.0 at the moment
+   uint32_t syncLastMissed;     // (V3.1.0 Test 3) the display's missed-vblank count at the last present (display-sync=flips)
+   uint64_t syncAtPts;          // ... where display sync's timeline stands: the picture on screen, or past it by the frames
+                                //     TEE VP9 left out (their vblanks repeat the picture before them)
+   VideoPlayerCounters totals;  // (V3.1.0 Test 3) what the player has done, for the bench (getVideoPlayerCounters)
    // (V3.0.0) VP9: the sound waits for the picture. Its Opus track is a stream of its own, a few KB a second, so a
    // picture short of input (or of decoding time) fell behind a sound that ran on - up to 0.7 s in the hardest
    // minutes of a 1440p60 stream (TEE, 2026-11-12). Past AV_HOLD_ENGAGE_NS behind, the sound pauses (clock frozen)
@@ -201,6 +341,7 @@ static void audioDecodeThread(uint64_t arg);
 static void opusAudioThread(uint64_t arg);   // (V3.0.0) the Opus one, beside it below
 static void setUpDisplaySync(VideoPlayer *player);   // a VP9 stream whose rate the decode thread measured
 static void postSeek(VideoPlayer *player, float seconds, int landAfter);   // (Test 12) the VP9 feeder's retry
+static void postSeekNs(VideoPlayer *player, int64_t targetNs, int landAfter);   // (V3.1.0 Test 9) the start probe's
 
 // how far the freshly decoded picture may fall behind the clock before the decoder is allowed to
 // drop non-reference B pictures, and where it stops again. Hysteresis so it cannot flap per frame.
@@ -287,6 +428,35 @@ static void retireSlot(VideoPlayer *player, int i)
    player->slots[i].state = player->slots[i].hasVp9 ? SLOT_RELEASE : SLOT_EMPTY;
 }
 
+// (V3.1.0 Test 3) rule 5 of TEE VP9's RSX part, for every picture: a slot that left the screen goes once the flip of the
+// last frame that drew it has happened - the RSX has read it by then (it draws in the order of the command stream, and
+// that flip comes after the draw). Until V3.1.0 Test 2 a slot left at the second present with a new picture: at 30 fps on
+// a 60 Hz screen a picture 4K's ring of three needs back stayed a whole present longer than it had to (caller holds
+// player->lock)
+static int slotFlipDone(const VideoPlayer *player, const FrameSlot *slot, uint64_t nowUs)
+{
+   if (!haveDisplayHooks || !slot->drawn) return 1;
+   if ((int32_t)(displayHooks.flipsDone() - slot->drawnFlip) >= 0) return 1;
+   // (V3.1.0 Test 4) never for a picture of a decoder with its RSX part: rule 5 is the block's, and with the command buffer
+   // shared a draw may still wait in it when the flips stall (the display brakes after 2 s - and then the pictures wait)
+   return !player->vp9Rsx && nowUs - slot->retiringUs > RETIRE_FENCE_MAX_US;
+}
+
+// at every present, not only at one with a new picture (vp9-release=early)
+static void retireFlippedSlots(VideoPlayer *player, uint64_t nowUs)
+{
+   for (int i = 0; i < FRAME_SLOTS; i++)
+      if (player->slots[i].state == SLOT_RETIRING && slotFlipDone(player, &player->slots[i], nowUs)) retireSlot(player, i);
+}
+
+// (V3.1.0 Test 4) a picture of a decoder with the RSX part goes back only after the flip of its last draw, whatever
+// vp9-release says: with the RSX shared there is no wait for the flip in the command stream, and the RSX may still read the
+// picture as a texture until that flip (rule 5)
+static int releaseByFlip(const VideoPlayer *player)
+{
+   return releaseEarly || player->vp9Rsx;
+}
+
 // what a slot shows: its YUV buffer, or a VP9 picture's luma (non-NULL is all getVideoFrame's callers ask)
 static const uint8_t *slotPicture(const FrameSlot *slot)
 {
@@ -302,10 +472,10 @@ static int claimEmptySlot(VideoPlayer *player)
       releaseVp9Slots(player);
       int inUse = 0;
       for (int i = 0; i < FRAME_SLOTS; i++) if (player->slots[i].state != SLOT_EMPTY) inUse++;
-      if (inUse >= VP9_SLOTS) { unlock(&player->lock); return -1; }
+      if (inUse >= player->vp9Slots) { unlock(&player->lock); return -1; }   // (V3.1.0) 4K's ring is shorter
    }
    for (int i = 0; i < FRAME_SLOTS; i++)
-      if (player->slots[i].state == SLOT_EMPTY) { player->slots[i].state = SLOT_FILLING; found = i; break; }
+      if (player->slots[i].state == SLOT_EMPTY) { player->slots[i].state = SLOT_FILLING; player->slots[i].drawn = 0; found = i; break; }
    unlock(&player->lock);
    return found;
 }
@@ -356,14 +526,40 @@ static double vp9PeakAhead(const MkvDemuxer *mkv, uint64_t from)
    return peak;
 }
 
+// (V3.1.0) the key-frame limit of the player's main stream: 1440p's or 4K's (each lowered by a stop on its own)
+static uint32_t *vp9KeyLimit(const VideoPlayer *player)
+{
+   return player->vp9Is4k ? &vp9KeyFrameLimit4k : &vp9KeyFrameLimit;
+}
+
+// (V3.1.0 Test 4) the RSX's thresholds are 1440p's: 4K keeps those of the SPEs alone until it is measured with the RSX
+static int vp9RsxThresholds(const VideoPlayer *player)
+{
+   return player->vp9RsxOn && !player->vp9Lowered && !player->vp9Is4k;
+}
+
 static void vp9Thresholds(const VideoPlayer *player, double *down, double *up)
 {
-   if (player->vp9RsxOn && !player->vp9Lowered) { *down = VP9_DOWN_BPS_RSX; *up = VP9_UP_BPS_RSX; }
-   else                                          { *down = player->vp9DownBps; *up = player->vp9UpBps; }
+   if (vp9RsxThresholds(player)) { *down = VP9_DOWN_BPS_RSX; *up = VP9_UP_BPS_RSX; }
+   else                          { *down = player->vp9DownBps; *up = player->vp9UpBps; }
 }
 
 // Mbit/s with one decimal, as two ints for the log (its printf has no floating point)
 #define VP9_MBIT(bps) (int)((double)(bps) / 1000000.0), (int)((double)(bps) / 100000.0) % 10
+
+// the safety net's word (feeder): T_down for the rest of the video at 90 % of the bitrate of the section the upper stream
+// fell behind in, T_up below it - so the video goes up again only where it is clearly lighter
+static void vp9LowerForSafety(VideoPlayer *player)
+{
+   double down, up;
+   vp9Thresholds(player, &down, &up);
+   double lowered = 0.9 * (double)player->vp9SafetyBps;
+   if (lowered > 2000000.0 && lowered < down) {
+      player->vp9DownBps = lowered;
+      if (player->vp9UpBps >= lowered) player->vp9UpBps = 0.8 * lowered;
+      player->vp9Lowered = 1;
+   }
+}
 
 // the feeder, for each block it read: is a change due here? The rule is looked at once a 1440p section (a cue,
 // every ~3 s): down to 1080p when a section of the next 10 s is busier than T_down - or the safety net asked - and up
@@ -376,6 +572,70 @@ static int vp9ConsiderChange(VideoPlayer *player, const VideoAu *au)
    if (!player->hasLowDemuxer) return 0;
    const MkvDemuxer *high = &player->demuxer.container.mkv;
    uint64_t pts = au->pts;
+   // (V3.0.4 Test 2) a 1440p key frame too big for TEE VP9 (vp9KeyFrameLimit) never reaches it: 1080p from its key
+   // frame at the same time, as seamless as a change for the bitrate - the stop it would have been is not a change
+   // the player can make without a break (Test 1 built it anew in 1080p60 H.264 for the rest of the video; TEE: "warum
+   // nicht so hybrid wie wir es bisher haben?"). The rule below takes it back up when the next 10 s allow - unless the
+   // key frame there is too big as well, which sends it straight back here. Before a change planned for later, too.
+   // (Test 3) Test 2 looked for that 1080p key frame among the cues only, and dropped 1440p up to the next one when
+   // the key frame was not cued: YouTube cues every ~5.5 s but starts a cluster - on a key frame - every 0.03 - 7 s.
+   // On LHGughAkidk 1440p's 681 KB key frame at 17.2 s starts such a cluster: 1440p dropped up to 1080p's cue at 22 s,
+   // the picture held 4.8 s (TEE: "gefreezed auf 0 fps"), and again after a seek back. Now the change goes to 1080p's
+   // cluster at that time, cued or not, and at once: each of the 1440p key frames above 500 KB of LHGughAkidk (9),
+   // LXb3EKWsInQ (0) and the Elden Ring DLC (9 in its first 25 minutes) has a 1080p key frame at the same time.
+   // (V3.1.0) 4K's key frames by 4K's limit, 1440p from its key frame at the same time
+   uint32_t keyLimit = *vp9KeyLimit(player);
+   if (!player->vp9OnLow && au->keyframe && (uint32_t)au->size > keyLimit) {
+      uint64_t from = pts > VP9_SAME_TIME_NS ? pts - VP9_SAME_TIME_NS : 0;
+      uint64_t lowAt = seekMkvDemuxerToCluster(&player->lowDemuxer.container.mkv, from);
+      if (lowAt != MKV_NO_CLUSTER) {
+         player->vp9OnLow = 1;
+         player->totals.toLow++;   // (V3.1.0 Test 3)
+         player->vp9LastSwitchNs = lowAt;
+         player->vp9SwitchAtNs = -1;          // a change planned for later is this one
+         player->vp9SwitchLowReady = 0;
+         player->vp9SafetyPlanned = 0;
+         player->vp9StartedAtKeyframe = 0;    // the cluster's first block is a key frame - if not, on to the next one
+         if (lowAt <= pts + VP9_SAME_TIME_NS)
+            logInfo("[video-player] VP9 quality: %s -> %s at %d.%03d s (a key frame too big for TEE VP9 in %s: "
+                    "%d KB, the limit %d KB)\n", player->vp9HighName, player->vp9LowName, (int)(pts / 1000000000ull),
+                    (int)(pts / 1000000ull % 1000), player->vp9HighName, au->size >> 10, (int)(keyLimit >> 10));
+         else   // the two streams' key frames apart (none measured so): no picture for the time between
+            logWarn("[video-player] VP9 quality: %s -> %s at %d.%03d s, %d ms after a key frame too big for TEE "
+                    "VP9 in %s (%d KB, the limit %d KB): %s has none at its time - the picture holds meanwhile\n",
+                    player->vp9HighName, player->vp9LowName, (int)(lowAt / 1000000000ull), (int)(lowAt / 1000000ull % 1000),
+                    (int)((lowAt - pts) / 1000000ull), player->vp9HighName, au->size >> 10, (int)(keyLimit >> 10),
+                    player->vp9LowName);
+         return 1;   // this block dropped: the lower stream from its cluster
+      }
+      // no 1080p cluster header could be read: 1440p goes on - should TEE VP9 stop on it, restartVp9OnLow takes over
+   }
+   // (V3.1.0 Test 5) the safety net's word at once: down at the lower stream's first key frame (a cluster) at or after this
+   // block. Until Test 4 it waited for the upper stream's next cue (every ~5.5 s) and went from the lower stream's cue at or
+   // after it - up to 11 s more of the picture behind, on top of the pictures already fed. No cluster header read: the cue
+   // rule below takes the word, as before
+   if (player->vp9SafetyRequest && !player->vp9OnLow && player->vp9SwitchAtNs >= 0 && player->vp9SwitchToLow &&
+       player->vp9SwitchLowReady) {
+      player->vp9SafetyRequest = 0;   // a word while its change is on its way (the UI waits for it, but a word may cross)
+      vp9LowerForSafety(player);
+   } else if (player->vp9SafetyRequest && !player->vp9OnLow) {
+      uint64_t lowAt = seekMkvDemuxerToCluster(&player->lowDemuxer.container.mkv, pts);
+      if (lowAt != MKV_NO_CLUSTER) {
+         player->vp9SafetyRequest = 0;
+         vp9LowerForSafety(player);
+         if (player->vp9SwitchAtNs < 0 || !player->vp9SwitchToLow || lowAt < (uint64_t)player->vp9SwitchAtNs) {
+            player->vp9SwitchAtNs = (int64_t)lowAt;
+            player->vp9SwitchToLow = 1;
+            player->vp9SwitchLowReady = 1;   // the lower demuxer stands at that cluster: the change reads on from there
+            player->vp9SwitchWhy = "safety net: the picture fell behind";
+            player->vp9SwitchBps = player->vp9SafetyBps;
+            player->vp9SafetyPlanned = 1;
+         } else {
+            player->vp9SwitchLowReady = 0;   // a change down planned sooner: it seeks the lower stream itself
+            player->vp9SafetyPlanned = 1;    // ... and is on its way all the same
+         }
+      }
+   }
    if (pts >= player->vp9NextCueNs) {   // a new 1440p section: the rule
       int i = vp9CueAtOrBefore(high, pts);
       uint64_t at = i >= 0 ? high->cues[i].timeNs : 0;
@@ -383,22 +643,17 @@ static int vp9ConsiderChange(VideoPlayer *player, const VideoAu *au)
       double down, up;
       vp9Thresholds(player, &down, &up);
       int safety = player->vp9SafetyRequest;
-      if (safety) {   // T_down for the rest of the video: 90 % of the section 1440p fell behind in
+      if (safety) {   // (the cluster above could not be read)
          player->vp9SafetyRequest = 0;
-         double lowered = 0.9 * (double)player->vp9SafetyBps;
-         if (lowered > 2000000.0 && lowered < down) {
-            player->vp9DownBps = lowered;
-            if (player->vp9UpBps >= lowered) player->vp9UpBps = 0.8 * lowered;
-            player->vp9Lowered = 1;
-            vp9Thresholds(player, &down, &up);
-         }
+         vp9LowerForSafety(player);
+         vp9Thresholds(player, &down, &up);
       }
       double peak = vp9PeakAhead(high, at);
       int wantLow = player->vp9OnLow;
       const char *why = NULL;
       if (!player->vp9OnLow && (safety || peak > down)) {
          wantLow = 1;
-         why = safety ? "safety net: 1440p fell behind" : "cues: a busy section ahead";
+         why = safety ? "safety net: the picture fell behind" : "cues: a busy section ahead";
       } else if (player->vp9OnLow && peak < up && at >= player->vp9LastSwitchNs + VP9_STAY_NS) {
          wantLow = 0;
          why = "cues: the next 10 s are light";
@@ -421,16 +676,23 @@ static int vp9ConsiderChange(VideoPlayer *player, const VideoAu *au)
    // the change: the other stream from its key frame at vp9SwitchAtNs
    uint64_t at = (uint64_t)player->vp9SwitchAtNs;
    int toLow = player->vp9SwitchToLow;
+   int ready = toLow && player->vp9SwitchLowReady;   // (V3.1.0 Test 5) the safety net's: the lower demuxer stands there already
    player->vp9SwitchAtNs = -1;
-   uint64_t landed = seekVideoDemuxer(toLow ? &player->lowDemuxer : &player->demuxer, at, 0);
+   player->vp9SwitchLowReady = 0;
+   uint64_t landed = ready ? at : seekVideoDemuxer(toLow ? &player->lowDemuxer : &player->demuxer, at, 0);
+   if (ready) player->vp9StartedAtKeyframe = 0;   // a cluster begins on a key frame - if not, on to the next one
    player->vp9OnLow = toLow;
+   __sync_synchronize();
+   player->vp9SafetyPlanned = 0;   // (after vp9OnLow: the UI never sees neither)
+   if (toLow) player->totals.toLow++; else player->totals.toHigh++;   // (V3.1.0 Test 3)
    player->vp9LastSwitchNs = landed;
    double down, up;
    vp9Thresholds(player, &down, &up);
-   logInfo("[video-player] VP9 quality: %s at %d.%03d s (%s, %d.%d Mbit/s; T_down %d.%d, T_up %d.%d Mbit/s%s)\n",
-           toLow ? "1440p -> 1080p" : "1080p -> 1440p", (int)(landed / 1000000000ull), (int)(landed / 1000000ull % 1000),
+   logInfo("[video-player] VP9 quality: %s -> %s at %d.%03d s (%s, %d.%d Mbit/s; T_down %d.%d, T_up %d.%d Mbit/s%s)\n",
+           toLow ? player->vp9HighName : player->vp9LowName, toLow ? player->vp9LowName : player->vp9HighName,
+           (int)(landed / 1000000000ull), (int)(landed / 1000000ull % 1000),
            player->vp9SwitchWhy, VP9_MBIT(player->vp9SwitchBps), VP9_MBIT(down), VP9_MBIT(up),
-           player->vp9RsxOn && !player->vp9Lowered ? ", the RSX's" : player->vp9Lowered ? ", lowered" : "");
+           vp9RsxThresholds(player) ? ", the RSX's" : player->vp9Lowered ? ", lowered" : "");
    return 1;
 }
 
@@ -442,13 +704,22 @@ static uint64_t vp9SeekTrack(VideoPlayer *player, uint64_t targetNs, int landAft
    double down, up;
    vp9Thresholds(player, &down, &up);
    double peak = vp9PeakAhead(high, targetNs);
-   int toLow = player->vp9OnLow ? !(peak < up) : peak > down;
+   int probe = player->vp9ProbeForceLow;   // (V3.1.0 Test 9) the start probe found the upper stream too heavy here
+   int toLow = probe ? 1 : player->vp9OnLow ? !(peak < up) : peak > down;
    player->vp9SwitchAtNs = -1;
+   player->vp9SwitchLowReady = 0;
+   player->vp9SafetyPlanned = 0;
    player->vp9NextCueNs = 0;   // the rule looks again at the first block
-   uint64_t landed = seekVideoDemuxer(toLow ? &player->lowDemuxer : &player->demuxer, targetNs, landAfter);
+   uint64_t landed = MKV_NO_CLUSTER;
+   // (V3.1.0 Test 10) the start probe's seek: the same key frame as the upper stream's landing - the lower stream's cluster at
+   // or after it, cued or not. A WebM seek lands on a cue at or before the target (landAfter is mp4's): in Test 9 that was
+   // 6 s back on 1080p (nNBsYTzPxbc 59 -> 53 s, DJbxiP6hDMs 96 -> 90 s), the video played those seconds again
+   if (probe) landed = seekMkvDemuxerToCluster(&player->lowDemuxer.container.mkv, targetNs);
+   if (landed == MKV_NO_CLUSTER) landed = seekVideoDemuxer(toLow ? &player->lowDemuxer : &player->demuxer, targetNs, landAfter);
    if (toLow != player->vp9OnLow) {
-      logInfo("[video-player] VP9 quality: %s at the seek to %d s (%d.%d Mbit/s ahead)\n",
-              toLow ? "1440p -> 1080p" : "1080p -> 1440p", (int)(landed / 1000000000ull), VP9_MBIT(peak));
+      logInfo("[video-player] VP9 quality: %s -> %s at the seek to %d s (%d.%d Mbit/s ahead%s)\n",
+              toLow ? player->vp9HighName : player->vp9LowName, toLow ? player->vp9LowName : player->vp9HighName,
+              (int)(landed / 1000000000ull), VP9_MBIT(peak), probe ? "; the start probe" : "");
       player->vp9OnLow = toLow;
       player->vp9LastSwitchNs = landed;
    }
@@ -470,9 +741,31 @@ static int feedVp9(VideoPlayer *player, int *startedAtKeyframe)
          if (vp9ConsiderChange(player, &player->pendingAu)) continue;   // (Test 14) dropped: the other stream from here
          player->hasPendingAu = 1;
       }
+      // (V3.1.0 Test 5) 4K beside 1440p, the picture running: the block waits while it lies more than VP9_AHEAD_NS ahead
+      // of the clock - so a change down reaches the screen within that and the lower stream's next key frame. (Test 7) 1440p
+      // beside 1080p too
+      if (player->hasLowDemuxer && !player->vp9OnLow && player->started && !player->paused) {
+         uint64_t clock = presentationClockNs(player, sys_time_get_system_time());
+         if ((int64_t)player->pendingAu.pts > (int64_t)clock + VP9_AHEAD_NS) break;   // (fed later: hasPendingAu stays)
+      }
       int result = tvp9_feed(player->vp9, player->pendingAu.data, (size_t)player->pendingAu.size, (int64_t)player->pendingAu.pts);
       if (result == 0) break;            // the decoder has enough: retry this block later
-      if (result < 0) logWarn("[video-player] the VP9 decoder refused a block of %d bytes\n", player->pendingAu.size);
+      if (result < 0) {
+         // (V3.0.4) a decoder that stopped refuses every block: 12870 lines of it in one log (TEE, 2026-11-14). Fed no
+         // more until a seek starts it over (it clears vp9FeedError).
+         if (tvp9_error(player->vp9)) {
+            logWarn("[video-player] TEE VP9 stopped: no more blocks fed until a seek\n");
+            player->hasPendingAu = 0;
+            player->vp9FeedError = 1;
+            return fed;
+         }
+         logWarn("[video-player] the VP9 decoder refused a block of %d bytes\n", player->pendingAu.size);
+      }
+      if (result > 0 && player->pendingAu.keyframe && !player->vp9OnLow) {   // (V3.0.4 Test 2) for restartVp9OnLow
+         int at = player->vp9KeyCount++ % VP9_KEYS_KEPT;
+         player->vp9Keys[at].pts = player->pendingAu.pts;
+         player->vp9Keys[at].size = player->pendingAu.size;
+      }
       player->hasPendingAu = 0;
       player->vp9Fed++;
       fed++;
@@ -488,7 +781,8 @@ static void vp9FeedThread(uint64_t arg)
    while (player->running) {
       if (player->vp9FeedPause) { player->vp9FeedParked = 1; __sync_synchronize(); sleepMs(1); continue; }
       player->vp9FeedParked = 0;
-      if (player->inputEnded || player->vp9FeedError || player->seekRequestNs >= 0) { sleepMs(2); continue; }
+      // (V3.0.4 Test 2) no decoder: it did not open again after a stop (restartVp9OnLow) - the app builds the player anew
+      if (player->inputEnded || player->vp9FeedError || player->seekRequestNs >= 0 || !player->vp9) { sleepMs(2); continue; }
       int fed = feedVp9(player, &player->vp9StartedAtKeyframe);
       if (fed < 0) {
          if (player->running && player->seekRequestNs < 0) {
@@ -513,6 +807,17 @@ static void vp9FeedThread(uint64_t arg)
    exitThread();
 }
 
+// (V3.1.0) tells TEE VP9 0.3.2 where the clock stands, so it leaves out the frames no other one refers to that would
+// come too late (tvp9_skip_before). Decode thread only: restartVp9OnLow closes and opens the decoder on it, so the
+// handle is never one being closed. Nothing is left out before the picture runs (a pre-roll, a seek's) or while paused.
+static void vp9SkipLate(VideoPlayer *player)
+{
+   if (!player->vp9) return;
+   if (!player->started || player->paused || player->seekRequestNs >= 0) { tvp9_skip_before(player->vp9, INT64_MIN); return; }
+   uint64_t clock = presentationClockNs(player, sys_time_get_system_time());
+   tvp9_skip_before(player->vp9, (int64_t)clock + VP9_SKIP_LEAD_NS);
+}
+
 // VP9: the next picture into *pic (decode thread; the feeder fills the decoder meanwhile). 1 with a picture, 0 at the
 // end of the stream, -1 on an error. Waiting on a slow network is no error as long as blocks keep coming in.
 static int decodeNextVp9(VideoPlayer *player, tvp9_picture *pic)
@@ -520,6 +825,7 @@ static int decodeNextVp9(VideoPlayer *player, tvp9_picture *pic)
    int stalledMs = 0;
    uint32_t fedSeen = player->vp9Fed;
    while (stalledMs < VP9_STALL_MS && player->running && player->seekRequestNs < 0) {
+      vp9SkipLate(player);   // (V3.1.0) the clock as it moves, while it waits too
       int got = tvp9_get_picture(player->vp9, pic);
       if (got == 1) return 1;
       if (got < 0) {
@@ -530,6 +836,13 @@ static int decodeNextVp9(VideoPlayer *player, tvp9_picture *pic)
       }
       if (player->vp9FeedError) return -1;
       if (player->vp9Fed != fedSeen) { fedSeen = player->vp9Fed; stalledMs = 0; }
+      // (V3.1.0 Test 3) a picture the screen let go of goes back while the decoder waits - it may be the buffer the next
+      // picture needs (until Test 2 only claimEmptySlot handed them back, after the next picture had come out)
+      if (releaseByFlip(player)) {
+         int any = 0;
+         for (int i = 0; i < FRAME_SLOTS; i++) if (player->slots[i].state == SLOT_RELEASE) any = 1;
+         if (any) { lock(&player->lock); releaseVp9Slots(player); unlock(&player->lock); }
+      }
       sleepMs(1); stalledMs++;
    }
    if (player->running && player->seekRequestNs < 0 && stalledMs >= VP9_STALL_MS) {
@@ -540,11 +853,87 @@ static int decodeNextVp9(VideoPlayer *player, tvp9_picture *pic)
    return 0;
 }
 
+// (V3.1.0 Test 4) TEE VP9's RSX part off for the rest of the run: later players open the decoder without it
+static void disableVp9RsxForSession(const char *why)
+{
+   if (vp9RsxSessionOff) return;
+   vp9RsxSessionOff = 1;
+   logWarn("[video-player] TEE VP9's RSX part is off for the rest of this run: %s\n", why);
+}
+
+// ... a decoder with it opened anew (or closed): none of its pictures drawn, nor its thresholds used, until the latch trusts it
+static void vp9RsxLatchReset(VideoPlayer *player)
+{
+   lock(&player->lock);
+   player->vp9RsxTrusted = 0;
+   player->vp9RsxOn = 0;
+   unlock(&player->lock);
+   player->vp9RsxUntrusted = 0;
+   player->vp9RsxShown = 0;
+   player->vp9RsxMemLogged = 0;
+}
+
+// ... after tvp9_close of a decoder with it: one less, and the crash marker goes if it was set
+static void vp9RsxClosed(VideoPlayer *player)
+{
+   (void)__sync_fetch_and_sub(&vp9RsxLive, 1);
+   if (player->vp9RsxTrusted && displayHooks.rsxActive) displayHooks.rsxActive(0);
+   vp9RsxLatchReset(player);
+}
+
+// ... the trust latch, after each picture until it trusts the decoder (decode thread, no lock held). Its pictures are drawn
+// only once the RSX part predicts (rsx_frames > 0 counts only frames that got an RSX slot) and the block has mapped the
+// picture block for the RSX: the first key frame's set-up maps it (rsx_mc_init), and a set-up run again would unmap it under
+// a picture being drawn - a started RSX part never runs it again. 1: go on; 0: VP9_RSX_TRUST_PICTURES pictures and it did
+// not start - the player fails, and play.c builds it anew without the RSX part
+static int vp9RsxTrust(VideoPlayer *player)
+{
+   tvp9_stats stats;
+   tvp9_get_stats(player->vp9, &stats);
+   if (!player->vp9RsxMemLogged) {
+      sys_memory_info_t memory;
+      player->vp9RsxMemLogged = 1;
+      if (sys_memory_get_user_memory_size(&memory) == CELL_OK)
+         logInfo("[video-player] user memory at TEE VP9's first picture with rsx = 1: %u MB free of %u MB (heap not counted)\n",
+                 (unsigned)(memory.available_user_memory >> 20), (unsigned)(memory.total_user_memory >> 20));
+   }
+   int mapped = displayHooks.isMapped && displayHooks.isMapped(player->vp9Memory);
+   if (stats.rsx_frames > 0 && mapped) {
+      lock(&player->lock);
+      player->vp9RsxTrusted = 1;
+      player->vp9RsxOn = 1;
+      unlock(&player->lock);
+      vp9RsxRingTaken = 1;
+      if (displayHooks.rsxActive) displayHooks.rsxActive(1);   // the crash marker: a run that ends now, the next goes without
+      logInfo("[video-player] TEE VP9: RSX part predicts (rsx_frames %d after %d pictures) - its pictures are drawn from here on\n",
+              stats.rsx_frames, player->vp9RsxUntrusted + 1);
+      return 1;
+   }
+   if (++player->vp9RsxUntrusted < VP9_RSX_TRUST_PICTURES) return 1;
+   logWarn("[video-player] TEE VP9: %d pictures and its RSX part did not predict (rsx_frames %d, the pictures %smapped) - the "
+           "player is built anew without it\n", player->vp9RsxUntrusted, stats.rsx_frames, mapped ? "" : "not ");
+   disableVp9RsxForSession("its RSX part did not start");
+   return 0;
+}
+
 // VP9, after each picture (decode thread): the decoder's numbers to the log every 10 s, and - for a WebM whose
 // track has no frame duration - the frame rate from the first pictures' time stamps, so display sync can lock on
 static void afterVp9Picture(VideoPlayer *player, const tvp9_picture *pic)
 {
    uint64_t nowUs = sys_time_get_system_time();
+   // (V3.1.0 Test 3) the decoder's numbers for the bench, about once a second (word by word: a torn read costs nothing)
+   if (nowUs - player->vp9CountersUs >= 1000000ull) {
+      player->vp9CountersUs = nowUs;
+      tvp9_stats now;
+      tvp9_get_stats(player->vp9, &now);
+      player->totals.vp9Frames = now.frames;
+      player->totals.vp9Pictures = now.pictures;
+      player->totals.vp9Skipped = now.skipped;
+      player->totals.vp9RsxFrames = now.rsx_frames;
+      player->totals.vp9EntropyWaits = now.entropy_waits;
+      player->totals.vp9RecordsWaits = now.records_waits;
+      player->totals.vp9BusyFpsX10 = (int)(now.fps * 10.0);
+   }
    if (!player->vp9StatsUs) player->vp9StatsUs = nowUs;
    else if (nowUs - player->vp9StatsUs >= 10000000ull) {
       player->vp9StatsUs = nowUs;
@@ -552,20 +941,49 @@ static void afterVp9Picture(VideoPlayer *player, const tvp9_picture *pic)
       tvp9_get_stats(player->vp9, &stats);
       // integers only: this printf has no floating point
       if (stats.rsx_frames > player->vp9RsxFrames) player->vp9RsxOn = 1;   // (Test 14) the RSX part predicts
+      // (V3.1.0 Test 4) ... and no more: frames grew and rsx_frames did not - the block gave the RSX up (or found it no faster)
+      else if (player->vp9RsxOn && stats.frames > player->vp9FramesAtStats) player->vp9RsxOn = 0;
       player->vp9RsxFrames = stats.rsx_frames;
+      player->vp9FramesAtStats = stats.frames;
+      // (V3.1.0) the frames 0.3.2 left out, and those that waited for room in its pools of records (0.3.1)
       logInfo("[video-player] TEE VP9: %d frames, %d pictures, %d.%d pictures/s while busy, entropy %d us, pixel %d us a frame, "
-              "%s, rsx_frames %d\n", stats.frames, stats.pictures, (int)stats.fps, (int)(stats.fps * 10.0) % 10,
-              (int)(stats.entropy_ms * 1000.0), (int)(stats.pixel_ms * 1000.0),
-              !player->hasLowDemuxer ? "one stream" : player->vp9OnLow ? "on 1080p" : "on 1440p", stats.rsx_frames);
+              "%s %s, rsx_frames %d, %d left out, %d + %d waited for room\n", stats.frames, stats.pictures, (int)stats.fps,
+              (int)(stats.fps * 10.0) % 10, (int)(stats.entropy_ms * 1000.0), (int)(stats.pixel_ms * 1000.0),
+              !player->hasLowDemuxer ? "one stream" : "on", !player->hasLowDemuxer ? "" : player->vp9OnLow ?
+              player->vp9LowName : player->vp9HighName, stats.rsx_frames, stats.skipped, stats.entropy_waits,
+              stats.records_waits);
+   }
+   // (V3.1.0 Test 8) the start probe, logged only for now: the decoder's numbers after its first 8, 16 and 32 frames since
+   // the open or a seek (tvp9_flush starts them over) - the key frame's among them. A probe that holds the pre-roll and
+   // starts a video too heavy for its stream on the lower one would go by them; these lines are for its threshold
+   if (player->vp9ProbeStage < 3) {
+      static const int PROBE_AT[3] = { 8, 16, 32 };
+      tvp9_stats probe;
+      tvp9_get_stats(player->vp9, &probe);
+      while (player->vp9ProbeStage < 3 && probe.frames >= PROBE_AT[player->vp9ProbeStage]) {
+         int64_t frameNs = (int64_t)player->demuxer.frameDurationNs;
+         int rateX100 = frameNs > 0 ? (int)(100000000000ll / frameNs) : 0;
+         uint64_t clock = presentationClockNs(player, nowUs);
+         logInfo("[video-player] probe after %d frames (%d pictures) in %s: %d.%d pictures/s while busy, the video %d.%02d; "
+                 "entropy %d us, pixel %d us a frame, %d + %d waited for room; %s, the picture %d ms %s the clock\n",
+                 probe.frames, probe.pictures, !player->hasLowDemuxer ? player->vp9HighName : player->vp9OnLow ?
+                 player->vp9LowName : player->vp9HighName, (int)probe.fps, (int)(probe.fps * 10.0) % 10, rateX100 / 100,
+                 rateX100 % 100, (int)(probe.entropy_ms * 1000.0), (int)(probe.pixel_ms * 1000.0), probe.entropy_waits,
+                 probe.records_waits, player->started ? "playing" : "in the pre-roll",
+                 (int)(((int64_t)clock > pic->pts ? (int64_t)clock - pic->pts : pic->pts - (int64_t)clock) / 1000000),
+                 (int64_t)clock > pic->pts ? "behind" : "ahead of");
+         player->vp9ProbeStage++;
+      }
    }
    if (player->demuxer.frameDurationNs) return;
-   if (player->vp9RatePictures == 0) player->vp9FirstPts = (uint64_t)pic->pts;
+   if (player->vp9RatePictures == 0) { player->vp9FirstPts = (uint64_t)pic->pts; player->vp9FirstIndex = pic->index; }
    if (++player->vp9RatePictures <= VP9_RATE_PICTURES) return;
    uint64_t span = (uint64_t)pic->pts > player->vp9FirstPts ? (uint64_t)pic->pts - player->vp9FirstPts : 0;
+   int frames = pic->index - player->vp9FirstIndex;   // (V3.1.0) the frames between them, left-out ones too
    player->vp9RatePictures = 0;
-   if (!span) return;
+   if (!span || frames <= 0) return;
    lock(&player->lock);
-   player->demuxer.frameDurationNs = span / VP9_RATE_PICTURES;
+   player->demuxer.frameDurationNs = span / (uint64_t)frames;
    setUpDisplaySync(player);
    unlock(&player->lock);
 }
@@ -666,11 +1084,170 @@ static int recoverDecoder(VideoPlayer *player, int *startedAtKeyframe)
    return 1;
 }
 
+// (V3.0.4 Test 2) TEE VP9 stopped in 1440p after all - on a frame whose records outgrew its 5 MB buffer although its
+// block was within vp9KeyFrameLimit, or on another error of its own. A stopped decoder takes no flush: it is closed and
+// opened anew on the same memory, and goes on in 1080p from the 1080p key frame after the last picture, the sound
+// running on - no "Loading", no new player. The screen is black until the first new picture: the new decoder clears
+// the buffers the last ones are in. A stop on a key frame lowers vp9KeyFrameLimit below it for the rest of the run.
+// 1 done, 0 not possible (a stop in 1080p, no 1080p stream, opened anew too often, it did not open): the app takes
+// over then (hasVideoPlayerFailed). (Test 3) That key frame is the first 1080p cluster's after the last picture, cued
+// or not (seekMkvDemuxerToCluster) - Test 2 waited for the next cue, up to 5.5 s of black.
+static int restartVp9OnLow(VideoPlayer *player)
+{
+   const char *why = tvp9_error(player->vp9);
+   if (!why || !player->hasLowDemuxer || player->vp9Restarts >= VP9_RESTARTS) return 0;
+   int64_t last = player->vp9LastPts;
+
+   // the feeder parks, as for a seek: it reads the demuxer this moves, and nothing may be fed while the decoder closes
+   player->vp9FeedParked = 0;
+   __sync_synchronize();
+   player->vp9FeedPause = 1;
+   __sync_synchronize();
+   while (player->vp9FeedActive && !player->vp9FeedParked && !player->vp9FeedExited && player->running) sleepMs(1);
+   if (!player->running) return 0;
+
+   // the key frame it stopped on, if it was one: the first 1440p key frame fed after the last picture, close behind it
+   // (the frames in the pixel stage when it stopped do not come out)
+   uint64_t frameNs = player->demuxer.frameDurationNs ? player->demuxer.frameDurationNs : 20000000ull;
+   int keyBytes = 0;
+   uint64_t keyPts = 0;
+   for (int n = 0; n < VP9_KEYS_KEPT && n < player->vp9KeyCount; n++) {
+      int i = (player->vp9KeyCount - 1 - n) % VP9_KEYS_KEPT;
+      if ((int64_t)player->vp9Keys[i].pts > last && (int64_t)player->vp9Keys[i].pts <= last + (int64_t)(8 * frameNs)) {
+         keyBytes = player->vp9Keys[i].size;
+         keyPts = player->vp9Keys[i].pts;
+      }
+   }
+   // in 1080p - the feeder on it, and no 1440p key frame right after the last picture - it would stop there again
+   if (player->vp9OnLow && !keyBytes) { player->vp9FeedPause = 0; return 0; }
+   // (Test 3) the sound runs on from here, as after a change (it waits only for a picture 1.5 s behind): finding the
+   // 1080p key frame can take a moment - a cluster header over the network (RPCS3: 0.4 s, the sound held 300 ms)
+   lock(&player->lock);
+   player->vp9CatchingUp = 1;
+   player->vp9CatchingUpUs = sys_time_get_system_time();
+   unlock(&player->lock);
+   // the 1080p key frame after the last picture: the next cue's when it is right there (a stop on a cued key frame:
+   // nothing to fetch), else the first 1080p cluster's after the picture, cued or not
+   const MkvDemuxer *low = &player->lowDemuxer.container.mkv;
+   int k = 0;
+   while (k < low->cueCount && (int64_t)low->cues[k].timeNs <= last) k++;
+   uint64_t at = k < low->cueCount ? low->cues[k].timeNs : MKV_NO_CLUSTER;
+   int walked = 0;
+   if (at == MKV_NO_CLUSTER || (int64_t)at > last + (int64_t)(8 * frameNs)) {
+      uint64_t cluster = seekMkvDemuxerToCluster(&player->lowDemuxer.container.mkv, (uint64_t)(last + 1));
+      if (cluster != MKV_NO_CLUSTER) { at = cluster; walked = 1; }
+   }
+   if (at == MKV_NO_CLUSTER) {
+      lock(&player->lock);
+      player->vp9CatchingUp = 0;
+      unlock(&player->lock);
+      player->vp9FeedPause = 0;
+      return 0;
+   }
+   player->vp9Restarts++;
+   uint32_t *keyLimit = vp9KeyLimit(player);   // (V3.1.0) 4K's own
+   if (keyBytes) {
+      uint32_t lowered = (uint32_t)keyBytes / 8 * 7;
+      if (lowered < VP9_KEY_FRAME_MIN) lowered = VP9_KEY_FRAME_MIN;
+      if (lowered < *keyLimit) *keyLimit = lowered;
+   }
+   logWarn("[video-player] TEE VP9 stopped in %s (%s), on %s: opened anew, on in %s from %d.%03d s, the sound "
+           "running on%s (key frames above %d KB go in %s)\n", player->vp9HighName, why,
+           keyBytes ? "a key frame" : "a frame", player->vp9LowName, (int)(at / 1000000000ull),
+           (int)(at / 1000000ull % 1000), player->vp9Restarts > 1 ? " - again" : "", (int)(*keyLimit >> 10),
+           player->vp9LowName);
+   if (keyBytes)
+      logInfo("[video-player] the key frame at %d.%03d s: %d KB\n", (int)(keyPts / 1000000000ull),
+              (int)(keyPts / 1000000ull % 1000), keyBytes >> 10);
+
+   // every slot goes: the buffers their pictures are in belong to the new decoder. From the key frame right after the
+   // last picture, 1080p catches up as after a change (the sound waits only for a picture 1.5 s behind); up to one
+   // further on - a stop within a section - the picture counts as being there already: else the sound would wait for
+   // a picture that is not due yet, and neither would come
+   uint64_t nowUs = sys_time_get_system_time();
+   lock(&player->lock);
+   for (int i = 0; i < FRAME_SLOTS; i++) {
+      player->slots[i].hasVp9 = 0;
+      player->slots[i].state = SLOT_EMPTY;
+   }
+   player->displayIndex = -1;
+   if ((int64_t)at > last + (int64_t)(8 * frameNs) && at > player->currentPts) player->currentPts = at - 1;
+   player->vp9SafetyRequest = 0;
+   player->vp9BehindSinceUs = player->vp9LastHoldUs = 0;
+   player->vp9DropSeconds = 0;
+   player->vp9DropIgnore = VP9_DROP_IGNORE;   // (V3.1.0 Test 5) the restart's own seconds passed over
+   player->vp9CatchingUp = 1;
+   player->vp9CatchingUpUs = nowUs;
+   uint32_t lastFlip = haveDisplayHooks ? displayHooks.nextFlipId() : 0;   // (V3.1.0 Test 3) the frame being drawn
+   unlock(&player->lock);
+   // the frame in flight: the RSX may still draw the last picture. (V3.1.0 Test 3) Until that frame's flip has happened -
+   // at most 1 s - rather than a guess of 40 ms
+   if (haveDisplayHooks) {
+      for (int waited = 0; waited < 1000 && player->running && (int32_t)(displayHooks.flipsDone() - lastFlip) < 0; waited++)
+         sleepMs(1);
+   } else {
+      sleepMs(40);
+   }
+   // (V3.1.0 Test 4) with the RSX part, tvp9_close unmaps the picture block, the prediction surfaces and the vertex ring - and
+   // an unmap wants the RSX idle (libgcm reference, cellGcmUnmapEaIoAddress): the screen pauses (the UI writes no commands)
+   // and the RSX is drained first, and drawing goes on right after the close. The new decoder has the same configuration,
+   // the RSX part again, its pictures drawn once the latch trusts it
+   int rsx = player->vp9Rsx, paused = rsx && displayHooks.pause && displayHooks.resume;
+   if (rsx) logInfo("[video-player] the restart with the RSX part: the RSX drained first\n");
+   if (paused) displayHooks.pause(VP9_RSX_PAUSE_US);
+   if (rsx) logInfo("[video-player] ... drained; tvp9_close\n");
+   tvp9_close(player->vp9);
+   if (rsx) logInfo("[video-player] ... TEE VP9 closed; tvp9_open\n");
+   if (paused) displayHooks.resume();
+   if (rsx) vp9RsxClosed(player);
+   char err[160];
+   err[0] = 0;
+   player->vp9 = tvp9_open(&player->vp9Config, err, sizeof err);
+   player->vp9ProbeStage = 0;   // (V3.1.0 Test 8) a new decoder, new numbers
+   if (!player->vp9) {   // the smaller input, as openVp9's last setup
+      tvp9_config smaller = player->vp9Config;
+      smaller.input_bytes = 6u << 20;
+      player->vp9 = tvp9_open(&smaller, err, sizeof err);
+   }
+   if (!player->vp9) {
+      logError("[video-player] TEE VP9 did not open again: %s\n", err);
+      player->vp9FeedPause = 0;   // (it waits: no decoder)
+      return 0;
+   }
+   if (rsx) {
+      (void)__sync_fetch_and_add(&vp9RsxLive, 1);
+      vp9RsxLatchReset(player);
+   }
+   uint64_t landed = walked ? at : seekVideoDemuxer(&player->lowDemuxer, at, 0);
+   player->vp9OnLow = 1;
+   player->vp9LastSwitchNs = landed;
+   player->vp9SwitchAtNs = -1;
+   player->vp9SwitchLowReady = 0;
+   player->vp9SafetyPlanned = 0;
+   player->vp9NextCueNs = 0;
+   player->hasPendingAu = 0;
+   player->inputEnded = 0;
+   player->vp9FeedError = 0;
+   player->vp9StartedAtKeyframe = 0;
+   player->vp9RatePictures = 0;
+   player->vp9StatsUs = 0;
+   player->vp9RsxFrames = 0;
+   player->vp9FramesAtStats = 0;   // (V3.1.0 Test 4)
+   player->vp9LastPts = (int64_t)landed - 1;
+   vp9SkipLate(player);   // (V3.1.0) the new decoder leaves out what is late from its first frame on
+   __sync_synchronize();
+   player->vp9FeedPause = 0;
+   return 1;
+}
+
 // flushes both pipelines and jumps to the seek target (decode thread only). The frame on screen
 // stays up until the new position's frames arrive.
 static void performSeek(VideoPlayer *player)
 {
    uint64_t targetNs = (uint64_t)player->seekRequestNs;
+   // (V3.0.4 Test 2) TEE VP9 did not open again after a stop (restartVp9OnLow): nothing to seek with - the app builds
+   // the player anew (hasVideoPlayerFailed)
+   if (player->vp9Memory && !player->vp9) { player->seekRequestNs = -1; return; }
 
    // park the audio thread: it flushes its decoder + the mixer feed, then waits for our release
    if (player->audioAlive) {
@@ -703,6 +1280,7 @@ static void performSeek(VideoPlayer *player)
       if (tvp9_flush(player->vp9) != 0) logError("[video-player] TEE VP9 flush failed: %s\n", tvp9_error(player->vp9));
       player->vp9RatePictures = 0;
       player->vp9StartedAtKeyframe = 0;
+      player->vp9KeyCount = 0;   // (V3.0.4 Test 2)
    }
    // flush the decoder; if the reset wedged it (EndSeq fatal) or it already died, rebuild it rather
    // than going dark (a NULL decoder makes decode report end-of-stream until a later seek revives it)
@@ -717,9 +1295,22 @@ static void performSeek(VideoPlayer *player)
    player->hasPendingAu = 0;
    player->inputEnded = 0;
    player->vp9FeedError = 0;   // (V3.0.0 Test 12) a seek is a fresh try at the stream
+   player->failed = 0;         // (V3.0.4)
    // land on the fragment keyframe covering the target - or, for a sponsor skip, the next keyframe at/after it
+   // (V3.1.0 Test 9) the start probe's seek: T_down for the rest of the video at 90 % of the section there, as the safety net
+   // sets it - the cues take it up again only where it is clearly lighter
+   if (player->vp9ProbeForceLow && player->hasLowDemuxer) {
+      const MkvDemuxer *high = &player->demuxer.container.mkv;
+      player->vp9SafetyBps = (int)vp9SectionBps(high, vp9CueAtOrBefore(high, targetNs));
+      vp9LowerForSafety(player);
+   }
    uint64_t landedNs = player->hasLowDemuxer ? vp9SeekTrack(player, targetNs, player->seekLandAfter)   // (Test 14)
                                              : seekVideoDemuxer(&player->demuxer, targetNs, player->seekLandAfter);
+   player->vp9ProbeForceLow = 0;
+   player->vp9ProbeAtNs = landedNs;   // (V3.1.0 Test 9) the probe again where the upper stream starts
+   player->vp9ProbeSinceUs = 0;
+   player->vp9ProbeHold = player->hasLowDemuxer && !player->vp9Is4k && !player->vp9OnLow;
+   player->vp9LastPts = (int64_t)landedNs - 1;   // (V3.0.4 Test 2) no picture since
    // audio follows the video keyframe, but on its own thread: its demuxer seek costs a network
    // reconnect, and doing it here would hold up the first post-seek picture for no reason
    if (player->hasAudioDemuxer) player->audioSeekPendingNs = (int64_t)landedNs;
@@ -737,7 +1328,11 @@ static void performSeek(VideoPlayer *player)
    player->audioWaitStartUs = 0;         // fresh pre-roll: each seek gets the full window to wait for audio,
                                          // else a stale timer trips instantly and video starts on the wall clock
    player->statsSecondUs = 0;            // the stutter statistics start over with the new position
-   player->statsShown = player->statsLate = player->statsRepeats = player->statsStarved = 0;
+   player->statsShown = player->statsLate = player->statsRepeats = player->statsStarved = player->statsMissed = 0;
+   player->vp9DropSeconds = 0;           // (V3.0.4) and the safety net's count of seconds with pictures dropped,
+   player->vp9DropIgnore = VP9_DROP_IGNORE;   // the pre-roll's own seconds passed over
+   player->vp9ProbeStage = 0;            // (V3.1.0 Test 8) the decoder's numbers start over with the flush
+   player->vp9CatchingUp = 0;            // the pre-roll below holds and releases the sound itself
    // hold the audio feed until the first post-seek frame actually presents (getVideoFrame releases it), so
    // audio can't drain ahead and then race the video to catch up (the "speedup"). (Test 13) In the same locked step
    // that restarts the pre-roll, so nothing decided before it can start the sound again.
@@ -796,6 +1391,7 @@ static void decodeThread(uint64_t arg)
 
       int width, height; uint64_t pts;
       int got;
+      int rsxFailOver = 0;   // (V3.1.0 Test 4) the RSX part did not start: the player fails, play.c builds it anew without it
       if (player->vp9) {
          tvp9_picture *pic = &player->slots[slot].vp9;
          got = decodeNextVp9(player, pic);
@@ -803,11 +1399,23 @@ static void decodeThread(uint64_t arg)
             width = pic->width; height = pic->height; pts = (uint64_t)pic->pts;
             player->slots[slot].hasVp9 = 1;   // published with SLOT_READY under the lock below
             afterVp9Picture(player, pic);
+            player->vp9LastPts = (int64_t)pts;   // (V3.0.4 Test 2)
+            if (player->vp9Rsx && !player->vp9RsxTrusted && !vp9RsxTrust(player)) {   // (V3.1.0 Test 4)
+               tvp9_release_picture(player->vp9, pic);
+               player->slots[slot].hasVp9 = 0;
+               got = -1;
+               rsxFailOver = 1;
+            } else if (player->vp9Rsx && player->vp9RsxTrusted && ++player->vp9RsxShown == 30 &&
+                       strcmp(vp9RsxTest, "brake-after-30") == 0 && displayHooks.brake) {
+               displayHooks.brake("TEST: rsx-test=brake-after-30");   // (the block's next row finds no room: it gives up)
+            }
          }
       } else {
          got = player->decoder ? decodeNextFrame(player, player->slots[slot].yuv, &width, &height, &pts, &startedAtKeyframe) : -1;
       }
-      if (got < 0 && player->running && player->seekRequestNs < 0 && recoverDecoder(player, &startedAtKeyframe)) {
+      // (V3.0.4 Test 2) TEE VP9 stopped in 1440p: opened anew, on in 1080p (it empties every slot, this one too)
+      if (got < 0 && !rsxFailOver && player->vp9 && player->running && player->seekRequestNs < 0 && restartVp9OnLow(player)) continue;
+      if (got < 0 && !rsxFailOver && player->running && player->seekRequestNs < 0 && recoverDecoder(player, &startedAtKeyframe)) {
          lock(&player->lock);
          player->slots[slot].state = SLOT_EMPTY;
          unlock(&player->lock);
@@ -832,7 +1440,11 @@ static void decodeThread(uint64_t arg)
          unlock(&player->lock);
       } else {
          player->slots[slot].state = SLOT_EMPTY;
-         if (player->seekRequestNs < 0) player->ended = 1;
+         if (player->seekRequestNs < 0) {
+            player->ended = 1;
+            if (got < 0) player->failed = 1;   // (V3.0.4) an error, not the end: hasVideoPlayerFailed
+            if (rsxFailOver) player->failedOnRsx = 1;   // (V3.1.0 Test 4) ... didVideoPlayerFailOnRsx
+         }
          unlock(&player->lock);
          // idle at end of stream (or after a hard error) until a seek restarts decode
          while (player->running && player->ended && player->seekRequestNs < 0) sleepMs(10);
@@ -1096,7 +1708,7 @@ static void checkVp9LowTrack(VideoPlayer *player)
                      high->frameDurationNs && low->frameDurationNs && high->frameDurationNs != low->frameDurationNs ?
                         "another frame rate" : NULL;
    if (why) {
-      logWarn("[video-player] the 1080p VP9 stream is left out (%s): no change of quality\n", why);
+      logWarn("[video-player] the %s VP9 stream is left out (%s): no change of quality\n", player->vp9LowName, why);
       closeVideoDemuxer(&player->lowDemuxer);
       player->hasLowDemuxer = 0;
       return;
@@ -1107,8 +1719,8 @@ static void checkVp9LowTrack(VideoPlayer *player)
       int k = vp9CueAtOrBefore(h, l->cues[i].timeNs);
       if (k >= 0 && h->cues[k].timeNs == l->cues[i].timeNs) same++;
    }
-   player->vp9DownBps = VP9_DOWN_BPS_SPE;
-   player->vp9UpBps = VP9_UP_BPS_SPE;
+   player->vp9DownBps = player->vp9Is4k ? VP9_DOWN_BPS_4K : VP9_DOWN_BPS_SPE;   // (V3.1.0) 4K's own
+   player->vp9UpBps = player->vp9Is4k ? VP9_UP_BPS_4K : VP9_UP_BPS_SPE;
    logInfo("[video-player] VP9 %dx%d beside %dx%d: %d and %d cues, %d of the first %d key frames at the same times\n",
            low->width, low->height, high->width, high->height, l->cueCount, h->cueCount, same, n);
 }
@@ -1156,11 +1768,155 @@ static void setUpDisplaySync(VideoPlayer *player)
 
 void setVideoVp9Spes(int spes) { vp9Spes = spes == 5 ? 5 : 6; }
 
+// (V3.1.0 Test 3) see video-player.h
+void setVideoDisplayHooks(const VideoDisplayHooks *hooks)
+{
+   if (hooks && hooks->nextFlipId && hooks->flipsDone && hooks->vblanksMissed) { displayHooks = *hooks; haveDisplayHooks = 1; }
+   else haveDisplayHooks = 0;
+}
+void setVideoDisplaySync(int byFlips) { syncByFlips = byFlips ? 1 : 0; }
+void setVideoVp9ReleaseEarly(int early) { releaseEarly = early ? 1 : 0; }
+// (V3.1.0 Test 4) see video-player.h
+void setVideoVp9Rsx(int mode) { vp9RsxMode = mode == 1 || mode == 2 ? mode : 0; }
+void setVideoVp9RsxTest(const char *test) { vp9RsxTest = test ? test : ""; }
+int didVideoPlayerFailOnRsx(const VideoPlayer *player) { return player && player->failedOnRsx; }
+
+void getVideoPlayerCounters(VideoPlayer *player, VideoPlayerCounters *counters)
+{
+   if (!counters) return;
+   memset(counters, 0, sizeof *counters);
+   counters->memFreeMb = -1;
+   if (!player) return;
+   lock(&player->lock);
+   *counters = player->totals;
+   counters->width = player->demuxer.width;
+   counters->height = player->demuxer.height;
+   counters->fpsMilli = player->demuxer.frameDurationNs ? (int)(1000000000000ull / player->demuxer.frameDurationNs) : 0;
+   counters->onLow = isVideoOnLowTrack(player);
+   counters->restarts = (uint32_t)player->vp9Restarts;
+   unlock(&player->lock);
+}
+
 int isVideoVp9(const VideoPlayer *player) { return player && player->vp9; }
 int isAudioOpus(const VideoPlayer *player) { return player && player->opus; }
-int isVideoOnLowTrack(const VideoPlayer *player) { return player && player->hasLowDemuxer && player->vp9OnLow; }
+// (V3.0.4 Test 2) by the picture on screen: the feeder reads seconds ahead of it, so its stream (vp9OnLow) told R3's
+// panel "1440p" while 1080p still played
+int isVideoOnLowTrack(const VideoPlayer *player)
+{
+   if (!player || !player->hasLowDemuxer) return 0;
+   int idx = player->displayIndex;
+   if (idx >= 0 && player->slots[idx].hasVp9) return player->slots[idx].height < player->demuxer.height;
+   return player->vp9OnLow;
+}
 
 static void logVp9Line(const char *line) { logInfo("[tee-vp9] %s\n", line); }
+
+// the open line's word on the sound
+static const char *vp9SoundWord(const VideoPlayer *player)
+{
+   return player->hasAudioDemuxer && player->audioDemuxer.isOpus ? ", Opus sound on the PPU"
+          : vp9Spes == 6 ? ", no sound (AAC needs an SPE)" : ", AAC sound";
+}
+
+// (V3.1.0 Test 4) the picture block back: to the UI's allocator, which mapped it - or, rsx = 1 (the block mapped it and
+// tvp9_close unmapped it), to the heap
+static void freeVp9Memory(VideoPlayer *player)
+{
+   if (!player->vp9Memory) return;
+   if (player->vp9MemoryAppMapped) player->freeFrame(player->vp9Memory);
+   else free(player->vp9Memory);
+   player->vp9Memory = 0;
+}
+
+// (V3.1.0 Test 4) TEE VP9 with its RSX part for this stream? vp9-rsx= asks for it, the display shares the RSX (not given up,
+// no crash marker found), no other decoder has it, the run has not turned it off - and 4K only with vp9-rsx=on
+static int vp9RsxWanted(const VideoPlayer *player)
+{
+   static int unsharedLogged;
+   if (!vp9RsxMode || vp9RsxSessionOff || vp9RsxLive != 0 || (vp9RsxMode == 1 && player->vp9Is4k)) return 0;
+   if (!haveDisplayHooks || !displayHooks.rsxAllowed || !displayHooks.isMapped || !displayHooks.pause || !displayHooks.resume ||
+       !displayHooks.rsxAllowed()) {
+      if (!unsharedLogged) {
+         unsharedLogged = 1;
+         logWarn("[video-player] vp9-rsx: the display does not share the RSX (gfx-share off, the RSX part given up, or the last "
+                 "run ended while it predicted) - TEE VP9 on the SPEs alone\n");
+      }
+      return 0;
+   }
+   return 1;
+}
+
+// ... the gate after an open with it: what the RSX part takes at the first key frame - the 3 MB vertex ring (once a run; the
+// block keeps it), 1 MB of rows a slot (3 up to 2560 x 1472, 2 above), about 1 MB of rectangle lists - has to leave
+// VP9_RSX_FREE_MB free, or the SPU groups run short of the system's memory (0x80010004 in the VP9 project's tests)
+static int vp9RsxMemoryLeft(const VideoPlayer *player, int *freeMb)
+{
+   sys_memory_info_t memory;
+   *freeMb = -1;
+   if (sys_memory_get_user_memory_size(&memory) != CELL_OK) return 0;
+   int needMb = VP9_RSX_FREE_MB + (vp9RsxRingTaken ? 0 : 3) + (player->vp9Is4k ? 2 : 3) + 1;
+   *freeMb = (int)(memory.available_user_memory >> 20);
+   return *freeMb >= needMb;
+}
+
+// ... the open: the RSX setups, the picture block in memory of its own that the app never maps (the block maps it at the
+// first key frame and unmaps it in tvp9_close), the gate. None fits: the prediction surfaces tvp9_open took (17 - 24 MB) go
+// back for the setups without the RSX part. 1: open, *config what it was opened with
+static int openVp9Rsx(VideoPlayer *player, tvp9_config *config, char *err, int errLen)
+{
+   const Vp9Setup *setups = player->vp9Is4k ? VP9_SETUPS_4K_RSX : VP9_SETUPS_RSX;
+   unsigned setupCount = player->vp9Is4k ? sizeof VP9_SETUPS_4K_RSX / sizeof VP9_SETUPS_4K_RSX[0]
+                                         : sizeof VP9_SETUPS_RSX / sizeof VP9_SETUPS_RSX[0];
+   for (unsigned setup = 0; setup < setupCount; setup++) {
+      tvp9_config c = *config;
+      c.rsx = 1;
+      c.pictures = setups[setup].pictures;
+      c.tasks = setups[setup].tasks;
+      c.input_bytes = setups[setup].inputMb << 20;
+      c.entropy_pool = setups[setup].entropyPoolMb << 20;
+      c.records_pool = setups[setup].recordsPoolMb << 20;
+      size_t bytes = tvp9_picture_memory_size(&c);
+      void *memory = memalign(1024 * 1024, bytes);
+      if (!memory) {
+         snprintf(err, (size_t)errLen, "no 1 MB aligned block of %d MB for %d pictures", (int)(bytes >> 20), c.pictures);
+         continue;
+      }
+      c.picture_memory = memory;
+      c.picture_memory_bytes = bytes;
+      if (strcmp(vp9RsxTest, "stall-3000") == 0) rsx_mc_test_inject(0, VP9_RSX_STALL_ROWS, 3000);   // (its next run)
+      tvp9 *decoder = tvp9_open(&c, err, errLen);
+      if (!decoder) {
+         logWarn("[video-player] TEE VP9 with the RSX part did not open with %d pictures, %d tasks and %d MB input: %s\n",
+                 c.pictures, c.tasks ? c.tasks : 5, (int)(c.input_bytes >> 20), err);
+         free(memory);
+         continue;
+      }
+      int freeMb;
+      if (!vp9RsxMemoryLeft(player, &freeMb)) {
+         tvp9_close(decoder);   // (nothing of its RSX part is set up before the first key frame: no pause, nothing unmapped)
+         free(memory);
+         snprintf(err, (size_t)errLen, "%d MB free with %d pictures and %d MB input, short of what its RSX part takes", freeMb,
+                  c.pictures, (int)(c.input_bytes >> 20));
+         logWarn("[video-player] TEE VP9 with the RSX part: %s\n", err);
+         continue;
+      }
+      player->vp9 = decoder;
+      player->vp9Memory = memory;
+      player->vp9MemoryAppMapped = 0;
+      player->vp9Rsx = 1;
+      (void)__sync_fetch_and_add(&vp9RsxLive, 1);
+      vp9RsxLatchReset(player);
+      *config = c;
+      logInfo("[video-player] TEE VP9 %s: %dx%d stream, %d + %d SPEs, %d pictures, %d tasks, %d MB input (%d MB + %d MB)%s, "
+              "with the RSX part (rsx = 1; %d MB free)\n", TEE_VP9_VERSION, player->demuxer.width, player->demuxer.height,
+              c.entropy_spes, c.pixel_spes, c.pictures, c.tasks ? c.tasks : 5, (int)(c.input_bytes >> 20), (int)(bytes >> 20),
+              (int)(tvp9_memory_size(&c) >> 20), vp9SoundWord(player), freeMb);
+      return 1;
+   }
+   if (vp9RsxLive == 0) rsx_mc_drop_prealloc();   // (rsx_mc.c does it only while nothing of it is set up)
+   logWarn("[video-player] TEE VP9 with the RSX part does not fit (%s) - without it\n", err);
+   return 0;
+}
 
 // VP9: opens the TEE VP9 building block for the stream (createVideoPlayerSplit, before the decode thread). Its
 // picture buffers come from the UI's allocator - RSX-visible, 1 MB aligned - so the RSX draws the pictures where
@@ -1172,41 +1928,64 @@ static int openVp9(VideoPlayer *player, VideoFrameAllocFn allocFrame)
    tvp9_default(&config);
    config.log = logVp9Line;
    if (vp9Spes == 5) { config.entropy_spes = 1; config.pixel_spes = 4; }
-   // buffers for the stream's size, not the module's 2560 x 1440 default: a 1080p stream needs less memory
-   if (player->demuxer.width > 0 && player->demuxer.height > 0 &&
-       player->demuxer.width <= config.max_width && player->demuxer.height <= config.max_height) {
+   // buffers for the stream's size, not the module's 2560 x 1440 default: a 1080p stream needs less memory.
+   // (V3.1.0) A 4K stream (TEE VP9 0.3.0: up to 4096 x 2304) gets buffers as large as it is - and its 1440p stream
+   // beside it fits them
+   const Vp9Setup *setups = VP9_SETUPS;
+   unsigned setupCount = sizeof VP9_SETUPS / sizeof VP9_SETUPS[0];
+   if (player->vp9Is4k && player->demuxer.width <= 4096 && player->demuxer.height <= 2304) {
+      config.max_width  = player->demuxer.width;
+      config.max_height = player->demuxer.height;
+      setups = VP9_SETUPS_4K;
+      setupCount = sizeof VP9_SETUPS_4K / sizeof VP9_SETUPS_4K[0];
+   } else if (player->demuxer.width > 0 && player->demuxer.height > 0 &&
+              player->demuxer.width <= config.max_width && player->demuxer.height <= config.max_height) {
       config.max_width  = player->demuxer.width;
       config.max_height = player->demuxer.height;
    }
    char err[160];
    err[0] = 0;
+   // (V3.1.0 Test 4) with the RSX part first, when it may run - its own setups and memory; without it the tables above, and
+   // the prediction surfaces an earlier stream with it left in the heap (17 - 24 MB: rsx_mc keeps them) go back first - the
+   // rebuild after a fail-over needs them most
+   if (vp9RsxWanted(player)) openVp9Rsx(player, &config, err, (int)sizeof err);
+   else if (vp9RsxLive == 0) rsx_mc_drop_prealloc();   // (nothing to do when there are none; rsx_mc.c refuses while in use)
    int pictures = 0;
-   for (unsigned setup = 0; setup < sizeof VP9_SETUPS / sizeof VP9_SETUPS[0] && !player->vp9; setup++) {
-      pictures = VP9_SETUPS[setup].pictures;
+   for (unsigned setup = 0; setup < setupCount && !player->vp9; setup++) {
+      pictures = setups[setup].pictures;
       config.pictures = pictures;
-      config.input_bytes = VP9_SETUPS[setup].inputMb << 20;
+      config.tasks = setups[setup].tasks;
+      config.input_bytes = setups[setup].inputMb << 20;
+      config.entropy_pool = setups[setup].entropyPoolMb << 20;   // (V3.1.0 Test 4: 0 in these, the decoder's own as before)
+      config.records_pool = setups[setup].recordsPoolMb << 20;
       size_t bytes = tvp9_picture_memory_size(&config);
       player->vp9Memory = allocFrame(bytes);
+      player->vp9MemoryAppMapped = 1;   // (V3.1.0 Test 4) the UI's allocator's: freeFrame gives it back
       if (!player->vp9Memory || ((uintptr_t)player->vp9Memory & 0xFFFFF)) {
          snprintf(err, sizeof err, "no 1 MB aligned block of %d MB for %d pictures", (int)(bytes >> 20), pictures);
-         if (player->vp9Memory) player->freeFrame(player->vp9Memory);
-         player->vp9Memory = 0;
+         freeVp9Memory(player);
          continue;
       }
       config.picture_memory = player->vp9Memory;
       config.picture_memory_bytes = bytes;
       player->vp9 = tvp9_open(&config, err, sizeof err);
-      if (!player->vp9) { player->freeFrame(player->vp9Memory); player->vp9Memory = 0; }
-      else logInfo("[video-player] TEE VP9 %s: %dx%d stream, %d + %d SPEs, %d pictures, %d MB input (%d MB + %d MB)%s\n",
+      if (!player->vp9) {
+         logWarn("[video-player] TEE VP9 did not open with %d pictures, %d tasks and %d MB input: %s\n", pictures,
+                 config.tasks ? config.tasks : 5, (int)(config.input_bytes >> 20), err);
+         freeVp9Memory(player);
+      }
+      else logInfo("[video-player] TEE VP9 %s: %dx%d stream, %d + %d SPEs, %d pictures, %d tasks, %d MB input (%d MB + %d MB)%s\n",
                    TEE_VP9_VERSION, player->demuxer.width, player->demuxer.height, config.entropy_spes, config.pixel_spes,
-                   pictures, (int)(config.input_bytes >> 20), (int)(bytes >> 20), (int)(tvp9_memory_size(&config) >> 20),
-                   player->hasAudioDemuxer && player->audioDemuxer.isOpus ? ", Opus sound on the PPU"
-                   : vp9Spes == 6 ? ", no sound (AAC needs an SPE)" : ", AAC sound");
+                   pictures, config.tasks ? config.tasks : 5, (int)(config.input_bytes >> 20), (int)(bytes >> 20),
+                   (int)(tvp9_memory_size(&config) >> 20), vp9SoundWord(player));
    }
+   if (player->vp9) player->vp9Config = config;   // (V3.0.4 Test 2) for restartVp9OnLow
    sys_memory_info_t memory;
-   if (player->vp9 && sys_memory_get_user_memory_size(&memory) == CELL_OK)
+   if (player->vp9 && sys_memory_get_user_memory_size(&memory) == CELL_OK) {
       logInfo("[video-player] user memory with TEE VP9 open: %u MB free of %u MB (heap not counted)\n",
               (unsigned)(memory.available_user_memory >> 20), (unsigned)(memory.total_user_memory >> 20));
+      player->totals.memFreeMb = (int)(memory.available_user_memory >> 20);   // (V3.1.0 Test 3)
+   }
    if (!player->vp9) { logError("[video-player] TEE VP9 did not open: %s\n", err); return -1; }
    if (vp9Spes == 6 && player->hasAudioDemuxer && !player->audioDemuxer.isOpus) {   // AAC: no SPE left for cellAdec
       closeVideoDemuxer(&player->audioDemuxer);
@@ -1238,6 +2017,9 @@ VideoPlayer *createVideoPlayerVp9(const char *videoPath, const char *lowVideoPat
    player->seekRequestNs = -1;
    player->audioSeekPendingNs = -1;
    player->vp9SwitchAtNs = -1;
+   player->vp9SwitchLowReady = 0;
+   player->vp9SafetyPlanned = 0;
+   player->vp9LastPts = -1;   // (V3.0.4 Test 2)
    player->freeFrame = freeFrame ? freeFrame : freeFrameToHeap;
    if (!allocFrame) allocFrame = allocFrameFromHeap;
    createLock(&player->lock);
@@ -1258,11 +2040,23 @@ VideoPlayer *createVideoPlayerVp9(const char *videoPath, const char *lowVideoPat
                                         THREAD_PRIORITY_DEFAULT, THREAD_STACK_SIZE_64KB, "vp9-low-open") == 0;
 
    int videoOk = openVideoDemuxer(&player->demuxer, videoPath) == 0;
+   // (V3.1.0) 4K: 1440p beside it, its own thresholds and key-frame limit, a shorter ring (openVp9 sets the decoder up)
+   player->vp9Is4k = videoOk && player->demuxer.isVp9 &&
+                     (player->demuxer.height > VP9_4K_ROWS || player->demuxer.width > 2560);
+   player->vp9Slots = player->vp9Is4k ? VP9_SLOTS_4K : VP9_SLOTS;
+   player->vp9HighName = player->vp9Is4k ? "2160p" : "1440p";
+   player->vp9LowName = player->vp9Is4k ? "1440p" : "1080p";
 
    // join the audio open before ANY exit: the thread writes into the player, so it must be done
    // (and its outcome adopted) before a failed video open can tear the player down
    if (lowOpening) { joinThread(lowOpenTid); player->hasLowDemuxer = lowJob.ok; }
-   if (lowOpening && !lowJob.ok) logWarn("[video-player] the 1080p VP9 stream did not open: no change of quality\n");
+   // (V3.1.0 Test 9) the start probe for a start without a seek (a seek arms it anew); the first block's cue rule may still
+   // send it down, which the probe sees (vp9OnLow) and lets go
+   player->vp9ProbeAtNs = 0;
+   player->vp9ProbeSinceUs = 0;
+   player->vp9ProbeHold = player->hasLowDemuxer && !player->vp9Is4k;
+   if (lowOpening && !lowJob.ok)
+      logWarn("[video-player] the %s VP9 stream did not open: no change of quality\n", player->vp9LowName);
    if (audioOpening) { joinThread(audioOpenTid); player->hasAudioDemuxer = audioJob.ok; }
    else if (audioPath && audioPath[0]) player->hasAudioDemuxer = openAudioDemuxer(&player->audioDemuxer, audioPath) == 0;
    if (audioPath && audioPath[0] && !player->hasAudioDemuxer)
@@ -1369,16 +2163,31 @@ void destroyVideoPlayer(VideoPlayer *player)
          logError("[video-player] the decode thread did not stop in %d ms (the TEE Decoder hangs?): player left behind\n",
                   DESTROY_WAIT_MS);
          disableH264TeeForSession("it hung");
+         // (V3.1.0 Test 4) the RSX part's state is file-static in the block (rsx_mc.c): with a decoder left open no other one
+         // may have it - and vp9RsxLive stays counted
+         disableVp9RsxForSession("a player was left behind");
          releaseAudioPipeline(player);
          return;
       }
+      if (player->vp9Rsx) logInfo("[video-player] closing: the decode thread and the feeder have stopped\n");
       joinThread(player->thread);
       if (player->vp9FeedActive) joinThread(player->vp9FeedTid);
    }
    releaseAudioPipeline(player);
    destroyH264Decoder(player->decoder);
-   if (player->vp9) tvp9_close(player->vp9);                         // the SPEs stop (by force if one hangs)
-   if (player->vp9Memory) player->freeFrame(player->vp9Memory);
+   if (player->vp9) {
+      // (V3.1.0 Test 4) with the RSX part: the RSX idle before tvp9_close unmaps its memory (see restartVp9OnLow) - on the UI
+      // thread, where play.c destroys a player after finishGfx, that is a drain only
+      int rsx = player->vp9Rsx, paused = rsx && displayHooks.pause && displayHooks.resume;
+      if (rsx) logInfo("[video-player] closing TEE VP9 with its RSX part: the RSX drained first\n");
+      if (paused) displayHooks.pause(VP9_RSX_PAUSE_US);
+      if (rsx) logInfo("[video-player] ... drained; tvp9_close\n");
+      tvp9_close(player->vp9);                                     // the SPEs stop (by force if one hangs)
+      if (rsx) logInfo("[video-player] ... TEE VP9 closed\n");
+      if (paused) displayHooks.resume();
+      if (rsx) vp9RsxClosed(player);
+   }
+   freeVp9Memory(player);
    closeVideoDemuxer(&player->demuxer);
    if (player->hasAudioDemuxer) closeVideoDemuxer(&player->audioDemuxer);
    if (player->hasLowDemuxer) closeVideoDemuxer(&player->lowDemuxer);
@@ -1414,16 +2223,33 @@ static const uint8_t *takeHeldFrame(VideoPlayer *player, int *width, int *height
 // the clock skips one, more than 1.5 ahead waits. Returns the slot to show, -1 to keep the current one.
 static int pickSyncedFrame(VideoPlayer *player, uint64_t nowUs, uint64_t clock)
 {
-   int64_t vblankUs = (int64_t)player->syncVblankUs;
-   int elapsed = (int)(((int64_t)(nowUs - player->syncLastUs) + vblankUs / 2) / vblankUs);
-   if (elapsed < 0) elapsed = 0;
+   int elapsed;
+   if (haveDisplayHooks && syncByFlips) {
+      // (V3.1.0 Test 3) every present is one flip, one vblank on screen - plus the vblanks the screen showed the last frame
+      // again for, which the flip handler counts from the flips' times. Counted by wall time, a present that ran late
+      // (a log write, a subtitle cue being rendered) but whose frame still made its vblank - the UI runs a frame ahead -
+      // counted 2 and the next one 0: a picture dropped and one repeated while the screen missed nothing (40 of the 75
+      // stutter seconds of VP9 in TEE's log of V3.0.4 Test 3)
+      uint32_t missedNow = displayHooks.vblanksMissed();
+      int missed = (int)(int32_t)(missedNow - player->syncLastMissed);
+      player->syncLastMissed = missedNow;
+      elapsed = 1 + (missed > 0 ? missed : 0);
+      if (elapsed > 6) elapsed = 6;
+   } else {
+      int64_t vblankUs = (int64_t)player->syncVblankUs;
+      elapsed = (int)(((int64_t)(nowUs - player->syncLastUs) + vblankUs / 2) / vblankUs);
+      if (elapsed < 0) elapsed = 0;
+   }
    player->syncLastUs = nowUs;
    player->syncVblanks += elapsed;
    int advance = player->syncVblanks / player->syncPerFrame;
    player->syncVblanks -= advance * player->syncPerFrame;
 
    int64_t frameNs = (int64_t)player->demuxer.frameDurationNs;
-   int64_t errorNs = (int64_t)player->currentPts - (int64_t)clock;   // > 0: the picture is ahead of the sound
+   // (V3.1.0 Test 3) where the timeline stands - display-sync=wall keeps Test 2's: the picture on screen
+   int byFlips = haveDisplayHooks && syncByFlips;
+   uint64_t at = byFlips && player->syncAtPts > player->currentPts ? player->syncAtPts : player->currentPts;
+   int64_t errorNs = (int64_t)at - (int64_t)clock;   // > 0: the picture is ahead of the sound
    int best = -1;
    if (errorNs < -frameNs * 6) {   // far behind (a stall): straight to the picture that is due, as without sync
       uint64_t bestPts = 0;
@@ -1441,9 +2267,18 @@ static int pickSyncedFrame(VideoPlayer *player, uint64_t nowUs, uint64_t clock)
          if (player->slots[i].state == SLOT_READY && player->slots[i].pts > after &&
              (next < 0 || player->slots[i].pts < player->slots[next].pts)) next = i;
       if (next < 0) break;   // nothing newer decoded yet: show what is there, or repeat
+      // (V3.1.0 Test 3) the next picture 1.5 - 4.5 frames on: TEE VP9 left up to three frames out (tvp9_skip_before). This
+      // step is a left-out frame's, so the picture on screen stays for it - a repeat in its place, rather than the next
+      // picture a vblank early and a repeat after it. A wider gap (a change of stream that lands later) is shown as before
+      int64_t gapNs = (int64_t)(player->slots[next].pts - at);
+      if (byFlips && player->vp9 && frameNs > 0 && gapNs > frameNs * 3 / 2 && gapNs <= frameNs * 9 / 2) {
+         at += (uint64_t)frameNs;
+         continue;
+      }
       best = next;
-      after = player->slots[next].pts;
+      after = at = player->slots[next].pts;
    }
+   player->syncAtPts = at;
    return best;
 }
 
@@ -1453,7 +2288,13 @@ const uint8_t *getVideoFrame(VideoPlayer *player, int *width, int *height)
    int releaseAudio = 0;   // set when pre-roll fires, to un-hold the audio feed after the lock is dropped
    char prerollLine[160];  // (V3.0.0 Test 13) where picture and sound stand when the pre-roll ends
    prerollLine[0] = 0;
+   char probeLine[260];    // (V3.1.0 Test 9) the start probe's word
+   probeLine[0] = 0;
+   int probeLow = 0;
    lock(&player->lock);
+   // (V3.1.0 Test 3) the pictures the screen is done with go back at every present - before the returns of a seek or a
+   // pre-roll too, which can hold a picture back for seconds
+   if (releaseByFlip(player)) retireFlippedSlots(player, nowUs);
 
    // a posted seek freezes presentation: frames decoded before the flush must not advance the
    // position; the displayed frame stays up until the new position's frames arrive
@@ -1464,10 +2305,50 @@ const uint8_t *getVideoFrame(VideoPlayer *player, int *width, int *height)
    // decoded frame began playback with drops (the clock outran the cold decoder) and a visible stutter
    // when the audio clock later took over from the wall clock with a backward step.
    if (!player->started) {
-      uint64_t earliest = 0; int found = -1, readyCount = 0;
-      for (int i = 0; i < FRAME_SLOTS; i++)
+      uint64_t earliest = 0; int found = -1, readyCount = 0, onScreen = 0;
+      for (int i = 0; i < FRAME_SLOTS; i++) {
          if (player->slots[i].state == SLOT_READY) { readyCount++; if (found < 0 || player->slots[i].pts < earliest) { earliest = player->slots[i].pts; found = i; } }
-      int decoderWarm  = readyCount >= (player->vp9 ? VP9_PREROLL_FRAMES : PREROLL_FRAMES) || player->ended;   // a short clip may never fill the ring
+         if (player->slots[i].state == SLOT_DISPLAYING || player->slots[i].state == SLOT_RETIRING) onScreen++;
+      }
+      // (V3.1.0) VP9: as many as the ring has room for beside the pictures a seek leaves on screen - 4K's ring of three
+      // holds one then, and waiting for two would hold the picture for good
+      int prerollNeed = PREROLL_FRAMES;
+      if (player->vp9) {
+         prerollNeed = player->vp9Slots - onScreen < VP9_PREROLL_FRAMES ? player->vp9Slots - onScreen : VP9_PREROLL_FRAMES;
+         if (prerollNeed < 1) prerollNeed = 1;
+      }
+      int decoderWarm  = readyCount >= prerollNeed || player->ended;   // a short clip may never fill the ring
+      // (V3.1.0 Test 9) the start probe (see VP9_PROBE_FRAMES): once the pictures are there, a few more frames, then the rate
+      // TEE VP9 decoded them at says whether this stream holds here
+      if (player->vp9ProbeHold && decoderWarm) {
+         if (!player->vp9ProbeSinceUs) player->vp9ProbeSinceUs = nowUs;
+         if (!player->vp9 || !player->hasLowDemuxer || player->vp9OnLow || player->ended) {
+            player->vp9ProbeHold = 0;   // (the cues sent it down at the first block already, or nothing to say)
+         } else {
+            tvp9_stats probe;
+            tvp9_get_stats(player->vp9, &probe);   // (plain counters: any thread)
+            if (probe.frames < VP9_PROBE_FRAMES && nowUs - player->vp9ProbeSinceUs < VP9_PROBE_MAX_US) {
+               decoderWarm = 0;
+            } else {
+               player->vp9ProbeHold = 0;
+               int64_t frameNs = (int64_t)player->demuxer.frameDurationNs;
+               double rate = frameNs > 0 ? 1.0e9 / (double)frameNs : 0.0;
+               // (Test 11) the capacity: the slower stage's rate (see VP9_PROBE_SHARE)
+               int pixelSpes = player->vp9Config.pixel_spes > 0 ? player->vp9Config.pixel_spes : 4;
+               double entropyRate = probe.entropy_ms > 0.0 ? 1000.0 / probe.entropy_ms : 0.0;
+               double pixelRate = probe.pixel_ms > 0.0 ? (double)pixelSpes * 1000.0 / probe.pixel_ms : 0.0;
+               double capacity = entropyRate < pixelRate ? entropyRate : pixelRate;
+               probeLow = probe.frames >= VP9_PROBE_FRAMES && rate > 0.0 && capacity > 0.0 && capacity < VP9_PROBE_SHARE * rate;
+               if (probeLow) decoderWarm = 0;
+               snprintf(probeLine, sizeof probeLine, "[video-player] the start probe: %d frames in %s, capacity %d.%d a second (entropy %d.%d, "
+                        "pixel %d.%d; %d.%d while busy), the video %d.%d - %s\n", probe.frames, player->vp9HighName,
+                        (int)capacity, (int)(capacity * 10.0) % 10, (int)entropyRate, (int)(entropyRate * 10.0) % 10,
+                        (int)pixelRate, (int)(pixelRate * 10.0) % 10, (int)probe.fps, (int)(probe.fps * 10.0) % 10,
+                        (int)rate, (int)(rate * 10.0) % 10, probeLow ? "too heavy here: the lower stream from the same key frame" :
+                        probe.frames >= VP9_PROBE_FRAMES ? "it holds" : "too few frames in time: no word");
+            }
+         }
+      }
       int audioWaiting = player->audioAlive && !player->audioClockValid;     // a dead/absent audio pipeline never holds video
 
       // don't wait forever for audio to anchor the clock: on a stalled audio stream it never decodes a
@@ -1480,10 +2361,23 @@ const uint8_t *getVideoFrame(VideoPlayer *player, int *width, int *height)
             audioWaiting = 0;
          }
       }
-      if (found < 0 || !decoderWarm || audioWaiting) return takeHeldFrame(player, width, height);
+      if (found < 0 || !decoderWarm || audioWaiting) {
+         const uint8_t *held = takeHeldFrame(player, width, height);   // (unlocks)
+         if (probeLine[0]) logInfo("%s", probeLine);
+         if (probeLow) {   // (V3.1.0 Test 9) the same key frame on the lower stream: a seek, landing at or after it
+            player->vp9ProbeForceLow = 1;
+            int64_t at = (int64_t)player->vp9ProbeAtNs - 20000000ll;
+            postSeekNs(player, at > 0 ? at : 0, 1);
+         }
+         return held;
+      }
       player->basePts    = earliest;
       player->baseWallUs = nowUs;
       player->started    = 1;
+      // (V3.1.0) display sync locks on afresh, from the picture the clock picks: still locked from before a seek, it
+      // looked only for pictures later than the position - and the seek's first picture IS the position. With 1440p's
+      // ring it was dropped as late; 4K's ring of three it filled for good (the picture stood, RPCS3, 21 Nov)
+      player->syncActive = 0;
       if (player->vp9)
          snprintf(prerollLine, sizeof prerollLine, "[video-player] pre-roll done: picture at %d ms, sound at %d ms (%d frames "
                   "played), %d ready%s\n", (int)(earliest / 1000000ull),
@@ -1520,15 +2414,23 @@ const uint8_t *getVideoFrame(VideoPlayer *player, int *width, int *height)
       // pick the latest ready frame whose pts is due; drop older ready frames (skip if we fell behind)
       for (int i = 0; i < FRAME_SLOTS; i++)
          if (player->slots[i].state == SLOT_READY && player->slots[i].pts <= clock && (best < 0 || player->slots[i].pts >= bestPts)) { best = i; bestPts = player->slots[i].pts; }
-      if (synced && best >= 0) { player->syncActive = 1; player->syncLastUs = nowUs; player->syncVblanks = 0; }
+      if (synced && best >= 0) {
+         player->syncActive = 1; player->syncLastUs = nowUs; player->syncVblanks = 0;
+         player->syncAtPts = bestPts;   // (V3.1.0 Test 3)
+         if (haveDisplayHooks) player->syncLastMissed = displayHooks.vblanksMissed();   // (V3.1.0 Test 3)
+      }
    }
    if (!synced) player->syncActive = 0;
 
    int late = 0;
    if (best >= 0) {
       for (int i = 0; i < FRAME_SLOTS; i++) {
-         if (player->slots[i].state == SLOT_RETIRING) retireSlot(player, i);                             // GPU is done with it by now
-         else if (player->slots[i].state == SLOT_DISPLAYING) player->slots[i].state = SLOT_RETIRING;      // hold one present for the frame in flight
+         if (player->slots[i].state == SLOT_RETIRING) {                                                  // GPU is done with it by now -
+            if (!releaseByFlip(player) || slotFlipDone(player, &player->slots[i], nowUs)) retireSlot(player, i);   // (Test 3) once its flip happened
+         } else if (player->slots[i].state == SLOT_DISPLAYING) {                                          // hold it for the frame in flight
+            player->slots[i].state = SLOT_RETIRING;
+            player->slots[i].retiringUs = nowUs;
+         }
          else if (player->slots[i].state == SLOT_READY && player->slots[i].pts < bestPts) { retireSlot(player, i); late++; }   // drop skipped
       }
       player->slots[best].state = SLOT_DISPLAYING;
@@ -1570,28 +2472,59 @@ const uint8_t *getVideoFrame(VideoPlayer *player, int *width, int *height)
    int holdAction = 0;   // 1: pause the sound, 2: let it run on
    char holdLine[128];
    holdLine[0] = 0;
-   char safetyLine[160];   // (Test 14) the safety net's word, logged after the lock
+   char safetyLine[200];   // (Test 14) the safety net's word, logged after the lock
    safetyLine[0] = 0;
    if (player->audioHeld && (player->paused || !player->vp9 || !player->audioFeedOpen || !player->audioClockValid)) {
       player->audioHeld = 0;   // the user's pause owns the feed now; at the end of the sound, what is left plays out
       if (!player->paused) holdAction = 2;
    } else if (player->vp9 && player->audioFeedOpen && player->audioClockValid && player->started && !player->paused) {
-      int64_t behindNs = (int64_t)clock - (int64_t)player->currentPts;   // > 0: the picture is behind the sound
-      int readyAfter = 0;
-      for (int i = 0; i < FRAME_SLOTS; i++) if (player->slots[i].state == SLOT_READY) readyAfter++;
+      // > 0: the picture is behind the sound. (V3.1.0 Test 3) Display sync's timeline where it is past the picture on screen
+      // by a frame or three TEE VP9 left out: those repeats are no picture behind
+      uint64_t shownPts = synced && player->syncActive && haveDisplayHooks && syncByFlips && player->syncAtPts > player->currentPts
+                          ? player->syncAtPts : player->currentPts;
+      int64_t behindNs = (int64_t)clock - (int64_t)shownPts;
+      int readyAfter = 0, readyDue = 0;
+      for (int i = 0; i < FRAME_SLOTS; i++)
+         if (player->slots[i].state == SLOT_READY) { readyAfter++; if (player->slots[i].pts <= clock) readyDue++; }
+      // (V3.1.0) caught up: at the clock - or as near as the decoded pictures go, every one of them still to come. A held
+      // sound freezes the clock, and without display sync (24 / 25 fps on a 60 Hz screen) only a picture that is due is
+      // shown: the picture stopped a few ms before the clock - or before a frame TEE VP9 left out - and the sound waited
+      // for a picture that waited for the sound
+      int caughtUp = behindNs <= 0 || (readyDue == 0 && readyAfter > 0);
+      // (V3.0.4) While 1080p is on its way - from the safety net's word until the picture has caught up after the
+      // change - the sound waits only for a picture more than AV_HOLD_CATCHUP_NS behind. Each wait of the sound is a
+      // stutter, and the frames already fed to the decoder still come in 1440p: four in ten seconds in a busy 1440p60
+      // scene (TEE, 2026-11-14, LXb3EKWsInQ at 0:23). The picture drops what it is late for and catches up in 1080p.
+      // (V3.1.0 Test 7) "caught up after the change": the picture on screen is the lower stream's already. vp9OnLow alone is
+      // the feeder's, seconds before the screen gets there: the sound waited for the upper stream's last pictures again (4
+      // times at LXb3EKWsInQ's busy scene, Test 6)
+      if (player->vp9CatchingUp &&
+          ((player->vp9OnLow && player->currentPts >= player->vp9LastSwitchNs && behindNs < AV_HOLD_ENGAGE_NS / 2) ||
+           nowUs - player->vp9CatchingUpUs > VP9_CATCHUP_US))
+         player->vp9CatchingUp = 0;
+      int64_t holdAtNs = player->vp9CatchingUp ? AV_HOLD_CATCHUP_NS : AV_HOLD_ENGAGE_NS;
       if (!player->audioHeld) {
-         if (behindNs > AV_HOLD_ENGAGE_NS && !player->ended) {
+         // (V3.1.0 Test 3) not while every decoded picture is still to come: a gap in the pictures (frames TEE VP9 left
+         // out, a change of stream that lands later) is no picture behind - held then, the sound and the picture would
+         // wait for each other, and the release below lets go of it at once (the same test, caughtUp)
+         if (behindNs > holdAtNs && !caughtUp && !player->ended) {
             player->audioHeld = 1;
             player->audioHeldSinceUs = nowUs;
             holdAction = 1;
+            player->totals.holds++;   // (V3.1.0 Test 3)
             snprintf(holdLine, sizeof holdLine, "[video-player] the sound waits for the picture: %d ms behind it, %d decoded\n",
                      (int)(behindNs / 1000000), readyAfter);
          }
       } else {
          uint64_t heldUs = nowUs - player->audioHeldSinceUs;
-         if (player->ended || (behindNs <= 0 && (readyAfter >= AV_HOLD_READY || heldUs >= AV_HOLD_MAX_US))) {
+         // (V3.1.0) "both ready slots": the ring's ready ones - one at 4K
+         int holdReady = player->vp9Slots - 2 < AV_HOLD_READY ? player->vp9Slots - 2 : AV_HOLD_READY;
+         if (holdReady < 1) holdReady = 1;
+         if (player->ended || (caughtUp && (readyAfter >= holdReady || heldUs >= AV_HOLD_MAX_US)) ||
+             (player->vp9CatchingUp && behindNs < holdAtNs / 2)) {   // (V3.0.4) 1080p is on its way: the sound goes on
             player->audioHeld = 0;
             holdAction = 2;
+            player->totals.holdMs += (uint32_t)(heldUs / 1000);   // (V3.1.0 Test 3)
             snprintf(holdLine, sizeof holdLine, "[video-player] the sound runs on after %d ms, %d pictures decoded ahead\n",
                      (int)(heldUs / 1000), readyAfter);
          }
@@ -1599,27 +2532,35 @@ const uint8_t *getVideoFrame(VideoPlayer *player, int *width, int *height)
       // (Test 14) the safety net: 1440p falls behind although the cues let it play - more than VP9_BEHIND_NS for
       // VP9_BEHIND_US, or the sound held twice within VP9_HOLDS_US. Then 1080p from the next cue, and T_down for the
       // rest of the video at 90 % of the bitrate where it happened (the feeder does both)
-      if (player->hasLowDemuxer && !player->vp9OnLow && !player->vp9SafetyRequest) {
-         int ask = 0;
+      if (player->hasLowDemuxer && !player->vp9OnLow && !player->vp9SafetyRequest && !player->vp9SafetyPlanned) {
+         const char *sign = NULL;
          if (behindNs > VP9_BEHIND_NS) {
             if (!player->vp9BehindSinceUs) player->vp9BehindSinceUs = nowUs;
-            else if (nowUs - player->vp9BehindSinceUs > VP9_BEHIND_US) ask = 1;
+            else if (nowUs - player->vp9BehindSinceUs > VP9_BEHIND_US) sign = "the picture behind for a second";
          } else {
             player->vp9BehindSinceUs = 0;
          }
          if (holdAction == 1) {
-            if (player->vp9LastHoldUs && nowUs - player->vp9LastHoldUs < VP9_HOLDS_US) ask = 1;
+            if (player->vp9LastHoldUs && nowUs - player->vp9LastHoldUs < VP9_HOLDS_US) sign = "the sound waited twice";
             player->vp9LastHoldUs = nowUs;
          }
-         if (ask) {
+         // (V3.0.4) the earliest sign, seconds before the sound has to wait: pictures dropped as late or missing,
+         // VP9_DROP_SECONDS seconds in a row (counted with the stutter statistics below)
+         if (player->vp9DropSeconds >= VP9_DROP_SECONDS) sign = "pictures missing 2 s in a row";
+         if (sign) {
             const MkvDemuxer *high = &player->demuxer.container.mkv;
             int bps = (int)vp9SectionBps(high, vp9CueAtOrBefore(high, player->currentPts));
             player->vp9SafetyBps = bps;
             __sync_synchronize();
             player->vp9SafetyRequest = 1;
+            player->totals.safetyNets++;   // (V3.1.0 Test 3)
             player->vp9BehindSinceUs = player->vp9LastHoldUs = 0;
-            snprintf(safetyLine, sizeof safetyLine, "[video-player] VP9: 1440p falls behind at %d s (%d.%d Mbit/s there): "
-                     "1080p from the next cue\n", (int)(player->currentPts / 1000000000ull), VP9_MBIT(bps));
+            player->vp9DropSeconds = 0;
+            player->vp9CatchingUp = 1;   // (V3.0.4) the sound runs on from here until 1080p has caught up
+            player->vp9CatchingUpUs = nowUs;
+            snprintf(safetyLine, sizeof safetyLine, "[video-player] VP9: %s falls behind at %d s (%d.%d Mbit/s there, %s): "
+                     "%s from its next key frame, the sound runs on meanwhile\n", player->vp9HighName,
+                     (int)(player->currentPts / 1000000000ull), VP9_MBIT(bps), sign, player->vp9LowName);
          }
       }
    }
@@ -1629,18 +2570,50 @@ const uint8_t *getVideoFrame(VideoPlayer *player, int *width, int *height)
    char statsLine[200];
    statsLine[0] = 0;
    if (!player->paused) {
-      if (!player->statsSecondUs) { player->statsSecondUs = nowUs; player->statsReadyMin = FRAME_SLOTS; }
+      if (!player->statsSecondUs) { player->statsSecondUs = nowUs; player->statsClockNs = clock; player->statsReadyMin = FRAME_SLOTS; }
       if (best >= 0) player->statsShown++; else player->statsRepeats++;
       if (best < 0 && readyCount == 0) player->statsStarved++;
+      // (V3.1.0 Test 3) ... and of those, the ones at which the next picture was due: at 30 fps every other present on a
+      // 60 Hz screen needs none, and 4K's ring of three is often empty at such a present - which Test 2 counted as a
+      // picture missing. On TEE's console London 4K30 dropped to 1440p after 8 s although every picture came in time
+      int64_t frameDueNs = (int64_t)player->demuxer.frameDurationNs;
+      if (best < 0 && readyCount == 0 &&
+          (frameDueNs <= 0 || (int64_t)player->currentPts + frameDueNs <= (int64_t)clock + frameDueNs / 4)) player->statsMissed++;
       player->statsLate += late;
+      if (player->started) {   // (V3.1.0 Test 3) the same, since the player was built - for the bench
+         player->totals.presents++;
+         if (best >= 0) player->totals.shown++; else player->totals.repeats++;
+         if (best < 0 && readyCount == 0) player->totals.starved++;
+         player->totals.late += (uint32_t)late;
+      }
       if (readyCount < player->statsReadyMin) player->statsReadyMin = readyCount;
       if (nowUs - player->statsSecondUs >= 1000000ull) {
-         if (player->statsLate || player->statsStarved)
-            snprintf(statsLine, sizeof statsLine, "[video-player] 1 s: %d pictures shown, %d dropped as late, %d presents "
-                     "without a new one (%d with none ready), fewest ready %d of %d\n", player->statsShown, player->statsLate,
-                     player->statsRepeats, player->statsStarved, player->statsReadyMin, FRAME_SLOTS);
+         // (V3.1.0 Test 5) the pictures due in this second by the clock (a held sound holds it: none due then), and of them
+         // the ones that did not come on screen
+         int due = frameDueNs > 0 && clock > player->statsClockNs
+                   ? (int)(((int64_t)(clock - player->statsClockNs) + frameDueNs / 2) / frameDueNs) : 0;
+         int missing = due - player->statsShown;
+         int shortSecond = due > 0 && missing >= VP9_SHORT_MIN && missing * 10 >= due;
+         // (V3.0.4) the safety net's earliest sign: a short second of the upper stream - not in the seconds after a change
+         // of stream, when the decoder takes the new size, nor right after a seek
+         if (player->vp9DropIgnore > 0) {
+            player->vp9DropIgnore--;
+            player->vp9DropSeconds = 0;
+         } else if (player->vp9 && player->hasLowDemuxer && !player->vp9OnLow && !player->ended &&
+                    player->currentPts >= player->vp9LastSwitchNs + VP9_SETTLE_NS && shortSecond) {
+            player->vp9DropSeconds++;
+         } else {
+            player->vp9DropSeconds = 0;
+         }
+         // (V3.1.0 Test 3) a second in which a picture was missing or late - (Test 5) or short of its rate
+         if (player->statsLate || player->statsMissed || shortSecond)
+            snprintf(statsLine, sizeof statsLine, "[video-player] 1 s: %d pictures shown of %d due, %d dropped as late, %d presents "
+                     "without a new one (%d with none ready), fewest ready %d of %d, %d due with none ready\n",
+                     player->statsShown, due, player->statsLate, player->statsRepeats, player->statsStarved, player->statsReadyMin,
+                     FRAME_SLOTS, player->statsMissed);
          player->statsSecondUs = nowUs;
-         player->statsShown = player->statsLate = player->statsRepeats = player->statsStarved = 0;
+         player->statsClockNs = clock;
+         player->statsShown = player->statsLate = player->statsRepeats = player->statsStarved = player->statsMissed = 0;
          player->statsReadyMin = FRAME_SLOTS;
       }
    }
@@ -1659,6 +2632,7 @@ const uint8_t *getVideoFrame(VideoPlayer *player, int *width, int *height)
    if (holdLine[0]) logInfo("%s", holdLine);
    if (safetyLine[0]) logInfo("%s", safetyLine);
    if (prerollLine[0]) logInfo("%s", prerollLine);
+   if (probeLine[0]) logInfo("%s", probeLine);
    return buffer;
 }
 
@@ -1693,7 +2667,11 @@ static void postSeek(VideoPlayer *player, float seconds, int landAfter)
    if (seconds < 0.0f) seconds = 0.0f;
    float duration = getVideoDurationSeconds(player);
    if (duration > 0.0f && seconds > duration) seconds = duration;
-   int64_t targetNs = (int64_t)(seconds * 1.0e9f);
+   postSeekNs(player, (int64_t)(seconds * 1.0e9f), landAfter);
+}
+
+static void postSeekNs(VideoPlayer *player, int64_t targetNs, int landAfter)
+{
    lock(&player->lock);
    player->currentPts = (uint64_t)targetNs;   // position reads as the target until the seek lands
    unlock(&player->lock);
@@ -1720,6 +2698,8 @@ float getVideoPositionSeconds(const VideoPlayer *player)
 
 uint64_t getVideoPositionNs(const VideoPlayer *player) { return player->currentPts; }
 
+int hasVideoPlayerFailed(const VideoPlayer *player) { return player && player->failed; }
+
 float getVideoDurationSeconds(const VideoPlayer *player)
 {
    return (float)player->demuxer.durationNs / 1.0e9f;
@@ -1734,7 +2714,9 @@ long getVideoLiveFirstSq(const VideoPlayer *player)
 
 const char *getVideoDecoderName(const VideoPlayer *player)
 {
-   if (player && player->vp9) return "TEE Decoder";   // TEE: the format is on the video line, the decoder is the TEE Decoder
+   // TEE: the format is on the video line, the decoder is the TEE Decoder - (V3.1.0 Test 4) the R3 panel's " RSX" while its RSX
+   // part predicts
+   if (player && player->vp9) return player->vp9RsxOn ? "TEE Decoder RSX" : "TEE Decoder";
    return player ? getH264DecoderName(player->decoder) : "none";
 }
 
@@ -1749,7 +2731,12 @@ int getVideoFrameLayout(VideoPlayer *player, VideoFrameLayout *out)
    lock(&player->lock);
    int idx = player->displayIndex;
    if (idx < 0) { unlock(&player->lock); return 0; }
-   const FrameSlot *slot = &player->slots[idx];
+   FrameSlot *slot = &player->slots[idx];
+   // (V3.1.0 Test 4) a picture of a decoder with the RSX part is drawn only once the latch trusts it (vp9RsxTrust) - not
+   // stamped either, so it goes back at once
+   if (slot->hasVp9 && player->vp9Rsx && !player->vp9RsxTrusted) { unlock(&player->lock); return 0; }
+   // (V3.1.0 Test 3) the frame being drawn shows this picture: it goes back once that frame's flip has happened
+   if (haveDisplayHooks) { slot->drawnFlip = displayHooks.nextFlipId(); slot->drawn = 1; }
    if (slot->hasVp9) {
       // the decoder's frame buffer: planes as wide as the stream rounded up to 64, a border on every side (the
       // module's 80 luma / 48 chroma samples, read back from the stride), each plane starting 128-byte aligned

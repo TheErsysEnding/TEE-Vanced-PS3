@@ -1,0 +1,322 @@
+# Portuguese (Brazil), "você" as TEE Witch. Plural: one is 0 and 1.
+@name Português (Brasil)
+@script latin
+@flag br
+@order 5
+@plural fr
+1	"%s" ainda está sendo baixado. Ele toca aqui assim que terminar.
+2	"%s" espera os downloads anteriores. Ele toca aqui assim que terminar.
+3	Sobre
+4	Conta
+5	Adicionar à playlist
+6	Perguntar
+7	Reproduzir o próximo vídeo automaticamente
+8	Voltar
+9	Cancelar
+10	Categoria
+11	Mudar
+12	Canal
+13	Escolher
+14	Escolha seu idioma
+15	Fechar
+16	Continuar assistindo
+17	Não foi possível cancelar a inscrição em %s.
+18	Excluir
+19	Excluir o download "%s" do console?
+20	Baixar
+21	Downloads
+22	Downloads não concluídos: %d ("%s" e outros). Reiniciar do começo ou excluir?
+23	Enrolação e desvios
+24	Para você
+25	Jogos
+26	Histórico
+27	Lembrete de interação
+28	Introdução
+29	Manter
+30	Idioma
+31	Depois
+32	Mais recente: %s
+33	Vídeos marcados com "Gostei"
+34	Visualização em lista
+35	Ao vivo
+36	Carregando...
+37	Fazer login
+38	Menu
+39	Mover "%s" para a coluna Vídeo da XMB? O sistema fica com o arquivo: o TEE Vanced não vai mais listá-lo nem reproduzi-lo. A XMB o reproduz em 720p60 ou 1080p30 (um download em 1440p ou 1080p60 é baixado de novo nesse formato).
+40	Mover para a XMB
+41	Música
+42	Notícias
+43	Nenhum download ainda – R3 em qualquer vídeo baixa ele.
+44	Nenhum resultado
+45	Não
+46	Música fora do tema
+47	Sim
+48	Abrir canal
+49	Encerramento e telas finais
+50	Botão PS
+51	Página
+52	Reproduzir
+53	Reprodução
+54	Playlists
+55	Podcasts
+56	Populares
+57	Região
+58	Reiniciar
+59	Escaneie para links, lives\ne contato
+60	Buscar
+61	Trecho
+62	Autopromoção
+63	Configurações
+64	Pular
+65	Patrocínio
+66	Esportes
+67	Parar download
+68	Parar o download de "%s"? O que já foi baixado será descartado.
+69	Inscrever-se
+70	Inscrições
+71	TEE Vanced %s  ·  a v%s saiu no GitHub
+72	O TEE Vanced v%s saiu – esta é a %s. Ele está no GitHub: TheErsysEnding/TEE-Vanced-PS3, Releases.
+73	Esse canal não estava na lista de inscrições.
+74	Não foi possível enviar o botão PS: o console recusou registrar um controle virtual.
+75	Os textos do próprio app. Títulos e nomes do YouTube ficam como estão.
+76	Não foi possível criar ou gravar a pasta de dados ao iniciar, então nada pode ser salvo.\n\n%s
+77	O download de "%s" não terminou. Reiniciar do começo ou excluir?
+78	Este bloco não tem ID de canal, então não há inscrição para cancelar.
+79	Para a XMB
+80	Em alta
+81	Cancelar inscrição
+82	Cancelar a inscrição em %s?
+83	Inscrição cancelada – mas não foi possível salvar: o canal volta depois de reiniciar.\n\n%s\n\nEspaço livre: %lu KB
+84	Vídeo
+85	Assistir mais tarde
+86	O que acontece quando começa um trecho marcado. Em "Perguntar" aparece um botão para pular enquanto o trecho dura.
+87	Você pode mudar depois em Configurações.
+88	este canal
+89	O 1440p60 cai para 1080p60 em cerca de dois segundos numa cena pesada, e um início pesado demais para 1440p já começa em 1080p60.
+90	O 4K30 é beta: muito provavelmente vai cair muitas vezes para 1440p30. Cenas pesadas em 4K são mais do que o PS3 consegue decodificar a tempo.
+91	Vídeos 4K30 começam em 1440p e sobem para 4K onde o vídeo é leve o bastante.
+92	Títulos de vídeo em árabe e hebraico agora aparecem, da direita para a esquerda.
+93	Continuar
+94	Novo: vídeos 4K a 30 quadros por segundo, nos SPEs com o decodificador TEE VP9.
+95	Compartilhem sua experiência:
+96	Escaneie o código com o celular: links, lives e contato.
+97	Apoie TheErsysEnding:
+98	TEE Vanced %s  ·  novidades
+99	O app em 22 idiomas, o árabe da direita para a esquerda: escolha o seu na primeira vez ou depois em Configurações > Idioma.
+100	Novidades
+101	%d faixa de áudio || %d faixas de áudio
+102	%d canal que sua conta segue, de A a Z. X abre um canal, Triângulo cancela a inscrição. || %d canais que sua conta segue, de A a Z. X abre um canal, Triângulo cancela a inscrição.
+103	%d canal, de A a Z || %d canais, de A a Z
+104	falta %d min || faltam %d min
+105	%d vídeo || %d vídeos
+106	%s (traduzida automaticamente)
+107	%s – mas não foi possível salvar: some depois de reiniciar.\n\n%s
+108	%s – mas não foi possível salvar: some depois de reiniciar.\n\n%s\n\nEspaço livre: %lu KB
+109	%s Verifique a conexão e tente de novo.
+110	há %s dia || há %s dias
+111	há %s hora || há %s horas
+112	há %s minuto || há %s minutos
+113	há %s mês || há %s meses
+114	há %s segundo || há %s segundos
+115	%s inscrito || %s inscritos
+116	%s vídeo || %s vídeos
+117	%s visualização || %s visualizações
+118	%s assistindo || %s assistindo
+119	há %s semana || há %s semanas
+120	há %s ano || há %s anos
+121	720p60 / 1080p30  ·  MP4 para a XMB
+122	De A a Z
+123	O acesso não foi permitido na página do Google. Pressione X para tentar de novo.
+124	Adicionar aqui
+125	Adicionado a Assistir mais tarde
+126	Todos os canais
+127	Áudio
+128	Áudio %d/%d: %s
+129	Faixa de áudio
+130	Áudio: %s  -  Quadrado: %d faixa || Áudio: %s  -  Quadrado: %d faixas
+131	Austrália
+132	Áustria
+133	Auto (%s)
+134	Auto - %s
+135	O Auto reproduz em %s – escolha %dp nas opções do player (START) para a melhor qualidade.
+136	Reprodução automática: não
+137	Reprodução automática: sim
+138	Voltar ao vivo
+139	Fundo
+140	Opacidade do fundo
+141	Bélgica
+142	Preto
+143	Azul
+144	Brasil
+145	Bulgária
+146	Ocupado – tente de novo
+147	Canadá
+148	Capítulo
+149	Capítulo %d de %d
+150	Capítulos
+151	Capítulos: nenhum
+152	Verificando a qualidade...
+153	Escolha sua conta Google e permita o acesso
+154	Não foi possível ler este arquivo, então nada foi alterado:\n\n%s
+155	Não foi possível reconstruir a transmissão
+156	Croácia
+157	Ciano
+158	Tchéquia
+159	Excluir a playlist %s e seu %d vídeo? || Excluir a playlist %s e seus %d vídeos?
+160	Dinamarca
+161	Descrição
+162	Pronto
+163	Falha no download em %d%%: "%s%s"
+164	Baixar para a XMB
+165	Baixado: "%s%s"
+166	Baixando
+167	Baixando "%s%s"
+168	Baixando · %d%%
+169	Digite este código
+170	Todos os canais que sua conta segue, de A a Z.
+171	Finlândia
+172	Para a XMB, o vídeo vai para a coluna Vídeo dela, e o sistema fica com o arquivo: o TEE Vanced não vai mais listá-lo nem reproduzi-lo. A XMB o reproduz em 720p60 ou 1080p30.
+173	França
+174	Alemanha
+175	Pegando um código do Google...
+176	Vai para a coluna Vídeo da XMB, que o reproduz com o player do console.
+177	O Google Tradutor recusou as legendas – tente mais tarde
+178	Não foi possível acessar o Google. Pressione X para tentar de novo.
+179	Grécia
+180	Verde
+181	Ocultar
+182	Hungria
+183	Na coluna Vídeo da XMB: "%s%s"
+184	Irlanda
+185	Itália
+186	Não foi possível buscar os detalhes.
+187	Japão
+188	Ir
+189	AO VIVO
+190	Mais recentes
+191	Magenta
+192	México
+193	Mover
+194	Nome da playlist
+195	Países Baixos
+196	Nova
+197	Novo código
+198	Nova playlist...
+199	Envios mais recentes primeiro
+200	Sem capítulos
+201	Sem descrição.
+202	Nenhuma outra qualidade
+203	Nenhuma playlist ainda – pressione START para criar uma, ou L3 em qualquer vídeo para colocá-lo direto numa lista nova.
+204	Sem legendas
+205	Nenhuma visualização
+206	Nenhuma
+207	Noruega
+208	Nada que possa tocar
+209	Nada ainda – suas pesquisas aparecem aqui
+210	Mais antigos
+211	No YouTube e neste PS3
+212	Neste PS3
+213	No celular ou computador, abra
+214	Abrir
+215	Opções
+216	Contorno
+217	Botão PS indisponível
+218	Página %d / %d%s
+219	Pausar
+220	Tocando
+221	Toca em %s com sua configuração de qualidade (%dp).
+222	Toca no TEE Vanced (Downloads), no TEE Decoder.
+223	Toca no TEE Vanced (Downloads), com som Opus. Um vídeo sem 1440p vem em 1080p60.
+224	Polônia
+225	Portugal
+226	Estreou %s
+227	Pressione
+228	Pressione R3 para ocultar
+229	Qualidade
+230	Qualidade desconhecida
+231	Qualidade: %s
+232	Qualidade: nenhuma outra
+233	Pesquisas recentes
+234	Recomendados para você
+235	Vermelho
+236	Relevância
+237	Removido de Assistir mais tarde
+238	Repetir
+239	Voltar
+240	Romênia
+241	Rússia
+242	Escaneie com o celular
+243	Rolar
+244	Pesquisar no YouTube
+245	Selecionar
+246	Sérvia
+247	Sombra
+248	Fazer login no YouTube
+249	Sair da conta
+250	Conectado ao YouTube. Estas listas vêm da sua conta – assim como Inscrições, Assistir mais tarde, Histórico e Playlists no menu.
+251	Conectado. Suas listas agora vêm da sua conta do YouTube.
+252	Tamanho
+253	Pular %s
+254	Pulado: %s
+255	Ordenar
+256	Coreia do Sul
+257	Espanha
+258	Transmitido %s
+259	Inscrito
+260	A lista de inscrições está cheia – o máximo é %d canais.
+261	Estilo das legendas
+262	Legendas
+263	Legendas desativadas
+264	Legendas indisponíveis
+265	Legendas: %s
+266	Suécia
+267	Suíça
+268	Cor do texto
+269	Borda do texto
+270	Esse é o máximo de playlists que este app guarda.
+271	Essa playlist está cheia.
+272	O PS3 não tem nenhuma transmissão deste vídeo que consiga reproduzir.
+273	O melhor que o PS3 reproduz dele.
+274	O melhor que o PS3 reproduz. Nos momentos mais pesados pode cair para 1080p60 por alguns segundos.
+275	Não foi possível carregar a lista de canais. O volta.
+276	Este canal não tem um ID válido, então não dá para se inscrever.
+277	Este canal não tem um ID válido, então não dá para se inscrever. (ID: "%s")
+278	Este código expirou. Pressione X para um novo.
+279	Esta live está com o voltar desativado
+280	Faixa indisponível - %s
+281	Legendas traduzidas indisponíveis
+282	Tradução parada – o resto no idioma original
+283	Em alta e Ao vivo vêm do YouTube deste país; Pesquisa e Esportes mudam só em parte. O idioma do próprio app fica em Configurações > Idioma.
+284	Turquia
+285	Digitar
+286	Ucrânia
+287	Reino Unido
+288	Estados Unidos
+289	Inscrição cancelada
+290	Visualizações
+291	ASSISTIDO
+292	Aguardando
+293	Aguardando seu login. Esta página segue sozinha.
+294	Assistir mais tarde está cheio
+295	Assistido
+296	O que você assistiu no YouTube
+297	Branco
+298	Retira o login deste console no Google
+299	Amarelo
+300	O YouTube não adicionou o vídeo a Assistir mais tarde.
+301	O YouTube não removeu o vídeo de Assistir mais tarde.
+302	O YouTube não aceitou a inscrição.
+303	O YouTube não aceitou o cancelamento da inscrição.
+304	Sua conta não segue nenhum canal.
+305	Suas inscrições, Assistir mais tarde, histórico e recomendações passam a vir da sua conta do YouTube. Sua senha só é digitada na própria página do Google.
+306	não foi possível abrir a transmissão
+307	não foi possível reabrir o vídeo
+308	não foi possível iniciar o processo
+309	não foi possível trocar a faixa de áudio
+310	em uso
+311	nenhum vídeo MP4 reproduzível
+312	sem som
+313	falha ao resolver
+314	para digitar
+315	link ou ID não reconhecido
+316	±1 min

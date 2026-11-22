@@ -200,6 +200,10 @@ typedef struct {
 	vp9_fc frame_contexts[4];
 	vp9_counts counts;
 	int count_enabled;                  /* !error_resilient && !frame_parallel_decoding_mode */
+	/* the above contexts' first column: 0 while the frame fits them (mi_cols <= VP9_MAX_MI_COLS); in a wider frame
+	   (4K on the SPU) they hold one tile column at a time and this is its first column (needs one tile row and tile
+	   columns of at most VP9_MAX_MI_COLS, which is exact: tile columns read nothing of each other) */
+	int ccol, wide;
 	/* persistent across frames */
 	int ref_valid[NUM_REF_FRAMES];
 	int ref_width[NUM_REF_FRAMES], ref_height[NUM_REF_FRAMES];

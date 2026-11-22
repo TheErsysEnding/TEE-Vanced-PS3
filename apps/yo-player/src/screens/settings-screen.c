@@ -7,10 +7,14 @@
 // ONE list - UP/DOWN walk all nine rows and wrap, as they always did - so no section needs a way of its own
 // to be reached. The card is where the channel link lives, so the QR code sits in a place that is always on
 // screen rather than behind a modal nobody opens. The one row that is not a toggle, Region, opens its picker
-// (region-screen.h) on X.
+// (region-screen.h) on X. (V3.1.0) Language sits under the About card, in a card of its own: the right panel's
+// rows fill the safe area to the last pixel. It is the list's first row, above Autoplay; X opens the picker
+// (language-screen.h), and back from it with another language the page is made anew in it.
 
 #include "screens/settings-screen.h"
 #include "screens/region-screen.h"   // openRegionScreen: X on the Region row
+#include "screens/language-screen.h" // (V3.1.0) openLanguagePicker: X on the Language row
+#include "i18n.h"                    // (V3.1.0) tr, and the language in use with its flag
 #include "storage.h"
 #include "settings.h"            // the content region: its name for the Region row
 #include "app-paths.h"      // APP_VERSION
@@ -83,7 +87,9 @@
 // between rows, and only the focused row ever has a plate. The 60-px segment group and the switch with its
 // ring stay inside a 64-px row.
 #define ROW_H            64
-#define ROW_PITCH        68
+#define ROW_PITCH_MAX    68
+#define ROW_PITCH_MIN    62     // (V3.1.0) a translated explanation of two lines: the rows close up to this
+#define ROW_PITCH        (state.rowPitch)
 #define ROW_TEXT         26     // an option's name, 26/700 - 800 on the focused row
 #define ROW_WEIGHT       UI_WEIGHT_BOLD
 #define ROW_FOCUS_WEIGHT UI_WEIGHT_EXTRABOLD
@@ -95,7 +101,9 @@
 // Skip / Ask / Keep as one segment group, right-aligned in the panel: 5 px of padding round three 128x50
 // segments 4 px apart; radius 18 for the group, 14 for a segment - the radius UI_RING_SEGMENT is made for.
 #define SEG_COUNT        3
-#define SEG_W            128
+#define SEG_MIN_W        128
+#define SEG_MAX_W        190
+#define SEG_W            (state.segW)   // (V3.1.0) as wide as the longest word needs ("Überspringen")
 #define SEG_H            50
 #define SEG_GAP          4
 #define SEG_RADIUS       14
@@ -123,6 +131,15 @@
 // longest name needs, so it keeps its width whichever country is in use.
 #define REGION_PAD       24     // the name -> the segment's edges, at the least
 
+// (V3.1.0) the Language card, under the About card in its column: its title as the About card's, one row with the
+// language's flag and its own name for itself
+#define LANG_CARD_GAP    24     // the About card's bottom -> this card's top
+#define LANG_ROW_DY      78     // the card's top -> its row
+#define LANG_CARD_BOTTOM 20     // the row's bottom -> the card's bottom edge
+#define LANG_FLAG_W      48
+#define LANG_FLAG_H      32
+#define LANG_FLAG_GAP    18
+
 // The words on the controls are rendered once in white and tinted when drawn (as the rail's names are):
 // a segment's word takes three colours by state, and re-colouring a label would rasterise it again.
 #define TEXT_TINTABLE    0xFFFFFFFFu
@@ -131,6 +148,7 @@
 // are a block of their own, which is also the only place "skip the intro" can be turned on. Region is no
 // toggle: X opens its picker.
 enum {
+   ROW_LANGUAGE,   // (V3.1.0) in the card under About
    ROW_AUTOPLAY,
    ROW_REGION,
    ROW_SKIP_FIRST,
@@ -145,6 +163,8 @@ static Label       rowLabels[ROW_COUNT][2];       // each option's name at 700 [
 static Label       segmentLabels[SEG_COUNT][2];   // Skip / Ask / Keep in white, at 700 [0] and 800 [1]
 static Label       switchLabels[2];               // "Off" [0] / "On" [1] in white
 static Label       regionLabel;                   // the country in use, in white at 800 like a lit segment's word
+static Label       languageHeading;               // (V3.1.0) the Language card's title
+static GfxTexture  languageFlag;                  // ... and the flag of the language in use
 static UiHints     hints;
 static ButtonRepeat navigateRepeat;
 
@@ -156,6 +176,9 @@ static struct {
    int autoplayY, regionY, sponsorBaseline, explainBaseline, categoryY, panelH;
    int linkBaseline, noteBaseline, cardH;
    int regionSegW;        // the Region value's segment: the longest country name and its padding
+   int languageY, languageCardH;   // (V3.1.0) the Language card's top and height
+   int segW, rowPitch;             // (V3.1.0) a segment's width, the skip rows' pitch
+   unsigned languageSeen;          // (V3.1.0) the language the labels are in (i18nRevision)
    uint32_t boxEdge;      // the hairline blended over surface-1, opaque
 } state;
 
@@ -211,10 +234,17 @@ static void layOut(void)
                            + uiGetTextMetrics(clockFont, CLOCK_SIZE).baseline;
 
    state.autoplayY       = BODY_Y + FIRST_ROW_DY;
-   state.regionY         = state.autoplayY + ROW_PITCH;
+   state.regionY         = state.autoplayY + ROW_PITCH_MAX;
    state.sponsorBaseline = state.regionY + ROW_H + SECTION_DY;
    state.explainBaseline = state.sponsorBaseline + EXPLAIN_DY;
    state.categoryY       = lastBaselineOf(&explainLabel, state.explainBaseline) + ROWS_DY;
+   // (V3.1.0) an explanation that takes a second line in another language must not push the last row past the
+   // safe area: the rows close up a little (their 60-px groups still apart)
+   int rows = ROW_SKIP_END - ROW_SKIP_FIRST;
+   int room = UI_SAFE_BOTTOM - PANEL_PAD_BOTTOM - state.categoryY - ROW_H;
+   state.rowPitch = rows > 1 ? room / (rows - 1) : ROW_PITCH_MAX;
+   if (state.rowPitch > ROW_PITCH_MAX) state.rowPitch = ROW_PITCH_MAX;
+   if (state.rowPitch < ROW_PITCH_MIN) state.rowPitch = ROW_PITCH_MIN;
    state.panelH          = state.categoryY + (ROW_SKIP_END - 1 - ROW_SKIP_FIRST) * ROW_PITCH + ROW_H
                            + PANEL_PAD_BOTTOM - BODY_Y;
 
@@ -222,11 +252,13 @@ static void layOut(void)
    state.linkBaseline = BODY_Y + FIRST_ROW_DY + qrSpan + LINK_GAP;
    state.noteBaseline = state.linkBaseline + NOTE_GAP;
    state.cardH        = lastBaselineOf(&noteLabel, state.noteBaseline) + CARD_PAD_BOTTOM - BODY_Y;
-
+   state.languageY     = BODY_Y + state.cardH + LANG_CARD_GAP;
+   state.languageCardH = LANG_ROW_DY + ROW_H + LANG_CARD_BOTTOM;
 }
 
 static int rowY(int row)
 {
+   if (row == ROW_LANGUAGE) return state.languageY + LANG_ROW_DY;
    if (row == ROW_AUTOPLAY) return state.autoplayY;
    if (row == ROW_REGION)   return state.regionY;
    return state.categoryY + (row - ROW_SKIP_FIRST) * ROW_PITCH;
@@ -240,7 +272,7 @@ static int measureRegionSegment(void)
    int widest = 0;
    for (int i = 0; i < getContentRegionCount(); i++) {
       const ContentRegion *region = getContentRegionAt(i);
-      int width = region ? (int)measureFontText(font, SEG_TEXT, region->name) + 1 : 0;
+      int width = region ? (int)measureFontText(font, SEG_TEXT, tr(region->name)) + 1 : 0;
       if (width > widest) widest = width;
    }
    int segment = widest + 2 * REGION_PAD;
@@ -252,37 +284,40 @@ static int measureRegionSegment(void)
 static const char *regionName(void)
 {
    const ContentRegion *region = getContentRegionAt(getContentRegionIndex());
-   return region ? region->name : getContentRegionCode();
+   return region ? tr(region->name) : getContentRegionCode();
 }
 
 static void initSettings(void)
 {
    state.screenW = getGfxScreenWidth();
    state.screenH = getGfxScreenHeight();
-   state.selected = 0;
+   state.selected = ROW_AUTOPLAY;   // where it always opened; Language is one UP from there
+   state.languageSeen = i18nRevision();
    // the panels' 2-px edge: the hairline over surface-1, worked out once and drawn opaque (see drawBox)
    state.boxEdge = interpolateColor(activeTheme->surface1, uiWithAlpha(activeTheme->hairline, 0xFF),
                                     (float)(activeTheme->hairline >> 24) / 255.0f);
 
    // Fonts are shared app-wide (ui-fonts.h): nothing is opened here and nothing may be closed in term.
-   // All of this screen's text is written in the code, so it is Manrope throughout.
+   // All of this screen's text is written in the code, in the language in use (i18n.h).
    uiInitLabel(&titleLabel, UI_PAGE_TITLE_WEIGHT, CONTENT_X, 0, AUTO, UI_PAGE_TITLE_SIZE, activeTheme->textPrimary,
-               TEXT_NOWRAP, "Settings");
+               TEXT_NOWRAP, tr("Settings"));
    // (V3.0.0 Test 12) with a newer release out, the line says so (update-check.h)
-   char version[96], newer[16];
-   if (getNewerRelease(newer, sizeof newer)) snprintf(version, sizeof version, "TEE Vanced %s  \xC2\xB7  v%s is out on GitHub",
+   char version[256], newer[16];
+   if (getNewerRelease(newer, sizeof newer)) snprintf(version, sizeof version, tr("TEE Vanced %s  \xC2\xB7  v%s is out on GitHub"),
                                                        APP_VERSION, newer);
    else snprintf(version, sizeof version, "TEE Vanced %s", APP_VERSION);
    uiInitLabel(&versionLabel, UI_META_WEIGHT, CONTENT_X, 0, AUTO, UI_META_SIZE, activeTheme->textTertiary,
                TEXT_NOWRAP, version);
 
-   uiInitLabel(&aboutLabel,    HEADING_WEIGHT, 0, 0, AUTO, HEADING_SIZE, activeTheme->textPrimary, TEXT_NOWRAP, "About");
-   uiInitLabel(&playbackLabel, HEADING_WEIGHT, 0, 0, AUTO, HEADING_SIZE, activeTheme->textPrimary, TEXT_NOWRAP, "Playback");
+   uiInitLabel(&aboutLabel,    HEADING_WEIGHT, 0, 0, AUTO, HEADING_SIZE, activeTheme->textPrimary, TEXT_NOWRAP, tr("About"));
+   uiInitLabel(&playbackLabel, HEADING_WEIGHT, 0, 0, AUTO, HEADING_SIZE, activeTheme->textPrimary, TEXT_NOWRAP, tr("Playback"));
    uiInitLabel(&sponsorLabel,  HEADING_WEIGHT, 0, 0, AUTO, HEADING_SIZE, activeTheme->textPrimary, TEXT_NOWRAP, "SponsorBlock");
+   uiInitLabel(&languageHeading, HEADING_WEIGHT, 0, 0, CARD_W - 2 * CARD_PAD_X, HEADING_SIZE, activeTheme->textPrimary,
+               TEXT_NOWRAP_ELLIPSIS, tr("Language"));
    // one line across the panel (about 1050 px of the 1116 there are); wrapped rather than cut should a font
    // ever draw it wider, and the rows under it follow its height (layOut)
-   uiInitLabel(&explainLabel, UI_BODY_WEIGHT, 0, 0, TEXT_RIGHT - TEXT_X, UI_BODY_SIZE, activeTheme->textSecondary,
-               TEXT_WRAP, "What happens when a marked segment starts. Ask shows a skip button for as long as the segment runs.");
+   uiInitLongLabel(&explainLabel, UI_BODY_WEIGHT, 0, 0, TEXT_RIGHT - TEXT_X, UI_BODY_SIZE, activeTheme->textSecondary,
+                   TEXT_WRAP, tr("What happens when a marked segment starts. Ask shows a skip button for as long as the segment runs."));
 
    // the card: raw labels, because the URL is literal text, not markup (it is ASCII, so uiInitTextLabel keeps
    // it in Manrope). The note is about 335 px, wider than the code, so it takes two lines - broken by hand,
@@ -290,40 +325,57 @@ static void initSettings(void)
    int cardTextW = CARD_W - 2 * CARD_PAD_X;
    uiInitTextLabel(&linkLabel, UI_WEIGHT_BOLD, 0, 0, cardTextW, LINK_SIZE, activeTheme->textPrimary,
                    TEXT_NOWRAP_ELLIPSIS, QR_URL);
-   uiInitTextLabel(&noteLabel, UI_META_WEIGHT, 0, 0, cardTextW, UI_META_SIZE, activeTheme->textSecondary,
-                   TEXT_WRAP, "Scan for links, streams\nand contact");
+   uiInitLabel(&noteLabel, UI_META_WEIGHT, 0, 0, cardTextW, UI_META_SIZE, activeTheme->textSecondary,
+               TEXT_WRAP, tr("Scan for links, streams\nand contact"));
 
    // The names end short of the segment group, so even "Interaction reminder" (about 270 px at 26/800) never
    // meets it - it has some 660 px. Autoplay's, without a dot, starts 30 px further left, far from its switch.
    // Each name is rendered in both weights here, once: the focused row's is 800 (Bild 3), and swapping
    // textures as the focus moves costs nothing, where restyling a label would rasterise it again - and wait
    // for the RSX - twice for every step of a held d-pad.
+   // (V3.1.0) the segments as wide as the longest of Skip / Ask / Keep needs in the language in use
+   static const char *SEGMENT_WORDS[SEG_COUNT] = { N_("Skip"), N_("Ask"), N_("Keep") };
+   state.segW = SEG_MIN_W;
+   for (int k = 0; k < SEG_COUNT; k++) {
+      int need = (int)measureFontText(uiGetFont(ROW_FOCUS_WEIGHT), SEG_TEXT, tr(SEGMENT_WORDS[k])) + 28;
+      if (need > state.segW) state.segW = need;
+   }
+   if (state.segW > SEG_MAX_W) state.segW = SEG_MAX_W;
+   state.rowPitch = ROW_PITCH_MAX;
    int nameW = GROUP_X - NAME_GAP - (TEXT_X + DOT_SIZE + DOT_GAP);
    for (int row = 0; row < ROW_SKIP_END; row++) {
       const char *name;
-      if      (row == ROW_AUTOPLAY) name = "Autoplay next video";
-      else if (row == ROW_REGION)   name = "Region";
+      int width = nameW;
+      if      (row == ROW_LANGUAGE) {   // (V3.1.0) the language's own name for itself, after its flag
+         name  = i18nName(i18nIndex());
+         width = CARD_W - 2 * CARD_PAD_X - LANG_FLAG_W - LANG_FLAG_GAP;
+      }
+      else if (row == ROW_AUTOPLAY) name = tr("Autoplay next video");
+      else if (row == ROW_REGION)   name = tr("Region");
       else                          name = getSponsorCategoryName((SponsorCategory)skipCategory(row));
-      uiInitLabel(&rowLabels[row][0], ROW_WEIGHT,       0, 0, nameW, ROW_TEXT, activeTheme->textPrimary, TEXT_NOWRAP_ELLIPSIS, name);
-      uiInitLabel(&rowLabels[row][1], ROW_FOCUS_WEIGHT, 0, 0, nameW, ROW_TEXT, activeTheme->textPrimary, TEXT_NOWRAP_ELLIPSIS, name);
+      uiInitLabel(&rowLabels[row][0], ROW_WEIGHT,       0, 0, width, ROW_TEXT, activeTheme->textPrimary, TEXT_NOWRAP_ELLIPSIS, name);
+      uiInitLabel(&rowLabels[row][1], ROW_FOCUS_WEIGHT, 0, 0, width, ROW_TEXT, activeTheme->textPrimary, TEXT_NOWRAP_ELLIPSIS, name);
    }
+   unsigned int flagSize = 0;
+   const uint8_t *flag = i18nFlag(i18nIndex(), &flagSize);
+   memset(&languageFlag, 0, sizeof languageFlag);
+   if (flag) languageFlag = loadGfxTextureMem(flag, flagSize);
 
    // a segment's word: onAccent on the accent, textPrimary when chosen, textSecondary otherwise (drawSegments)
-   static const char *SEGMENT_WORDS[SEG_COUNT] = { "Skip", "Ask", "Keep" };
-   for (int k = 0; k < SEG_COUNT; k++) {
-      uiInitLabel(&segmentLabels[k][0], ROW_WEIGHT,       0, 0, AUTO, SEG_TEXT, TEXT_TINTABLE, TEXT_NOWRAP, SEGMENT_WORDS[k]);
-      uiInitLabel(&segmentLabels[k][1], ROW_FOCUS_WEIGHT, 0, 0, AUTO, SEG_TEXT, TEXT_TINTABLE, TEXT_NOWRAP, SEGMENT_WORDS[k]);
+   for (int k = 0; k < SEG_COUNT; k++) {   // (V3.1.0) a word longer than its segment ends in "..."
+      uiInitLabel(&segmentLabels[k][0], ROW_WEIGHT,       0, 0, SEG_W - 12, SEG_TEXT, TEXT_TINTABLE, TEXT_NOWRAP_ELLIPSIS, tr(SEGMENT_WORDS[k]));
+      uiInitLabel(&segmentLabels[k][1], ROW_FOCUS_WEIGHT, 0, 0, SEG_W - 12, SEG_TEXT, TEXT_TINTABLE, TEXT_NOWRAP_ELLIPSIS, tr(SEGMENT_WORDS[k]));
    }
-   uiInitLabel(&switchLabels[0], ROW_WEIGHT, 0, 0, AUTO, SEG_TEXT, TEXT_TINTABLE, TEXT_NOWRAP, "Off");
-   uiInitLabel(&switchLabels[1], ROW_WEIGHT, 0, 0, AUTO, SEG_TEXT, TEXT_TINTABLE, TEXT_NOWRAP, "On");
-   // the country names are the app's own (English, ASCII): Manrope, like every other word on this page
+   uiInitLabel(&switchLabels[0], ROW_WEIGHT, 0, 0, AUTO, SEG_TEXT, TEXT_TINTABLE, TEXT_NOWRAP, tr("Off"));
+   uiInitLabel(&switchLabels[1], ROW_WEIGHT, 0, 0, AUTO, SEG_TEXT, TEXT_TINTABLE, TEXT_NOWRAP, tr("On"));
+   // the country names are the app's own, in the language in use
    uiInitLabel(&regionLabel, ROW_FOCUS_WEIGHT, 0, 0, AUTO, SEG_TEXT, TEXT_TINTABLE, TEXT_NOWRAP, regionName());
    state.regionSegW = measureRegionSegment();
 
    uiInitHints(&hints);
-   uiAddHint(&hints, GLYPH_CROSS,  "Change");
-   uiAddHint(&hints, GLYPH_CIRCLE, "Back");
-   uiAddHint(&hints, GLYPH_DPAD_LEFT, "Menu");   // the rail opens here as on Home
+   uiAddHint(&hints, GLYPH_CROSS,  tr("Change"));
+   uiAddHint(&hints, GLYPH_CIRCLE, tr("Back"));
+   uiAddHint(&hints, GLYPH_DPAD_LEFT, tr("Menu"));   // the rail opens here as on Home
 
    memset(&navigateRepeat, 0, sizeof navigateRepeat);
    layOut();
@@ -331,8 +383,19 @@ static void initSettings(void)
 
 // Back from the region picker. A direction still held as it closed must wait the normal hold delay here
 // rather than fire on the first frame: a timer last stamped before the picker opened reads as long overdue.
+static void termSettings(void);
+
 static void resumeSettings(void)
 {
+   // (V3.1.0) back from the language picker with another language: the page anew in it, the focus where it was, and
+   // the rail's names (Home makes its page anew when it is next in front)
+   if (state.languageSeen != i18nRevision()) {
+      int selected = state.selected;
+      termSettings();
+      initSettings();
+      state.selected = selected;
+      relabelSidebar();
+   }
    navigateRepeat.timer   = sys_time_get_system_time();
    navigateRepeat.repeats = 0;
 }
@@ -357,6 +420,7 @@ static void updateSettings(void)
 
    if (isPadButtonPressed(PAD_BTN_CROSS)) {
       if (state.selected == ROW_REGION) { openRegionScreen(); return; }   // a list to pick from, not a toggle
+      if (state.selected == ROW_LANGUAGE) { openLanguagePicker(0); return; }   // (V3.1.0) likewise
       toggleRow(state.selected);
    }
 }
@@ -479,13 +543,31 @@ static void drawCard(void)
    uiDrawLabelAt(&noteLabel, x, uiLabelYForBaseline(&noteLabel, state.noteBaseline));
 }
 
+// (V3.1.0) the Language card: its title as About's, then the row - the flag and the language's name, on the focus
+// plate when focused, a ring round the flag then, as X opens the picker
+static void drawLanguageCard(void)
+{
+   int x = CARD_X + CARD_PAD_X, y = rowY(ROW_LANGUAGE), focused = state.selected == ROW_LANGUAGE;
+   drawBox(CARD_X, state.languageY, CARD_W, state.languageCardH);
+   uiDrawLabelAt(&languageHeading, x, uiLabelYForBaseline(&languageHeading, state.languageY + HEADING_DY - 8));
+   if (focused)
+      uiFillRounded(x - ROW_PLATE_OUT, y, CARD_W - 2 * CARD_PAD_X + 2 * ROW_PLATE_OUT, ROW_H, UI_RADIUS_ROW, activeTheme->hintFill);
+   int fy = y + (ROW_H - LANG_FLAG_H) / 2;
+   uiFillRect(x - 2, fy - 2, LANG_FLAG_W + 4, LANG_FLAG_H + 4, activeTheme->surface3);   // a frame: white flags
+   if (languageFlag.offset)
+      drawGfxTexture(x, fy, LANG_FLAG_W, LANG_FLAG_H, languageFlag, 0.0f, 0.0f, 1.0f, 1.0f, 0xFFFFFFFF, GFX_FILTER_LINEAR);
+   if (focused) uiDrawFocusRing(x - 2, fy - 2, LANG_FLAG_W + 4, LANG_FLAG_H + 4, UI_RING_SEGMENT, activeTheme->textPrimary);
+   const Label *name = &rowLabels[ROW_LANGUAGE][focused];
+   uiDrawLabelAt(name, x + LANG_FLAG_W + LANG_FLAG_GAP, uiLabelYForCenter(name, y, ROW_H));
+}
+
 static void drawPanel(void)
 {
    drawBox(PANEL_X, BODY_Y, PANEL_W, state.panelH);
    uiDrawLabelAt(&playbackLabel, TEXT_X, uiLabelYForBaseline(&playbackLabel, BODY_Y + HEADING_DY));
    uiDrawLabelAt(&sponsorLabel,  TEXT_X, uiLabelYForBaseline(&sponsorLabel, state.sponsorBaseline));
    uiDrawLabelAt(&explainLabel,  TEXT_X, uiLabelYForBaseline(&explainLabel, state.explainBaseline));
-   for (int row = 0; row < ROW_SKIP_END; row++) drawRow(row);
+   for (int row = ROW_AUTOPLAY; row < ROW_SKIP_END; row++) drawRow(row);
 }
 
 static void drawSettings(void)
@@ -498,6 +580,7 @@ static void drawSettings(void)
    uiDrawClock(UI_SAFE_RIGHT, state.clockBaseline);
 
    drawCard();
+   drawLanguageCard();   // (V3.1.0)
    drawPanel();
    // bottom left, under the About card, where the Ember settings design (Bild 3) puts this screen's hints
    uiDrawHints(&hints, CONTENT_X, UI_HINTS_BOTTOM_Y, UI_ALIGN_LEFT);
@@ -522,6 +605,8 @@ static void termSettings(void)
    freeLabel(&switchLabels[0]);
    freeLabel(&switchLabels[1]);
    freeLabel(&regionLabel);
+   freeLabel(&languageHeading);
+   if (languageFlag.offset) retireGfxTexture(&languageFlag);
    // no closeFont: the fonts belong to ui-fonts.c and every other screen is still drawing with them
 }
 

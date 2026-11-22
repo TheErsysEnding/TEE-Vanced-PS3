@@ -13,6 +13,8 @@
 // being rasterised again.
 
 #include "video-grid.h"
+#include "i18n.h"   // (V3.1.0) tr: the texts in the language in use
+#include "yt-text.h"   // (V3.1.0) localizeYouTubeText: "3 weeks ago" in the app's language
 
 #include "gfx.h"
 #include "theme.h"
@@ -522,8 +524,11 @@ static void materializeTile(VideoGrid *grid, int i)
 
    // the channel name and the meta line are external text too: cleaned like the title before a font is
    // picked for them (a channel named with an emoji would otherwise leave its gap and pull in FONT_POP)
-   const char *rest[2] = { item->views, item->published };
-   char meta[160];
+   char views[64], age[96];   // (V3.1.0) YouTube's English words in the app's language
+   localizeYouTubeText(item->views, views, sizeof views);
+   localizeYouTubeText(item->published, age, sizeof age);
+   const char *rest[2] = { views, age };
+   char meta[320];
    if (grid->view == GRID_VIEW_LIST) {
       // Bild 5's meta line: the channel in its own label, so it can be the brighter part of the line, and the
       // rest right after it. The channel gets at most three fifths of the column - a long name is cut rather
@@ -533,7 +538,7 @@ static void materializeTile(VideoGrid *grid, int i)
       uiCleanText(meta, (int)sizeof meta, meta);
       setFittedText(&grid->metas[i], uiPickFont(META_WEIGHT, meta), grid->textW - grid->channels[i].tt.tex.w, meta);
    } else {
-      const char *parts[3] = { author, item->views, item->published };
+      const char *parts[3] = { author, views, age };
       joinMeta(meta, sizeof meta, parts, 3, 0);
       uiCleanText(meta, (int)sizeof meta, meta);
       // (Test 15) the channel's picture before it, when one can come
@@ -541,7 +546,7 @@ static void materializeTile(VideoGrid *grid, int i)
       int indent = grid->avatarMeta[i] ? CARD_AVATAR + CARD_AVATAR_GAP : 0;
       setFittedText(&grid->metas[i], uiPickFont(META_WEIGHT, meta), grid->textW - indent, meta);
    }
-   uiSetTextLabel(&grid->durations[i], UI_BADGE_WEIGHT, item->isLive ? "LIVE" : item->duration);
+   uiSetTextLabel(&grid->durations[i], UI_BADGE_WEIGHT, item->isLive ? tr("LIVE") : item->duration);
 }
 
 // The thumbnail is retired rather than freed: a page turn in the list view moves the window by three rows,
@@ -732,8 +737,8 @@ void initVideoGrid(VideoGrid *grid, Font *font, int x, int y, int width, int hei
 
    computeGeometry(grid);
    layoutLabels(grid);
-   uiInitLabel(&grid->watchLaterBadge, UI_BADGE_WEIGHT, 0, 0, AUTO, UI_BADGE_SIZE, activeTheme->textPrimary, TEXT_NOWRAP, "Watch Later");
-   uiInitLabel(&grid->watchedBadge, UI_BADGE_WEIGHT, 0, 0, AUTO, UI_BADGE_SIZE, activeTheme->textSecondary, TEXT_NOWRAP, "WATCHED");
+   uiInitLabel(&grid->watchLaterBadge, UI_BADGE_WEIGHT, 0, 0, AUTO, UI_BADGE_SIZE, activeTheme->textPrimary, TEXT_NOWRAP, tr("Watch Later"));
+   uiInitLabel(&grid->watchedBadge, UI_BADGE_WEIGHT, 0, 0, AUTO, UI_BADGE_SIZE, activeTheme->textSecondary, TEXT_NOWRAP, tr("WATCHED"));
 }
 
 // ---- the Home preview (V3.0.0) ----
@@ -833,8 +838,8 @@ static void heroDownloadText(const SearchResult *item, char *out, int cap)
 {
    int percent = 0;
    int state = getDownloadProgress(item->videoId, &percent);
-   if (state == 1) snprintf(out, cap, "Downloading \xC2\xB7 %d%%", percent);
-   else            snprintf(out, cap, "%s", state == 2 ? "Waiting" : "Downloading");
+   if (state == 1) snprintf(out, cap, tr("Downloading \xC2\xB7 %d%%"), percent);
+   else            snprintf(out, cap, "%s", state == 2 ? tr("Waiting") : tr("Downloading"));
 }
 
 static void labelHero(VideoGrid *grid, int i)
@@ -852,8 +857,11 @@ static void labelHero(VideoGrid *grid, int i)
    setFittedText(&grid->heroTitle,  font, HERO_TEXT_W, line);
    setFittedText(&grid->heroTitle2, font, HERO_TEXT_W, title + next);
 
-   const char *parts[3] = { author, item->views, item->published };
-   char meta[160];
+   char views[64], age[96];   // (V3.1.0) YouTube's English words in the app's language
+   localizeYouTubeText(item->views, views, sizeof views);
+   localizeYouTubeText(item->published, age, sizeof age);
+   const char *parts[3] = { author, views, age };
+   char meta[320];
    joinMeta(meta, sizeof meta, parts, 3, 0);
    uiCleanText(meta, (int)sizeof meta, meta);
    setFittedText(&grid->heroMeta, uiPickFont(UI_WEIGHT_SEMIBOLD, meta), HERO_TEXT_W, meta);
@@ -862,15 +870,15 @@ static void labelHero(VideoGrid *grid, int i)
    int total = durationToSeconds(item->duration);
    int position = (grid->watchedPosition && !item->isLive) ? grid->watchedPosition(item->videoId) : 0;
    int watched = !(total > 0 && position > 0) && !item->isLive && grid->isWatched && grid->isWatched(item->videoId);
-   const char *badge = item->isLive ? "LIVE" : watched ? "Watched"
-                     : (grid->isWatchLater && grid->isWatchLater(item->videoId)) ? "Watch Later" : "";
+   const char *badge = item->isLive ? tr("LIVE") : watched ? tr("Watched")
+                     : (grid->isWatchLater && grid->isWatchLater(item->videoId)) ? tr("Watch Later") : "";
    setLabelText(&grid->heroBadge, item->downloadState ? "" : badge);
-   char left[32];
+   char left[96];
    left[0] = 0;
    if (item->downloadState) heroDownloadText(item, left, sizeof left);   // (V3.0.0) its download, not its viewing
    else if (total > 0 && position > 0 && position < total) {
       int minutes = (total - position + 59) / 60;
-      snprintf(left, sizeof left, "%d min left", minutes);
+      snprintf(left, sizeof left, trn(minutes, "%d min left", "%d min left"), minutes);
    }
    setLabelText(&grid->heroLeft, left);
 }
@@ -882,7 +890,7 @@ static void updateHero(VideoGrid *grid)
    // (V3.0.0) a download's percent moves on its own: its words follow (setLabelText redraws only on a change)
    if (grid->stage == GRID_READY && grid->heroIndex >= 0 && grid->heroIndex < grid->results.count &&
        grid->results.items[grid->heroIndex].downloadState) {
-      char left[32];
+      char left[96];
       heroDownloadText(&grid->results.items[grid->heroIndex], left, sizeof left);
       setLabelText(&grid->heroLeft, left);
    }
@@ -1436,7 +1444,7 @@ void formatGridPage(const VideoGrid *grid, char *out, int cap)
 {
    // youtube's feeds are continuation-based and never state a total, so the count is what is loaded so far;
    // the trailing + says it is still a running figure rather than the end of the results.
-   snprintf(out, cap, "Page %d / %d%s", grid->page + 1, pageCount(grid), gridHasMorePages(grid) ? "+" : "");
+   snprintf(out, cap, tr("Page %d / %d%s"), grid->page + 1, pageCount(grid), gridHasMorePages(grid) ? "+" : "");
 }
 
 GridStage            gridStage(const VideoGrid *grid)    { return grid->stage; }

@@ -4,6 +4,7 @@
 // says where in the list you are, as Home's page counter does.
 
 #include "screens/region-screen.h"
+#include "i18n.h"   // (V3.1.0) tr: the texts in the language in use
 #include "settings.h"           // the country table and the region in use
 #include "sidebar.h"            // drawSidebarPassive: the rail marks Settings, the page this screen belongs to
 #include "ui-clock.h"           // the time of day at the top right, where Settings has it
@@ -53,8 +54,6 @@
 // The names are rendered once in white and tinted when drawn: the country in use is in the accent's text
 // colour, every other one in text-1, and re-colouring a rendered label means rasterising it again.
 #define TEXT_TINTABLE  0xFFFFFFFFu
-#define NOTE_TEXT      "Trending and Live come from this country's YouTube; Search and Sports change only partly. " \
-                       "The app stays in English."
 
 static Label        titleLabel, noteLabel;
 static Label        nameLabels[MAX_ROWS], codeLabels[MAX_ROWS];
@@ -149,19 +148,21 @@ static void initRegionScreen(void)
    state.selected = (state.current >= 0 && state.current < state.count) ? state.current : 0;
 
    // Fonts are shared app-wide (ui-fonts.h): nothing is opened here and nothing may be closed in term. Every
-   // text here is the app's own - the country names are English and ASCII - so it is Manrope throughout.
+   // text here is the app's own, the country names too, in the language in use (V3.1.0).
    uiInitLabel(&titleLabel, UI_PAGE_TITLE_WEIGHT, CONTENT_X, 0, AUTO, UI_PAGE_TITLE_SIZE, activeTheme->textPrimary,
-               TEXT_NOWRAP, "Region");
+               TEXT_NOWRAP, tr("Region"));
    // one line (about 1180 px of the 1648 there are); wrapped rather than cut should a font ever draw it
    // wider, and the list starts under its last line
-   uiInitLabel(&noteLabel, UI_BODY_WEIGHT, CONTENT_X, 0, UI_SAFE_RIGHT - CONTENT_X, UI_BODY_SIZE,
-               activeTheme->textSecondary, TEXT_WRAP, NOTE_TEXT);
+   uiInitLongLabel(&noteLabel, UI_BODY_WEIGHT, CONTENT_X, 0, UI_SAFE_RIGHT - CONTENT_X, UI_BODY_SIZE,
+               activeTheme->textSecondary, TEXT_WRAP,
+               tr("Trending and Live come from this country's YouTube; Search and Sports change only partly. The app's "
+                  "own language is set under Settings > Language."));
 
    int nameW = LIST_W - 2 * ROW_PAD - ICON_SIZE - ICON_GAP - CODE_GAP - CODE_W;
    for (int i = 0; i < state.count; i++) {
       const ContentRegion *region = getContentRegionAt(i);
       uiInitLabel(&nameLabels[i], ROW_WEIGHT, 0, 0, nameW, ROW_TEXT, TEXT_TINTABLE, TEXT_NOWRAP_ELLIPSIS,
-                  region ? region->name : "");
+                  region ? tr(region->name) : "");
       // the code as settings.txt has it (region=DE): what the log names too
       uiInitLabel(&codeLabels[i], UI_META_WEIGHT, 0, 0, AUTO, UI_META_SIZE, activeTheme->textSecondary,
                   TEXT_NOWRAP, region ? region->code : "");
@@ -170,12 +171,12 @@ static void initRegionScreen(void)
    uiInitDigits(&positionDigits, POS_WEIGHT, POS_SIZE);
 
    uiInitHints(&hints);
-   uiAddHint(&hints, GLYPH_CROSS,     "Choose");
-   uiAddHint(&hints, GLYPH_CIRCLE,    "Back");
+   uiAddHint(&hints, GLYPH_CROSS,     tr("Choose"));
+   uiAddHint(&hints, GLYPH_CIRCLE,    tr("Back"));
    uiAddHint(&hints, GLYPH_DPAD_UP,   "");
-   uiAddHint(&hints, GLYPH_DPAD_DOWN, "Move");
+   uiAddHint(&hints, GLYPH_DPAD_DOWN, tr("Move"));
    uiAddHint(&hints, GLYPH_L2,        "");
-   uiAddHint(&hints, GLYPH_R2,        "Page");
+   uiAddHint(&hints, GLYPH_R2,        tr("Page"));
 
    // The layout hangs off the title, as Settings' does; the note's measured height places the list.
    state.titleY       = uiLabelYForCenter(&titleLabel, HEADER_Y, HEADER_H);

@@ -38,6 +38,17 @@ extern LogCallback logCallback;
 
 static inline void setLogCallback(LogCallback fn) { logCallback = fn; }
 
+// (TEE Vanced V3.1.0 Test 3) the log on a thread of its own. Every line used to be an open, a write and a close on the
+// HDD in the thread that logged it - a few ms, now and then tens, on the UI thread in the middle of a frame (the 10-s
+// display-sync line, the 1-s stutter line) and on the decode and feeder threads. Once startLogWriter has run (main.c,
+// settings.txt log=async), INFO, WARN and TRCE lines are copied into a ring that a thread of its own appends to DBG_LOG
+// every 0.1 s; an ERR line writes the ring and itself at once, so nothing that leads up to an error waits. A hard hang
+// loses at most the last 0.1 s of INFO and WARN - log=sync for hunting one. src/dbg.c (this fork's) holds the ring.
+// logQueueLine: set while the writer runs; 1 = the line is taken care of.
+extern int (*logQueueLine)(const char *line, int len, int urgent);
+void startLogWriter(void);
+void stopLogWriter(void);   // writes what is queued; lines after it go straight to the file again
+
 // Shared bounded-line struct used by every pre-connect log ring in this
 // codebase (the producer-side ring in bridge.h and the bridge-side ring
 // in server.h). One typedef, one max-line constant — no parallel copies.
@@ -113,6 +124,13 @@ static inline void logEmit(const char *level, const char *fmt, va_list ap)
    if (n <= 0) return;
    int max = (int)sizeof line - o - 1;
    if (n > max) n = max;
+
+   // (V3.1.0 Test 3) the writer thread's ring, while it runs
+   int (*queue)(const char *, int, int) = logQueueLine;
+   if (queue && queue(line, o + n, level[0] == 'E')) {
+      if (logCallback) logCallback(line, o + n);
+      return;
+   }
 
    // O_APPEND so the kernel positions+writes atomically per call: concurrent
    // loggers from different threads/PRXs can't interleave halves of a line.

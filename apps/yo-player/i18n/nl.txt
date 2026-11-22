@@ -1,0 +1,322 @@
+# Dutch (je, as TEE Witch).
+@name Nederlands
+@script latin
+@flag nl
+@order 8
+@plural one
+1	'%s' wordt nog gedownload. Hij speelt hier zodra hij klaar is.
+2	'%s' wacht op de downloads ervoor. Hij speelt hier zodra hij klaar is.
+3	Over
+4	Account
+5	Aan afspeellijst toevoegen
+6	Vragen
+7	Volgende video automatisch afspelen
+8	Terug
+9	Annuleren
+10	Categorie
+11	Wijzigen
+12	Kanaal
+13	Kiezen
+14	Kies je taal
+15	Sluiten
+16	Verder kijken
+17	Kon het abonnement op %s niet opzeggen.
+18	Verwijderen
+19	De download '%s' van de console verwijderen?
+20	Downloaden
+21	Downloads
+22	Niet afgemaakte downloads: %d ('%s' en meer). Opnieuw vanaf het begin starten of verwijderen?
+23	Opvulling en uitweidingen
+24	Voor jou
+25	Gaming
+26	Geschiedenis
+27	Interactieherinnering
+28	Intro
+29	Houden
+30	Taal
+31	Later
+32	Nieuwste: %s
+33	Video's die ik leuk vind
+34	Lijstweergave
+35	Live
+36	Laden...
+37	Inloggen
+38	Menu
+39	'%s' naar de videokolom van het XMB verplaatsen? Het systeem neemt het bestand over: TEE Vanced toont en speelt het daarna niet meer. Het XMB speelt het in 720p60 of 1080p30 (een download in 1440p of 1080p60 wordt daarvoor opnieuw opgehaald).
+40	Naar het XMB verplaatsen
+41	Muziek
+42	Nieuws
+43	Nog geen downloads – R3 op een video downloadt hem.
+44	Geen resultaten
+45	Uit
+46	Muziek zonder verband
+47	Aan
+48	Kanaal openen
+49	Outro en eindschermen
+50	PS-knop
+51	Pagina
+52	Afspelen
+53	Afspelen
+54	Afspeellijsten
+55	Podcasts
+56	Populair
+57	Regio
+58	Opnieuw starten
+59	Scan voor links, streams\nen contact
+60	Zoeken
+61	Segment
+62	Zelfpromotie
+63	Instellingen
+64	Overslaan
+65	Sponsor
+66	Sport
+67	Download stoppen
+68	De download van '%s' stoppen? Wat er al binnen is, wordt weggegooid.
+69	Abonneren
+70	Abonnementen
+71	TEE Vanced %s  ·  v%s staat op GitHub
+72	TEE Vanced v%s is uit – dit is %s. Hij staat op GitHub: TheErsysEnding/TEE-Vanced-PS3, Releases.
+73	Dat kanaal stond niet in de abonnementenlijst.
+74	De PS-knop kon niet worden verzonden: de console weigerde een virtuele controller te registreren.
+75	De eigen teksten van de app. Titels en namen van YouTube blijven zoals ze zijn.
+76	De gegevensmap kon bij het starten niet worden gemaakt of beschreven, dus er kan niets worden opgeslagen.\n\n%s
+77	De download van '%s' is niet afgemaakt. Opnieuw vanaf het begin starten of verwijderen?
+78	Deze tegel heeft geen kanaal-ID, dus er is geen abonnement om op te zeggen.
+79	Naar XMB
+80	Trending
+81	Abonnement opzeggen
+82	Abonnement op %s opzeggen?
+83	Opgezegd – maar het kon niet worden opgeslagen, dus het kanaal is er na een herstart weer.\n\n%s\n\nVrije ruimte: %lu KB
+84	Video
+85	Later bekijken
+86	Wat er gebeurt als een gemarkeerd segment begint. Bij 'Vragen' verschijnt een overslaanknop zolang het segment duurt.
+87	Je kunt dit later wijzigen in Instellingen.
+88	dit kanaal
+89	1440p60 zakt in een drukke scène binnen ongeveer twee seconden terug naar 1080p60, en een start die te zwaar is voor 1440p begint meteen in 1080p60.
+90	4K30 is een bèta: het zakt zeer waarschijnlijk vaak terug naar 1440p30. Drukke scènes in 4K zijn meer dan de PS3 op tijd kan decoderen.
+91	4K30-video's starten in 1440p en gaan naar 4K waar de video licht genoeg is.
+92	Arabische en Hebreeuwse videotitels worden nu getoond, van rechts naar links.
+93	Doorgaan
+94	Nieuw: 4K-video's met 30 beelden per seconde, op de SPE's met de TEE VP9-decoder.
+95	Deel je ervaringen ermee:
+96	Scan de code met je telefoon: links, streams en contact.
+97	Steun TheErsysEnding:
+98	TEE Vanced %s  ·  wat is er nieuw
+99	De app in 22 talen, Arabisch van rechts naar links: kies de jouwe bij de eerste start of later in Instellingen > Taal.
+100	Wat is er nieuw
+101	%d audiotrack || %d audiotracks
+102	%d kanaal dat je account volgt, van A tot Z. X opent een kanaal, Driehoek zegt het abonnement op. || %d kanalen die je account volgt, van A tot Z. X opent een kanaal, Driehoek zegt het abonnement op.
+103	%d kanaal, van A tot Z || %d kanalen, van A tot Z
+104	nog %d min || nog %d min
+105	%d video || %d video's
+106	%s (automatisch vertaald)
+107	%s – maar het kon niet worden opgeslagen, dus het is na een herstart weg.\n\n%s
+108	%s – maar het kon niet worden opgeslagen, dus het is na een herstart weg.\n\n%s\n\nVrije ruimte: %lu KB
+109	%s Controleer de verbinding en probeer het opnieuw.
+110	%s dag geleden || %s dagen geleden
+111	%s uur geleden || %s uur geleden
+112	%s minuut geleden || %s minuten geleden
+113	%s maand geleden || %s maanden geleden
+114	%s seconde geleden || %s seconden geleden
+115	%s abonnee || %s abonnees
+116	%s video || %s video's
+117	%s weergave || %s weergaven
+118	%s kijker || %s kijkers
+119	%s week geleden || %s weken geleden
+120	%s jaar geleden || %s jaar geleden
+121	720p60 / 1080p30  ·  MP4 voor het XMB
+122	Van A tot Z
+123	Toegang werd niet toegestaan op de pagina van Google. Druk op X om het opnieuw te proberen.
+124	Hier toevoegen
+125	Toegevoegd aan Later bekijken
+126	Alle kanalen
+127	Audio
+128	Audio %d/%d: %s
+129	Audiotrack
+130	Audio: %s  -  Vierkant: %d track || Audio: %s  -  Vierkant: %d tracks
+131	Australië
+132	Oostenrijk
+133	Auto (%s)
+134	Auto - %s
+135	Auto speelt het af in %s – kies %dp in de opties van de speler (START) voor de beste kwaliteit.
+136	Automatisch afspelen: uit
+137	Automatisch afspelen: aan
+138	Terug naar live
+139	Achtergrond
+140	Dekking van de achtergrond
+141	België
+142	Zwart
+143	Blauw
+144	Brazilië
+145	Bulgarije
+146	Bezig – probeer het opnieuw
+147	Canada
+148	Hoofdstuk
+149	Hoofdstuk %d van %d
+150	Hoofdstukken
+151	Hoofdstukken: geen
+152	Kwaliteit wordt gecontroleerd...
+153	Kies je Google-account en sta toegang toe
+154	Dit bestand kon niet worden gelezen, dus er is niets veranderd:\n\n%s
+155	De stream kon niet opnieuw worden opgebouwd
+156	Kroatië
+157	Cyaan
+158	Tsjechië
+159	De afspeellijst %s en haar %d video verwijderen? || De afspeellijst %s en haar %d video's verwijderen?
+160	Denemarken
+161	Beschrijving
+162	Klaar
+163	Download mislukt bij %d%%: '%s%s'
+164	Downloaden voor het XMB
+165	Gedownload: '%s%s'
+166	Bezig met downloaden
+167	'%s%s' wordt gedownload
+168	Bezig met downloaden · %d%%
+169	Voer deze code in
+170	Alle kanalen die je account volgt, van A tot Z.
+171	Finland
+172	Voor het XMB gaat de video naar de videokolom daarvan, en het systeem neemt het bestand over: TEE Vanced toont en speelt het daarna niet meer. Het XMB speelt het in 720p60 of 1080p30.
+173	Frankrijk
+174	Duitsland
+175	Code ophalen bij Google...
+176	Gaat naar de videokolom van het XMB, die het met de eigen speler van de console afspeelt.
+177	Google Translate weigerde de ondertitels – probeer het later
+178	Google was niet bereikbaar. Druk op X om het opnieuw te proberen.
+179	Griekenland
+180	Groen
+181	Verbergen
+182	Hongarije
+183	In de videokolom van het XMB: '%s%s'
+184	Ierland
+185	Italië
+186	De details konden niet worden opgehaald.
+187	Japan
+188	Springen
+189	LIVE
+190	Nieuwste
+191	Magenta
+192	Mexico
+193	Verplaatsen
+194	Afspeellijst een naam geven
+195	Nederland
+196	Nieuw
+197	Nieuwe code
+198	Nieuwe afspeellijst...
+199	Nieuwste uploads eerst
+200	Geen hoofdstukken
+201	Geen beschrijving.
+202	Geen andere kwaliteit
+203	Nog geen afspeellijsten – druk op START om er een te maken, of op L3 bij een video om hem meteen in een nieuwe lijst te zetten.
+204	Geen ondertitels
+205	Geen weergaven
+206	Geen
+207	Noorwegen
+208	Niets afspeelbaars
+209	Nog niets – je zoekopdrachten verschijnen hier
+210	Oudste
+211	Op YouTube en op deze PS3
+212	Op deze PS3
+213	Open op je telefoon of computer
+214	Openen
+215	Opties
+216	Omlijning
+217	PS-knop niet beschikbaar
+218	Pagina %d / %d%s
+219	Pauze
+220	Speelt af
+221	Speelt af in %s met je kwaliteitsinstelling (%dp).
+222	Speelt af in TEE Vanced (Downloads), op de TEE Decoder.
+223	Speelt af in TEE Vanced (Downloads), met Opus-geluid. Een video zonder 1440p krijgt 1080p60.
+224	Polen
+225	Portugal
+226	Première %s
+227	Druk op
+228	R3 om te verbergen
+229	Kwaliteit
+230	Kwaliteit onbekend
+231	Kwaliteit: %s
+232	Kwaliteit: geen andere
+233	Recente zoekopdrachten
+234	Aanbevolen voor jou
+235	Rood
+236	Relevantie
+237	Verwijderd uit Later bekijken
+238	Opnieuw
+239	Terugspoelen
+240	Roemenië
+241	Rusland
+242	Scan met je telefoon
+243	Scrollen
+244	Zoeken op YouTube
+245	Kiezen
+246	Servië
+247	Schaduw
+248	Inloggen bij YouTube
+249	Afmelden
+250	Ingelogd bij YouTube. Deze lijsten komen van je account – net als Abonnementen, Later bekijken, Geschiedenis en Afspeellijsten in het menu.
+251	Ingelogd. Je lijsten komen nu van je YouTube-account.
+252	Grootte
+253	%s overslaan
+254	%s overgeslagen
+255	Sorteren
+256	Zuid-Korea
+257	Spanje
+258	Gestreamd %s
+259	Geabonneerd
+260	De abonnementenlijst is vol – %d kanalen is het maximum.
+261	Ondertitelstijl
+262	Ondertitels
+263	Ondertitels uit
+264	Ondertitels niet beschikbaar
+265	Ondertitels: %s
+266	Zweden
+267	Zwitserland
+268	Tekstkleur
+269	Tekstrand
+270	Meer afspeellijsten bewaart deze app niet.
+271	Die afspeellijst is vol.
+272	De PS3 heeft geen stream van deze video die hij kan afspelen.
+273	Het beste dat de PS3 ervan afspeelt.
+274	Het beste dat de PS3 afspeelt. In de drukste momenten kan hij een paar seconden terugvallen naar 1080p60.
+275	De kanaallijst kon niet worden geladen. O gaat terug.
+276	Dit kanaal heeft geen bruikbare ID, dus je kunt je er niet op abonneren.
+277	Dit kanaal heeft geen bruikbare ID, dus je kunt je er niet op abonneren. (ID: '%s')
+278	Deze code is verlopen. Druk op X voor een nieuwe.
+279	Bij deze livestream staat terugspoelen uit
+280	Track niet beschikbaar - %s
+281	Vertaalde ondertitels niet beschikbaar
+282	Vertaling gestopt – de rest in de oorspronkelijke taal
+283	Trending en Live komen van het YouTube van dit land; Zoeken en Sport veranderen maar deels. De taal van de app zelf stel je in bij Instellingen > Taal.
+284	Turkije
+285	Typen
+286	Oekraïne
+287	Verenigd Koninkrijk
+288	Verenigde Staten
+289	Opgezegd
+290	Weergaven
+291	BEKEKEN
+292	Wacht
+293	Wachten tot je inlogt. Deze pagina gaat vanzelf verder.
+294	Later bekijken is vol
+295	Bekeken
+296	Wat je op YouTube hebt bekeken
+297	Wit
+298	Trekt de aanmelding van deze console bij Google in
+299	Geel
+300	YouTube heeft de video niet aan Later bekijken toegevoegd.
+301	YouTube heeft de video niet uit Later bekijken verwijderd.
+302	YouTube heeft het abonnement niet aangenomen.
+303	YouTube heeft het opzeggen niet aangenomen.
+304	Je account volgt geen kanalen.
+305	Je abonnementen, Later bekijken, geschiedenis en aanbevelingen komen dan van je YouTube-account. Je wachtwoord typ je alleen op de eigen pagina van Google.
+306	kon de stream niet openen
+307	kon de video niet opnieuw openen
+308	kon het proces niet starten
+309	kon niet van audiotrack wisselen
+310	in gebruik
+311	geen afspeelbare MP4-video
+312	geen geluid
+313	ophalen mislukt
+314	om te typen
+315	onbekende link of ID
+316	±1 min

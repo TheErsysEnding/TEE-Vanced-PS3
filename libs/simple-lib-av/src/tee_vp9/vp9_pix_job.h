@@ -43,14 +43,13 @@ typedef struct {
                                            predictions come per superblock from job.pred, once job.pred_lab_ea's label
                                            has counted the superblock row; compound blocks are predicted here as before */
 #define PIXJ_RSX_STRIPS 2097152         /* with PIXJ_RSX_PRED: job.pred.y is a surface of cells, one of PIX_STRIP_W x
-                                           PIX_STRIP_H bytes a superblock, PIX_STRIP_PER side by side (pitch
-                                           pred_pitch_y): superblock n = row * superblock columns + column at
+                                           PIX_STRIP_H bytes a superblock, pred_pitch_y / PIX_STRIP_W side by side
+                                           (12, at 4K 20): superblock n = row * superblock columns + column at
                                            ((n % PER) * W, (n / PER) * H). A cell's rows: luma rows 0..31 in bytes 0..63,
                                            luma rows 32..63 in bytes 64..127, U in 128..159, V in 160..191 (rsxmc_geom.strips):
                                            fetched with a list of 32 elements instead of 128 */
 #define PIX_STRIP_W     192
 #define PIX_STRIP_H     32
-#define PIX_STRIP_PER   12
 #define PIXJ_RSX_COMPOUND 1048576       /* with PIXJ_RSX_PRED: the RSX predicts the blocks with two references too (those of
                                            the sizes in rsx_sizes; rsxmc_geom.compound) */
 #define PIXJ_RSX_MARKER 524288          /* with PIXJ_RSX_PRED: pred_lab_ea is not the RSX's label but a marker in main memory,

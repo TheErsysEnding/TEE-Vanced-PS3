@@ -2,6 +2,7 @@
 // the file format + parsing is the shared simple-lib-core settings-file.h standard.
 
 #include "settings.h"
+#include "i18n.h"   // (V3.1.0) tr: the texts in the language in use
 #include "app-paths.h"
 #include "settings-file.h"
 #include "dbg.h"
@@ -37,7 +38,7 @@ static const char *DEFAULT_SETTINGS =
    "region=US\n"
    "# the country whose YouTube the lists come from: Trending and Live follow it, Search and Sports only\n"
    "# partly. a two-letter code as listed in Settings > Region, e.g. US, GB, DE, AT, CH, IT, TR, RU.\n"
-   "# the app itself stays in English.\n"
+   "# the app's own language is language= (Settings > Language), set at the first start.\n"
    "\n"
    "video-decoder=auto\n"
    "# auto = the TEE Decoder (TEE's own H.264 decoder on the SPEs: 1080p60) where it can decode the video,\n"
@@ -49,6 +50,14 @@ static const char *DEFAULT_SETTINGS =
    "vp9-spes=6\n"
    "# 1440p (VP9, picked in START > Quality): 6 = 2 entropy + 4 pixel SPEs, 60 fps but no sound (Sony's sound\n"
    "# decoder needs an SPE of its own); 5 = 1 entropy + 4 pixel with sound, slower (50 - 63 fps measured)\n"
+   "\n"
+   "display-sync=flips\n"
+   "# a video whose frame rate is the screen's shows one picture per vertical blank: flips = the picture moves on by\n"
+   "# the vertical blanks that went by and the flips that were missed; wall = by the time between two frames\n"
+   "\n"
+   "log=async\n"
+   "# the log (/dev_hdd0/tmp/TEE_Vanced/dbg.txt): async = written by a thread of its own every 0.1 s, so no write\n"
+   "# holds up the picture; sync = every line at once (errors always are)\n"
    "\n"
    "quality=auto\n"
    "# the highest video quality to play: auto = the best the console plays smoothly, or a height such as 1080,\n"
@@ -77,6 +86,13 @@ static int downloadQuality = 0;   // download-quality=: the R3 page's last choic
 static int qualityCap = 0;   // quality=: the highest video height to play, 0 = auto
 static char subtitleLanguage[12] = "auto";   // (V3.0.0) subtitle-language=: off, auto or a code (V3.0.3: auto)
 static int updateCheck = 1;                  // (V3.0.0 Test 12) update-check=: on / off
+static int displaySyncByFlips = 1;           // (V3.1.0 Test 3) display-sync=: flips / wall
+static int logAsync = 1;                     // ... log=: async / sync
+static int vp9ReleaseEarly = 1;              // ... vp9-release=: early / late (not in the file: the bench's A/B)
+static int gfxShare = 0;                     // (V3.1.0 Test 4) gfx-share=: off / on (not in the file: experimental)
+static int vp9Rsx = 0;                       // ... vp9-rsx=: off / 1440 / on
+static char rsxTest[16];                     // ... rsx-test=: a test's word, "" for none
+static char languageSetting[16];             // (V3.1.0) language=: the menu's language, "" before the first choice
 
 // ---- content region ----
 
@@ -88,39 +104,39 @@ static int updateCheck = 1;                  // (V3.0.0 Test 12) update-check=: 
 // Korea stays only while its Hangul titles prove legible on the console; deleting its line is the whole change -
 // nothing else refers to a position in this table.
 static const ContentRegion REGIONS[] = {
-   { "DE", "Germany", "de" },
-   { "AT", "Austria", "de" },
-   { "CH", "Switzerland", "de" },
-   { "AU", "Australia", "en" },
-   { "BE", "Belgium", "nl" },
-   { "BR", "Brazil", "pt" },
-   { "BG", "Bulgaria", "bg" },
-   { "CA", "Canada", "en" },
-   { "HR", "Croatia", "hr" },
-   { "CZ", "Czechia", "cs" },
-   { "DK", "Denmark", "da" },
-   { "FI", "Finland", "fi" },
-   { "FR", "France", "fr" },
-   { "GR", "Greece", "el" },
-   { "HU", "Hungary", "hu" },
-   { "IE", "Ireland", "en" },
-   { "IT", "Italy", "it" },
-   { "JP", "Japan", "ja" },
-   { "MX", "Mexico", "es" },
-   { "NL", "Netherlands", "nl" },
-   { "NO", "Norway", "no" },
-   { "PL", "Poland", "pl" },
-   { "PT", "Portugal", "pt" },
-   { "RO", "Romania", "ro" },
-   { "RU", "Russia", "ru" },
-   { "RS", "Serbia", "sr" },
-   { "KR", "South Korea", "ko" },
-   { "ES", "Spain", "es" },
-   { "SE", "Sweden", "sv" },
-   { "TR", "Turkey", "tr" },
-   { "UA", "Ukraine", "uk" },
-   { "GB", "United Kingdom", "en" },
-   { "US", "United States", "en" },   // the default: what every earlier build sent
+   { "DE", N_("Germany"), "de" },
+   { "AT", N_("Austria"), "de" },
+   { "CH", N_("Switzerland"), "de" },
+   { "AU", N_("Australia"), "en" },
+   { "BE", N_("Belgium"), "nl" },
+   { "BR", N_("Brazil"), "pt" },
+   { "BG", N_("Bulgaria"), "bg" },
+   { "CA", N_("Canada"), "en" },
+   { "HR", N_("Croatia"), "hr" },
+   { "CZ", N_("Czechia"), "cs" },
+   { "DK", N_("Denmark"), "da" },
+   { "FI", N_("Finland"), "fi" },
+   { "FR", N_("France"), "fr" },
+   { "GR", N_("Greece"), "el" },
+   { "HU", N_("Hungary"), "hu" },
+   { "IE", N_("Ireland"), "en" },
+   { "IT", N_("Italy"), "it" },
+   { "JP", N_("Japan"), "ja" },
+   { "MX", N_("Mexico"), "es" },
+   { "NL", N_("Netherlands"), "nl" },
+   { "NO", N_("Norway"), "no" },
+   { "PL", N_("Poland"), "pl" },
+   { "PT", N_("Portugal"), "pt" },
+   { "RO", N_("Romania"), "ro" },
+   { "RU", N_("Russia"), "ru" },
+   { "RS", N_("Serbia"), "sr" },
+   { "KR", N_("South Korea"), "ko" },
+   { "ES", N_("Spain"), "es" },
+   { "SE", N_("Sweden"), "sv" },
+   { "TR", N_("Turkey"), "tr" },
+   { "UA", N_("Ukraine"), "uk" },
+   { "GB", N_("United Kingdom"), "en" },
+   { "US", N_("United States"), "en" },   // the default: what every earlier build sent
 };
 #define REGION_COUNT ((int)(sizeof REGIONS / sizeof REGIONS[0]))
 
@@ -180,6 +196,34 @@ static void settingsPath(char *out, int cap)
    snprintf(out, cap, "%s/settings.txt", getAppDataDir());
 }
 
+// (V3.1.0 Test 4) the first word of a value findSettingValue found - up to a blank, a '#' or the line's end - cut to cap - 1
+static void copySettingWord(const char *value, char *out, int cap)
+{
+   int length = 0;
+   while (length < cap - 1 && value[length] && value[length] != '\r' && value[length] != '\n' && value[length] != ' ' &&
+          value[length] != '\t' && value[length] != '#') {
+      out[length] = value[length];
+      length++;
+   }
+   out[length] = 0;
+}
+
+// (V3.1.0 Test 4) see settings.h: main.c asks for gfx-share= before initGfx, which loadSettings runs after (the data
+// folder is there by then: migrateAppData). Main thread only: 4 KB of buffer on the stack, as loadSettings
+int readEarlySetting(const char *key, char *value, int cap)
+{
+   if (cap <= 0) return 0;
+   value[0] = 0;
+   char path[128];
+   settingsPath(path, sizeof path);
+   char text[SETTINGS_FILE_CAP];
+   if (readFile(path, text, sizeof text) <= 0) return 0;
+   const char *found = findSettingValue(text, key);
+   if (!found) return 0;
+   copySettingWord(found, value, cap);
+   return 1;
+}
+
 // (V3.0.3) A file V3.0.0 - V3.0.2 wrote holds subtitle-language=off with the comment that YouTube refuses its
 // translations. The player translates subtitles itself now, and auto is the default: that block, exactly as it was
 // written, becomes the new one - in the text read and in the file. A value someone set is left as it is, and so is
@@ -202,22 +246,22 @@ static void migrateSubtitleSetting(const char *path, char *text, int cap, int le
 
 typedef struct { const char *name, *value; uint32_t number; } StyleChoice;   // shown, saved, what it is
 static const StyleChoice STYLE_COLORS[] = {          // the eight YouTube offers, for the text and its background
-   { "White", "white", 0xFFFFFF }, { "Yellow", "yellow", 0xFFFF00 }, { "Green", "green", 0x00FF00 },
-   { "Cyan", "cyan", 0x00FFFF }, { "Blue", "blue", 0x0000FF }, { "Magenta", "magenta", 0xFF00FF },
-   { "Red", "red", 0xFF0000 }, { "Black", "black", 0x000000 },
+   { N_("White"), "white", 0xFFFFFF }, { N_("Yellow"), "yellow", 0xFFFF00 }, { N_("Green"), "green", 0x00FF00 },
+   { N_("Cyan"), "cyan", 0x00FFFF }, { N_("Blue"), "blue", 0x0000FF }, { N_("Magenta"), "magenta", 0xFF00FF },
+   { N_("Red"), "red", 0xFF0000 }, { N_("Black"), "black", 0x000000 },
 };
 static const StyleChoice STYLE_BACKGROUNDS[] = {
-   { "Black", "black", 0x000000 }, { "White", "white", 0xFFFFFF }, { "Yellow", "yellow", 0xFFFF00 },
-   { "Green", "green", 0x00FF00 }, { "Cyan", "cyan", 0x00FFFF }, { "Blue", "blue", 0x0000FF },
-   { "Magenta", "magenta", 0xFF00FF }, { "Red", "red", 0xFF0000 },
+   { N_("Black"), "black", 0x000000 }, { N_("White"), "white", 0xFFFFFF }, { N_("Yellow"), "yellow", 0xFFFF00 },
+   { N_("Green"), "green", 0x00FF00 }, { N_("Cyan"), "cyan", 0x00FFFF }, { N_("Blue"), "blue", 0x0000FF },
+   { N_("Magenta"), "magenta", 0xFF00FF }, { N_("Red"), "red", 0xFF0000 },
 };
 static const StyleChoice STYLE_OPACITIES[] = {       // the alpha: 80% is near the plate subtitles always had
    { "0%", "0", 0 }, { "20%", "20", 51 }, { "40%", "40", 102 }, { "60%", "60", 153 }, { "80%", "80", 204 },
    { "100%", "100", 255 },
 };
 static const StyleChoice STYLE_EDGES[] = {
-   { "None", "none", SUBTITLE_EDGE_NONE }, { "Shadow", "shadow", SUBTITLE_EDGE_SHADOW },
-   { "Outline", "outline", SUBTITLE_EDGE_OUTLINE },
+   { N_("None"), "none", SUBTITLE_EDGE_NONE }, { N_("Shadow"), "shadow", SUBTITLE_EDGE_SHADOW },
+   { N_("Outline"), "outline", SUBTITLE_EDGE_OUTLINE },
 };
 static const StyleChoice STYLE_SIZES[] = {           // per cent of the 30 px subtitles always had
    { "75%", "75", 22 }, { "100%", "100", 30 }, { "125%", "125", 38 }, { "150%", "150", 45 }, { "200%", "200", 60 },
@@ -326,8 +370,47 @@ void loadSettings(void)
       else if (settingValueEquals(vp9, "5")) vp9Spes = 5;
       else logWarn("[settings] vp9-spes takes 5 or 6, using 6\n");
    }
-   logInfo("[settings] video-decoder %s, tee-decoder-spes %d, vp9-spes %d\n", videoDecoder == VIDEO_DECODER_SONY ? "sony" : "auto",
-           teeDecoderSpes, vp9Spes);
+   // (V3.1.0 Test 3)
+   const char *sync = findSettingValue(text, "display-sync");
+   if (sync) {
+      if      (settingValueEquals(sync, "flips")) displaySyncByFlips = 1;
+      else if (settingValueEquals(sync, "wall"))  displaySyncByFlips = 0;
+      else logWarn("[settings] display-sync takes flips or wall, using flips\n");
+   }
+   const char *logMode = findSettingValue(text, "log");
+   if (logMode) {
+      if      (settingValueEquals(logMode, "async")) logAsync = 1;
+      else if (settingValueEquals(logMode, "sync"))  logAsync = 0;
+      else logWarn("[settings] log takes async or sync, using async\n");
+   }
+   const char *release = findSettingValue(text, "vp9-release");
+   if (release) {
+      if      (settingValueEquals(release, "early")) vp9ReleaseEarly = 1;
+      else if (settingValueEquals(release, "late"))  vp9ReleaseEarly = 0;
+      else logWarn("[settings] vp9-release takes early or late, using early\n");
+   }
+   // (V3.1.0 Test 4) TEE VP9's RSX part: main.c has read gfx-share= already (readEarlySetting) - this is for the line below
+   const char *share = findSettingValue(text, "gfx-share");
+   if (share) {
+      if      (settingValueEquals(share, "off")) gfxShare = 0;
+      else if (settingValueEquals(share, "on"))  gfxShare = 1;
+      else logWarn("[settings] gfx-share takes off or on, using off\n");
+   }
+   const char *rsx = findSettingValue(text, "vp9-rsx");
+   if (rsx) {
+      if      (settingValueEquals(rsx, "off"))  vp9Rsx = 0;
+      else if (settingValueEquals(rsx, "1440")) vp9Rsx = 1;
+      else if (settingValueEquals(rsx, "on"))   vp9Rsx = 2;
+      else logWarn("[settings] vp9-rsx takes off, 1440 or on, using off\n");
+   }
+   const char *test = findSettingValue(text, "rsx-test");
+   if (test) copySettingWord(test, rsxTest, sizeof rsxTest);
+   const char *language = findSettingValue(text, "language");   // (V3.1.0) the menu's language: i18n.c asks for it
+   if (language) copySettingWord(language, languageSetting, sizeof languageSetting);
+   logInfo("[settings] video-decoder %s, tee-decoder-spes %d, vp9-spes %d, display-sync %s, log %s, vp9-release %s, gfx-share %s, "
+           "vp9-rsx %s%s%s\n", videoDecoder == VIDEO_DECODER_SONY ? "sony" : "auto", teeDecoderSpes, vp9Spes,
+           displaySyncByFlips ? "flips" : "wall", logAsync ? "async" : "sync", vp9ReleaseEarly ? "early" : "late",
+           gfxShare ? "on" : "off", vp9Rsx == 2 ? "on" : vp9Rsx == 1 ? "1440" : "off", rsxTest[0] ? ", rsx-test " : "", rsxTest);
    const char *quality = findSettingValue(text, "quality");
    if (quality && !settingValueEquals(quality, "auto")) {
       int height = 0;
@@ -403,6 +486,21 @@ static int saveSetting(const char *key, const char *value)
 
 static int saveRegion(const char *code) { return saveSetting("region", code); }
 
+// (V3.1.0) the menu's language
+int getLanguageSetting(char *code, int cap)
+{
+   if (cap <= 0) return 0;
+   strCopy(code, cap, languageSetting);
+   return languageSetting[0] != 0;
+}
+
+int saveLanguageSetting(const char *code)
+{
+   if (!code || !code[0]) return -1;
+   strCopy(languageSetting, sizeof languageSetting, code);
+   return saveSetting("language", code);
+}
+
 int getQualityCap(void) { return qualityCap; }
 int getUpdateCheck(void) { return updateCheck; }
 
@@ -441,6 +539,12 @@ SponsorblockMode getSponsorblockMode(void) { return sponsorblockMode; }
 VideoDecoderSetting getVideoDecoderSetting(void) { return videoDecoder; }
 int getTeeDecoderSpes(void) { return teeDecoderSpes; }
 int getVp9Spes(void) { return vp9Spes; }
+int getDisplaySyncByFlips(void) { return displaySyncByFlips; }   // (V3.1.0 Test 3)
+int getLogAsync(void) { return logAsync; }
+int getVp9ReleaseEarly(void) { return vp9ReleaseEarly; }
+int getGfxShare(void) { return gfxShare; }   // (V3.1.0 Test 4)
+int getVp9Rsx(void) { return vp9Rsx; }
+const char *getRsxTest(void) { return rsxTest; }
 
 int getDownloadQuality(void) { return downloadQuality; }
 
@@ -471,7 +575,7 @@ int getSubtitleStyleChoiceCount(SubtitleStyleField field) { return styleField(fi
 const char *getSubtitleStyleChoiceName(SubtitleStyleField field, int choice)
 {
    if (!styleField(field) || choice < 0 || choice >= STYLE_FIELDS[field].count) return "";
-   return STYLE_FIELDS[field].choices[choice].name;
+   return tr(STYLE_FIELDS[field].choices[choice].name);   // (V3.1.0) "Yellow" in the language in use; "80%" as it is
 }
 
 void setSubtitleStyleChoice(SubtitleStyleField field, int choice)

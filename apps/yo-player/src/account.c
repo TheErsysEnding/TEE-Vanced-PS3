@@ -1,6 +1,7 @@
 // account - implementation (see account.h).
 
 #include "account.h"
+#include "i18n.h"   // (V3.1.0) tr: the texts in the language in use
 #include "extractor.h"          // getAccountFeed / changeAccount: the account's lists and changes (youtube.c)
 #include "app-paths.h"          // getAppDataDir: account.txt lives with the other data
 #include "http.h"               // fetchHttp
@@ -394,7 +395,7 @@ static unsigned      listsLoadedFor = 0xFFFFFFFFu;  // the sign-in revision the 
 static volatile int  listsLoading;
 static uint64_t      listsFailedUs;
 static volatile unsigned listsRevision, changesRevision;
-static char          failureText[160];
+static char          failureText[512];
 static int           failurePending;
 
 static int indexOf(ListId *ids, int count, const char *id)   // not const: C will not pass a ListId * as one
@@ -581,14 +582,14 @@ static void applyChange(AccountAction action, const char *id, int undo)
 static void refuseChange(const AccountChange *change)
 {
    static const char *WHAT[] = {
-      "YouTube did not add the video to Watch Later.",
-      "YouTube did not remove the video from Watch Later.",
-      "YouTube did not take the subscription.",
-      "YouTube did not take the unsubscribe.",
+      N_("YouTube did not add the video to Watch Later."),
+      N_("YouTube did not remove the video from Watch Later."),
+      N_("YouTube did not take the subscription."),
+      N_("YouTube did not take the unsubscribe."),
    };
    lock(&listsLock);
    applyChange(change->action, change->id, 1);
-   snprintf(failureText, sizeof failureText, "%s Check the connection and try again.", WHAT[change->action]);
+   snprintf(failureText, sizeof failureText, tr("%s Check the connection and try again."), tr(WHAT[change->action]));
    failurePending = 1;
    unlock(&listsLock);
 }

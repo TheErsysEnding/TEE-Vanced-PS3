@@ -155,6 +155,14 @@ static u32 mid_off;
 static uint8_t *ramp;
 static u32 ramp_off, mark_off;
 static u8 slot_gen[RSX_MC_SLOTS];           /* counts a slot's frames: the marker's upper three bits */
+
+/* (3.76) a marker's first byte: the slot's frame count and the row + 1 - three bits and five for frames of up to 31
+   superblock rows, two and six for taller ones (4K has 34: row 31 would have run into the count). The pixel SPU reads
+   it the same way (rsx_rows_there) */
+static u8 mark_byte(int slot, int n)
+{
+	return geom.ah / 64 > 31 ? (u8)((slot_gen[slot] & 3) << 6 | n) : (u8)((slot_gen[slot] & 7) << 5 | n);
+}
 static int row_marker = 1;                  /* rsx_mc_row_marker */
 static u16 *idx;
 static u32 idx_off;
@@ -666,7 +674,7 @@ static void main_target(const mc_slot *s, int slot)
 	const u32 off = pred_off0 + (u32)slot * (u32)surf_bytes;
 
 	if (geom.strips)
-		target_set(RE_LOCATION_CELL, off, RSXMC_STRIP_PITCH, RSXMC_STRIP_PITCH, (u16)RSXMC_STRIP_ROWS(&geom));
+		target_set(RE_LOCATION_CELL, off, RSXMC_STRIP_PITCH(&geom), RSXMC_STRIP_PITCH(&geom), (u16)RSXMC_STRIP_ROWS(&geom));
 	else if (geom.packed)
 		target_set(RE_LOCATION_CELL, off + (u32)s->row * (u32)RSXMC_ROW_BYTES(&geom), 64, 64, (u16)RSXMC_ROW_H(&geom));
 	else
@@ -851,7 +859,7 @@ static int emit_row(mc_slot *s, int slot, const row_lists *L)
 	   after the row's rectangles (the target switches around it: the row's pixels leave before the marker, the marker
 	   before anything later) */
 	if (row_marker) {
-		if (marker_draw(slot, (slot_gen[slot] & 7) << 5 | (s->row + 1)) != 0 || cmd_room(64) != 0)
+		if (marker_draw(slot, mark_byte(slot, s->row + 1)) != 0 || cmd_room(64) != 0)
 			goto out;
 		if (unlabeled) {
 			CAP("rsxSetWriteBackendLabel", re_set_write_backend_label(ctx, LAB_CHUNK, ++chunk_id));
@@ -1064,21 +1072,51 @@ static void worker(void *arg)
 /* ---- set-up ------------------------------------------------------------------------------------------------------- */
 
 static int max_aw;                          /* (rsx_mc_prealloc) the widest stream: the RSX-memory surfaces are this wide */
+static int nslot = RSX_MC_SLOTS;            /* (0.3.1) the slots in use (rsx_mc_slots) */
+
+/* (0.3.1) frames under way at a time, 2 or 3 - before rsx_mc_prealloc / rsx_mc_init, not while running */
+void rsx_mc_slots(int n)
+{
+	if (!ready && !running)
+		nslot = n < 2 ? 2 : n > RSX_MC_SLOTS ? RSX_MC_SLOTS : n;
+}
 
 int rsx_mc_prealloc(int aw, int ah)
 {
+	size_t want;
+
 	if (aw > max_aw)
 		max_aw = aw;
-	if (pred_mem)
-		return 0;
 	{                                       /* (a slot's surface: frame-shaped, or cells of 192 x 32 - whichever is larger) */
 		const rsxmc_geom g = { aw, ah, 0, 0, 0, 0, 0, 0, 0 };
 		const size_t fs = (size_t)aw * (size_t)ah * 3 / 2, ss = RSXMC_STRIP_BYTES(&g);
 
-		pred_bytes = ((size_t)RSX_MC_SLOTS * (fs > ss ? fs : ss) + MARK_BYTES + 0xFFFFF) & ~(size_t)0xFFFFF;
+		want = ((size_t)nslot * (fs > ss ? fs : ss) + MARK_BYTES + 0xFFFFF) & ~(size_t)0xFFFFF;
 	}
+	if (pred_mem && pred_bytes >= want)
+		return 0;
+	if (pred_mem) {                         /* (0.3.1) too small for this stream (more slots): again, if it is not in use */
+		if (ready || running || pred_mapped)
+			return -1;
+		tv9p_free(pred_mem);
+		pred_mem = NULL;
+	}
+	pred_bytes = want;
 	pred_mem = tv9p_alloc(pred_bytes, 1024 * 1024);
+	if (!pred_mem)
+		pred_bytes = 0;
 	return pred_mem ? 0 : -1;
+}
+
+/* (3.76) the prediction surfaces given back; rsx_mc_prealloc allocates them again, for the size it is then asked for.
+   For a test that runs a 4K stream on the SPEs alone after a pass with the RSX (38 MB). Only while released */
+void rsx_mc_drop_prealloc(void)
+{
+	if (ready || running || pred_mapped || !pred_mem)
+		return;
+	tv9p_free(pred_mem);
+	pred_mem = NULL;
+	pred_bytes = 0;
 }
 
 void rsx_mc_compact(int on)
@@ -1119,6 +1157,13 @@ void rsx_mc_packed(int on)
 void rsx_mc_sync(int on)
 {
 	sync_on = on;
+}
+
+/* (3.76) the cell layout (12 cells of 192 x 32 a line, pitch 2304) is as tall as a render target may be: 4096 lines,
+   about 1500 superblocks. A 4K frame has 2040 (5440 lines) and draws into the frame-shaped surface (3264 lines) */
+static int strips_fit(const rsxmc_geom *g)
+{
+	return RSXMC_STRIP_ROWS(g) <= 4096;
 }
 
 void rsx_mc_strips(int on)
@@ -1190,7 +1235,7 @@ int rsx_mc_init(void *const *fb, int n, size_t fb_bytes, int aw, int ah)
 		if (RSXMC_STRIP_BYTES(&g) > surf_bytes)
 			surf_bytes = RSXMC_STRIP_BYTES(&g);
 	}
-	if (!ctx || n > MAX_FB || (fb_bytes & 0xFFFFF) || !pred_mem || surf_bytes * RSX_MC_SLOTS + MARK_BYTES > pred_bytes ||
+	if (!ctx || n > MAX_FB || (fb_bytes & 0xFFFFF) || !pred_mem || surf_bytes * nslot + MARK_BYTES > pred_bytes ||
 	    ah + ah / 2 > 4096 || aw > 4096) {
 		log_line("rsx_mc: no context, no prediction memory, or frames of %d x %d are too big", aw, ah);
 		return -1;
@@ -1214,7 +1259,7 @@ int rsx_mc_init(void *const *fb, int n, size_t fb_bytes, int aw, int ah)
 	geom.aw = aw;
 	geom.ah = ah;
 	geom.packed = packed_want != 0;
-	geom.strips = strips_want ? RSXMC_STRIP_H : 0;
+	geom.strips = strips_want && strips_fit(&geom) ? RSXMC_STRIP_H : 0;
 	ploc_use = packed_want == 2;
 	geom.border_y = PIX_BORDER_Y;
 	geom.border_c = PIX_BORDER_C;
@@ -1304,7 +1349,7 @@ int rsx_mc_init(void *const *fb, int n, size_t fb_bytes, int aw, int ah)
 	fl_head = fl_n = 0;
 	*(vu32 *)rxp_label(LAB_CHUNK) = chunk_id;
 	memset(slots, 0, sizeof(slots));
-	for (k = 0; k < RSX_MC_SLOTS; k++) {
+	for (k = 0; k < nslot; k++) {          /* (0.3.1: the slots in use) */
 		slots[k].ring = malloc(ROWS_BYTES);
 		if (!slots[k].ring) {
 			log_line("rsx_mc: no memory for the rows' rectangles");
@@ -1315,7 +1360,7 @@ int rsx_mc_init(void *const *fb, int n, size_t fb_bytes, int aw, int ah)
 	log_line("rsx_mc: vertices of %d bytes (%s)", compact ? 16 : 48, compact ? "16-bit coordinates, 8-bit taps" : "floats");
 	log_line("rsx_mc: ready for %d x %d: %d frame buffer region(s) of %u MB and %d prediction surfaces (%u MB) mapped; middle "
 	         "surface %d x %d and indices in RSX memory; vertex ring %u KB of main memory (%d bytes of commands free)", aw, ah, n,
-	         (unsigned)(fb_bytes >> 20), RSX_MC_SLOTS, (unsigned)(pred_bytes >> 20), aw, RSXMC_MID_H, (unsigned)(ring_size >> 10),
+	         (unsigned)(fb_bytes >> 20), nslot, (unsigned)(pred_bytes >> 20), aw, RSXMC_MID_H, (unsigned)(ring_size >> 10),
 	         tv9h_cb_room());
 	ready = 1;
 	return 0;
@@ -1330,7 +1375,7 @@ int rsx_mc_resize(int aw, int ah)
 
 	if (RSXMC_STRIP_BYTES(&g) > sb)
 		sb = RSXMC_STRIP_BYTES(&g);
-	if (!ready || running || aw > alloc_aw || sb * RSX_MC_SLOTS + MARK_BYTES > pred_bytes || ah + ah / 2 > 4096) {
+	if (!ready || running || aw > alloc_aw || sb * nslot + MARK_BYTES > pred_bytes || ah + ah / 2 > 4096) {
 		log_line("rsx_mc: cannot change to %d x %d (%s)", aw, ah, !ready ? "not set up" : running ? "still running" : "too big");
 		return -1;
 	}
@@ -2042,7 +2087,7 @@ int rsx_mc_start(void)
 		return -1;
 	shortp = short_want;
 	geom.packed = packed_want != 0;
-	geom.strips = strips_want ? RSXMC_STRIP_H : 0;
+	geom.strips = strips_want && strips_fit(&geom) ? RSXMC_STRIP_H : 0;
 	ploc_use = packed_want == 2;
 	st_copies = 0;
 	tv9h_predicting(1);
@@ -2139,11 +2184,11 @@ void rsx_mc_give_up(void)
 		fail("given up by the decoder");
 	for (i = 0; i < RSX_MC_SLOTS; i++) {
 		u8 *const m = pred_mem + pred_bytes - MARK_BYTES + (size_t)i * 64;
-		const u8 b = (u8)((slot_gen[i] & 7) << 5 | 31);      /* (a marker's first byte: the slot's count, the row + 1) */
+		const u8 b = mark_byte(i, geom.ah / 64 > 31 ? 63 : 31);   /* (every row there: the waiting SPUs go on) */
 
 		for (k = 0; k < 16; k++)
 			m[k] = (u8)(b + k);
-		*(vu32 *)rxp_label((u8)(LAB_ROW0 + i)) = slots[i].base + 30;
+		*(vu32 *)rxp_label((u8)(LAB_ROW0 + i)) = slots[i].base + 62;
 	}
 	__asm__ volatile("sync" ::: "memory");
 }
@@ -2155,9 +2200,9 @@ int rsx_mc_begin(const rsx_mc_desc *d, pix_frame *pred, uint32_t *pitch, uint64_
 
 	if (!running || failed)
 		return -1;
-	for (i = 0; i < RSX_MC_SLOTS && slots[i].state != 0; i++)
+	for (i = 0; i < nslot && slots[i].state != 0; i++)
 		;
-	if (i == RSX_MC_SLOTS)
+	if (i == nslot)
 		return -1;
 	s = &slots[i];
 	s->d = *d;
@@ -2182,7 +2227,7 @@ int rsx_mc_begin(const rsx_mc_desc *d, pix_frame *pred, uint32_t *pitch, uint64_
 	pred->u = pred->y + (uint64_t)geom.aw * (uint64_t)geom.ah;
 	pred->v = pred->u + (uint64_t)geom.aw / 2;
 	pred->pad = 0;
-	*pitch = geom.strips ? (uint32_t)RSXMC_STRIP_PITCH : geom.packed ? 64u : (uint32_t)geom.aw;
+	*pitch = geom.strips ? (uint32_t)RSXMC_STRIP_PITCH(&geom) : geom.packed ? 64u : (uint32_t)geom.aw;
 	*lab_ea = (uint64_t)(uintptr_t)rxp_label((u8)(LAB_ROW0 + i));
 	*lab_base = s->base;
 	__asm__ volatile("sync" ::: "memory");

@@ -31,6 +31,8 @@ typedef struct {
 
 /* the prediction surfaces for frames up to aw x ah, allocated now (before the streams cut up the heap) and kept */
 int rsx_mc_prealloc(int aw, int ah);
+void rsx_mc_drop_prealloc(void);    /* (3.76) gives the prediction surfaces back (only while released) */
+void rsx_mc_slots(int n);           /* (0.3.1) frames under way at a time, 2 or 3 (3); before rsx_mc_prealloc */
 /* from the next rsx_mc_init on: vertices of 16 bytes (16-bit coordinates, 8-bit taps) instead of 48 (floats) */
 void rsx_mc_compact(int on);
 /* 1: a row's label is written after a switch of the render target (3.42d: that does not keep single pixel rows from

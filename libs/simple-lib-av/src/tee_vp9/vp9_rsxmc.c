@@ -90,7 +90,7 @@ static void put_last(rsxmc_lists *L, const rsxmc_geom *g, int list, int sb_row, 
 
 	if (g->strips) {
 		const int n = sb_row * (g->aw / 64) + x / pn;
-		const int cx = (n % RSXMC_STRIP_PER) * RSXMC_STRIP_W, cy = (n / RSXMC_STRIP_PER) * RSXMC_STRIP_H;
+		const int per = RSXMC_STRIP_PER(g), cx = (n % per) * RSXMC_STRIP_W, cy = (n / per) * RSXMC_STRIP_H;
 
 		if (plane) {
 			const int tx = cx + 128 + (plane == 2 ? 32 : 0) + xl, ty = cy + yl;

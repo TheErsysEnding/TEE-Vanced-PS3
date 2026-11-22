@@ -3,6 +3,98 @@
 Every release listed here was installed and used on a real PS3 (EVILNAT 4.92 DEX)
 before it was tagged. Anything that had not been is said so plainly.
 
+## v3.1.0 4K30 beta — 2026-11-22
+
+Released as a beta. The 4K30 playback and the faster fallbacks were played on TEE's console through the V3.1.0 test
+builds (Test 12 the last of them); the languages, the Arabic text and the 4K30 page were checked in RPCS3 only - this
+package had not been installed on a console when it was tagged. It also brings the V3.0.4 test builds' changes below
+(V3.0.4 was never released on its own).
+
+- **22 languages.** The first start asks for the language (English is where the cursor starts), with each country's
+  flag and each language's own name; Settings > Language changes it later, and every page is made anew in it at once.
+  English, German, Spanish, French, Italian, Portuguese (Brazil), Polish, Turkish, Dutch, Swedish, Czech, Romanian,
+  Hungarian, Greek, Russian, Ukrainian, Vietnamese, Indonesian, Japanese, Korean, Simplified Chinese and Arabic. The
+  Spanish follows the wording of JuAnKLiMoN's Spanish translation (GitHub PR #8). Japanese, Korean and Chinese are drawn
+  in the console's own font; a language the console's font set has no characters for is left out of the list.
+  YouTube's own words in the meta lines ("1.2M views", "3 weeks ago", "52K watching") are put into the language too, in
+  the plural form it takes for the number (Russian three forms, Arabic six).
+- **Arabic right to left, the layout as it is.** The letters are joined (Arabic Presentation Forms, lam-alef) and each
+  line runs right to left; wrapped text breaks in reading order, a cut line loses its end and shows "..." where it
+  ends. Menus, rail and alignment stay left to right. Arabic and Hebrew video titles, blank until now, are shown the
+  same way (DejaVu Sans Bold, cut down to 88 KB).
+- The languages are kept deflated in the app (81 KB for all of them) and only the one in use is unpacked: 4K playing
+  left the console about 3 MB to spare before them, and this build loads 258 KB more than Test 12 (not measured at 4K
+  on a console yet).
+- **4K30, a beta**: a page after the language asks for experiences with it (linktr.ee/theersysending) - it will very
+  likely fall back to 1440p30 often. Faster fallback from 4K and from 1440p60 in busy scenes, and a start too heavy for
+  1440p60 begins in 1080p60 (the V3.1.0 test builds).
+
+## v3.0.4 — not released on its own: its test builds are part of v3.1.0
+
+### The test builds
+
+**V3.0.4 Test 3 Hybrid** (2026-11-15): the change to 1080p for a key frame too big for 1440p comes at that key frame,
+also where it starts a cluster without a cue.
+- On TEE's console Test 2 still froze once on LHGughAkidk: 4.8 s of still picture from 17.2 s, after it had gone back
+  up to 1440p at 16.5 s - and again after a seek back (TEE: "gefreezed auf 0 fps"). The 1440p key frame there
+  (681 KB) starts a cluster the cues do not name: YouTube cues one cluster every ~5.5 s but starts one, each on a key
+  frame, every 0.03 - 7 s (LHGughAkidk in 1440p: 93 clusters, 61 of them cued). Test 2 looked for the 1080p key frame
+  among the cues only, found the next one at 22 s and dropped 1440p up to it. Now the headers of the 1080p clusters
+  after the cue are read, a few bytes each, up to the key frame's time, and the change goes there at once. Measured
+  over every cluster: each 1440p key frame above 500 KB of LHGughAkidk (9, four of them without a cue), LXb3EKWsInQ
+  (none) and the first 25 minutes of the Elden Ring DLC (9) has a 1080p key frame at the same time. Checked in RPCS3
+  from 17 s: 1080p at 17.200 s, TEE VP9 changed over after the 1440p frames up to it, no hold (61 fps on R3's panel),
+  1350p again at 27.5 s.
+- Should TEE VP9 stop in 1440p all the same, it goes on in 1080p from the first 1080p key frame after the last
+  picture, cued or not (Test 2: the next cue, up to 5.5 s of black), and the sound runs on from the stop. Checked in
+  RPCS3 with the limit out of the way: a stop on the 1055 KB key frame at 121 s, the first 1080p picture of the new
+  decoder 0.12 s later, the sound never waited; a stop at 55 s (748 KB) went on from 55 s.
+- Also seen there with the limit out of the way: TEE VP9 took the 681 KB key frame in 1440p without a stop. The line
+  lies between 681 and 748 KB; the limit stays at 600 KB.
+
+**V3.0.4 Test 2 Hybrid** (2026-11-14): a key frame too big for TEE VP9 in 1440p goes in 1080p before it is fed - no
+new player, no word on screen.
+- Test 1's answer to the stops on LHGughAkidk was hard: a new player in 1080p60 H.264, "Loading", the sound stopping,
+  and 1080p for the rest of the video, though 1350p plays the rest of it well; its word on screen was too short to
+  read anyway (TEE: "warum harter fallback. warum nicht so hybrid wie wir es bisher haben?"). The log on TEE's console
+  named the cause: every stop came on a key frame whose records - the entropy stage's output, about 7 times the
+  block - outgrew TEE VP9's 5 MB buffer: 933 KB at 5.5 s (records 6.8 MB), 748 KB at 55 s (5.3 MB). The feeder now
+  looks at every 1440p key frame before it feeds it. One above 600 KB goes in 1080p from the 1080p key frame at the
+  same time, the way a change for the bitrate does - no picture lost, the sound untouched - and the rule takes it back
+  to 1440p once the next 10 s are light (straight back to 1080p if the key frame there is too big as well). For
+  scale: LXb3EKWsInQ's largest key frames are 499 KB, the Elden Ring DLC's (tqE50cUXGCs) 748, 662 and 640 KB.
+  Checked in RPCS3: 1080p at 5.5 s and 55 s, 1350p again at 27.5 s and 66 s, no stop; the 1080p key frames at
+  those times (652 and 476 KB) went through.
+- Should TEE VP9 stop in 1440p all the same, the player opens it anew by itself and goes on in 1080p from the next
+  key frame, the sound running on; the limit goes below the key frame it stopped on for the rest of the run. Checked
+  in RPCS3 with the limit out of the way: stops at 5.5 s and 55 s, TEE VP9 open again 50 ms after each, the first
+  1080p picture 0.5 - 0.6 s after the stop (the screen black meanwhile), the picture caught up within a second, the
+  sound never waited; 1350p again 11 s later.
+- Only where the player cannot go on by itself (a stop in 1080p, a 1440p stream without the 1080p one beside it, a
+  fourth stop) is it built anew in 1080p60 H.264 as in Test 1 - now without a word on screen. The frame rate stays
+  the video's, as before: 1440p60 changes to 1080p60, 1440p30 to 1080p30, 1440p24 to 1080p24.
+- R3's panel names the stream of the picture on screen. It named the feeder's, which reads seconds ahead: "itag 308"
+  while 1080p still played.
+
+**V3.0.4 Test 1 Smooth** (2026-11-14): 1440p gives way without a stutter, a stopped VP9 decoder goes on in 1080p60,
+and Square says what it did.
+- A 1440p60 nature video at 13 Mbit/s (LXb3EKWsInQ, from 0:20) took the TEE VP9 decoder below 60 pictures a second:
+  the sound waited for the picture four times in ten seconds - the stutter TEE heard - and 1080p came 10 s after it
+  began. Falling behind is now seen by the pictures dropped as well (8 a second, two seconds in a row; not in the
+  first 6 s after a change of stream or a seek), seconds before the sound would have to wait. From the moment 1080p
+  is asked for until the picture has caught up in it, the sound runs on: it waits only for a picture 1.5 s behind,
+  and the picture drops what it is late for. The thresholds stay where they were (15 / 12 Mbit/s): TEE VP9 plays 15
+  to 18 Mbit/s in most videos.
+- A 2560x1350 video (LHGughAkidk) stopped TEE VP9 at the same frames every time ("its records do not go into
+  superblock-row order"): the picture stood still to the end while the sound ran on, the decoder was fed thousands
+  of blocks it refused, and nothing changed to 1080p - a stopped decoder takes no flush. The player now reports the
+  failure, feeds no more blocks, and the app builds it anew at the picture's position in the best quality that is
+  not VP9 - 1080p60 on the TEE Decoder - with a word on screen; the quality saved for the next videos stays.
+  Checked in RPCS3: the stop came at 0:54, 1080p60 played on from the key frame before it at 60 pictures a second.
+- Square on Home, a channel's page or the search results says what it did - "Added to Watch Later", "Removed from
+  Watch Later" - bottom left, for 2.5 s, in 34 px on a plate with an accent edge, big enough to be seen (TEE).
+  Checked in RPCS3.
+
 ## v3.0.3 — 2026-11-14
 
 Installed and used on real consoles before the tag: the translated subtitles (V3.0.3 Test 2) by the user who asked
