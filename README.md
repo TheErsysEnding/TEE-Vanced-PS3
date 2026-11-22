@@ -7,10 +7,11 @@
 A YouTube client for the PlayStation 3, built from source and run on real
 hardware. A fork of **[mohasi's Yo! Player](https://github.com/mohasi/ps3-dev)**
 (Apache-2.0) — see [NOTICE](NOTICE); the application and its libraries are his
-work. The H.264 decoder it plays most videos with, and the VP9 decoder that plays 1440p, are TEE's own (below).
+work. The H.264 decoder it plays most videos with, and the VP9 decoder that plays 1440p and 4K, are TEE's own (below).
 
-**Status: v3.0.3.** Every version here has been installed and used on a real
-console before being called done. See [CHANGELOG.md](CHANGELOG.md).
+**Status: v3.1.0 4K30 beta.** Every version up to v3.0.3 was installed and used
+on a real console before being called done; the v3.1.0 beta's 4K30 playback was,
+its languages were checked in RPCS3 only. See [CHANGELOG.md](CHANGELOG.md).
 
 ---
 
@@ -24,6 +25,21 @@ plays its Opus sound on the PPU. Pick 1440p in START > Quality; Auto stays on
 VP9 stream for a few seconds - on its own, at the next key frame - and comes back
 after them, so the picture keeps its 60 frames a second; 1440p30 very likely plays
 through without that.
+
+**4K at 30 fps, a beta (since v3.1.0).** YouTube's 2160p VP9 at 24, 25 and 30
+frames a second plays on the TEE VP9 decoder too, the SPEs alone. It will very
+likely fall back to 1440p30 often: busy passages start and stay in 1440p, lighter
+ones play in 4K, and a start too heavy for 1440p60 begins in 1080p60. 4K60 is not
+played. Experiences with it are welcome at linktr.ee/theersysending.
+
+**22 languages (since v3.1.0).** The first start asks for the language, each with
+its flag; Settings > Language changes it later. English, German, Spanish, French,
+Italian, Portuguese (Brazil), Polish, Turkish, Dutch, Swedish, Czech, Romanian,
+Hungarian, Greek, Russian, Ukrainian, Vietnamese, Indonesian, Japanese, Korean,
+Simplified Chinese and Arabic - YouTube's view counts and dates included. Arabic
+reads right to left line by line while the menus stay where they are, and Arabic
+and Hebrew video titles are shown. The Spanish follows JuAnKLiMoN's translation
+(GitHub PR #8); corrections from native speakers are welcome.
 
 **A list view.** DOWN on Home - and every search and every channel page - lists
 the whole feed from top to bottom: each video's picture, its title, the best
@@ -171,7 +187,7 @@ The package lands in `pkg/out/`, named after `APP_VERSION` in
 python3 genbuild.py                 # generate build-ps3.bat from the .vcxproj files
 ./tools/sync-work.sh                # mirror sources onto the build machine
 ssh <vm> "cd /d C:\ps3-dev && build-ps3.bat"
-./build-pkg-fromsource.sh TEE-Vanced-PS3-v3.0.3 "TEE Vanced PS3 V3.0.3"
+./build-pkg-fromsource.sh TEE-Vanced-PS3-V3.1.0-4K30-BETA "TEE Vanced PS3 V3.1.0 4K30 BETA"
 ```
 
 Upstream is pinned (`UPSTREAM_REV` in `tools/build-env.sh`). mohasi's tree has
@@ -215,7 +231,7 @@ not contain the change. `build.sh` now checks this itself: it fetches the ELF to
 and that run's build stamp. By hand, on the build machine:
 
 ```sh
-ppu-lv2-strings yo-player.ppu.elf | grep "V3.0.3"
+ppu-lv2-strings yo-player.ppu.elf | grep "V3.1.0 4K30 BETA"
 ```
 
 ---
@@ -265,7 +281,9 @@ have no licence of their own yet; the code they contain from libvpx and libopus 
 under those projects' licences, reproduced in [NOTICE](NOTICE). Since V3.1.0 the TEE
 VP9 decoder's RSX part is in the program as well: its tables follow libvpx (the same
 licence), and its RSX command words (`rsx_emit.h`) are derived from PSL1GHT's librsx,
-under the MIT licence also reproduced in [NOTICE](NOTICE). The TEE name, logo
+under the MIT licence also reproduced in [NOTICE](NOTICE). Arabic and Hebrew text
+is drawn in a cut-down DejaVu Sans Bold, under the Bitstream Vera licence
+(`apps/yo-player/src/assets/DejaVu-LICENSE.txt`, see [NOTICE](NOTICE)). The TEE name, logo
 and the artwork in `branding/` are not part of any of these licences.
 
 Contact: github@teebug.de · More from TEE: [linktr.ee/theersysending](https://linktr.ee/theersysending)

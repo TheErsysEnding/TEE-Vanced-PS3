@@ -3,7 +3,12 @@
 Every release listed here was installed and used on a real PS3 (EVILNAT 4.92 DEX)
 before it was tagged. Anything that had not been is said so plainly.
 
-## v3.1.0 4K30 beta — not released yet
+## v3.1.0 4K30 beta — 2026-11-22
+
+Released as a beta. The 4K30 playback and the faster fallbacks were played on TEE's console through the V3.1.0 test
+builds (Test 12 the last of them); the languages, the Arabic text and the 4K30 page were checked in RPCS3 only - this
+package had not been installed on a console when it was tagged. It also brings the V3.0.4 test builds' changes below
+(V3.0.4 was never released on its own).
 
 - **22 languages.** The first start asks for the language (English is where the cursor starts), with each country's
   flag and each language's own name; Settings > Language changes it later, and every page is made anew in it at once.
@@ -17,13 +22,14 @@ before it was tagged. Anything that had not been is said so plainly.
   line runs right to left; wrapped text breaks in reading order, a cut line loses its end and shows "..." where it
   ends. Menus, rail and alignment stay left to right. Arabic and Hebrew video titles, blank until now, are shown the
   same way (DejaVu Sans Bold, cut down to 88 KB).
-- The languages are kept deflated in the app (81 KB for all of them) and only the one in use is unpacked: with 4K
-  playing the console has about 3 MB to spare.
+- The languages are kept deflated in the app (81 KB for all of them) and only the one in use is unpacked: 4K playing
+  left the console about 3 MB to spare before them, and this build loads 258 KB more than Test 12 (not measured at 4K
+  on a console yet).
 - **4K30, a beta**: a page after the language asks for experiences with it (linktr.ee/theersysending) - it will very
   likely fall back to 1440p30 often. Faster fallback from 4K and from 1440p60 in busy scenes, and a start too heavy for
   1440p60 begins in 1080p60 (the V3.1.0 test builds).
 
-## v3.0.4 — not released yet
+## v3.0.4 — not released on its own: its test builds are part of v3.1.0
 
 ### The test builds
 
