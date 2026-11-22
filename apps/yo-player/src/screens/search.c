@@ -9,6 +9,7 @@
 // end; then the results, three rows to a page.
 
 #include "screens/search.h"
+#include "i18n.h"   // (V3.1.0) tr: the texts in the language in use
 #include "screens/search-input.h"
 #include "screens/download-choice.h"   // R3: in which form to download
 #include "screens/playlist-screen.h"
@@ -118,8 +119,8 @@
 #define BUTTON_ICON       22
 #define BUTTON_ICON_GAP   10
 
-static const char *SortNames[SORT_COUNT]                = { "Relevance", "Views" };
-static const char *ChannelSortNames[CHANNEL_SORT_COUNT] = { "Latest", "Popular", "Oldest" };
+static const char *SortNames[SORT_COUNT]                = { N_("Relevance"), N_("Views") };
+static const char *ChannelSortNames[CHANNEL_SORT_COUNT] = { N_("Latest"), N_("Popular"), N_("Oldest") };
 
 // how the next push opens (set by openSearchQuery / openChannelFor before pushScreen).
 static char         pendingQuery[128];
@@ -176,7 +177,7 @@ static int searchFetch(const char *token, SearchResults *out, void *user)
 // visibly did nothing. Every outcome now says which one it was.
 static void showNotice(const char *text)
 {
-   uiSetTextLabel(&noticeLabel, UI_BODY_WEIGHT, text);   // may name a channel id: drawn raw, any font it needs
+   uiSetLongTextLabel(&noticeLabel, UI_BODY_WEIGHT, text);   // may name a channel id: drawn raw, any font it needs
    search.noticeVisible = 1;
 }
 
@@ -209,8 +210,8 @@ static int tileInWatchLater(const char *videoId)
 // in channel mode Triangle toggles the subscription (you're already in the channel); elsewhere it drills in.
 static void updateTriangleHint(void)
 {
-   const char *caption = "Channel";
-   if (search.channelId[0]) caption = followsChannel(search.channelId) ? "Unsubscribe" : "Subscribe";
+   const char *caption = tr("Channel");
+   if (search.channelId[0]) caption = followsChannel(search.channelId) ? tr("Unsubscribe") : tr("Subscribe");
    uiSetHintCaption(&hints, TRIANGLE_HINT, caption);
    fitHintRow(&hints);   // the row's width follows its captions
 }
@@ -264,7 +265,7 @@ static void setSortLabels(void)
 
    search.sortCount = channel ? CHANNEL_SORT_COUNT : SORT_COUNT;
    for (int i = 0; i < search.sortCount; i++)
-      setFixedLabel(&sortLabels[i], names[i], i == current ? activeTheme->onAccent : activeTheme->textSecondary);
+      setFixedLabel(&sortLabels[i], tr(names[i]), i == current ? activeTheme->onAccent : activeTheme->textSecondary);
 }
 
 // The field shows what the results are for: the query, or the channel's name; the segment the mode's sorts
@@ -301,28 +302,28 @@ static void toggleSubscription(void)
    if (rc == SUBSCRIBE_OK) return;   // the hint flipping to Unsubscribe IS the confirmation; a box on top of
                                      // a working button is just something else to dismiss
 
-   char message[224];
+   char message[1024];
    switch (rc) {
    case SUBSCRIBE_ERR_FULL:
-      snprintf(message, sizeof message, "Subscription list is full - %d channels is the maximum.", MAX_SUBSCRIPTIONS);
+      snprintf(message, sizeof message, tr("Subscription list is full - %d channels is the maximum."), MAX_SUBSCRIPTIONS);
       break;
    case SUBSCRIBE_ERR_READ:
-      snprintf(message, sizeof message, "Could not read this file, so nothing was changed:\n\n%s",
+      snprintf(message, sizeof message, tr("Could not read this file, so nothing was changed:\n\n%s"),
                getSubscriptionsPath());
       break;
    case SUBSCRIBE_ERR_WRITE:
       // name the actual file: which directory the build is using is the single most useful fact here
       if (!isStorageWritable())
          snprintf(message, sizeof message,
-                  "The data folder could not be created or written at startup, so nothing can be saved.\n\n%s",
+                  tr("The data folder could not be created or written at startup, so nothing can be saved.\n\n%s"),
                   getSubscriptionsPath());
       else
          snprintf(message, sizeof message,
-                  "%s - but it could not be saved, so it will be gone after a restart.\n\n%s\n\nFree space: %lu KB",
-                  wantOn ? "Subscribed" : "Unsubscribed", getSubscriptionsPath(), getStorageFreeKB());
+                  tr("%s - but it could not be saved, so it will be gone after a restart.\n\n%s\n\nFree space: %lu KB"),
+                  wantOn ? tr("Subscribed") : tr("Unsubscribed"), getSubscriptionsPath(), getStorageFreeKB());
       break;
    default:
-      snprintf(message, sizeof message, "This channel has no usable id, so it cannot be subscribed to. (id: \"%s\")", search.channelId);
+      snprintf(message, sizeof message, tr("This channel has no usable id, so it cannot be subscribed to. (id: \"%s\")"), search.channelId);
       break;
    }
    showNotice(message);
@@ -380,7 +381,7 @@ static void setHeaderFocus(int field, int button)
    setGridInputSuppressed(&search.grid, focused || isSidebarFocused() || usesList());
    setGridFocusHidden(&search.grid, focused);
    setHomeListFocusHidden(&searchList, focused);   // (Test 16)
-   uiSetHintCaption(&hints, CROSS_HINT, field ? "Type" : button ? (followsChannel(search.channelId) ? "Unsubscribe" : "Subscribe") : "Play");
+   uiSetHintCaption(&hints, CROSS_HINT, field ? tr("Type") : button ? (followsChannel(search.channelId) ? tr("Unsubscribe") : tr("Subscribe")) : tr("Play"));
    uiSetHintShown(&hints, SQUARE_HINT, !focused);
    uiSetHintShown(&hints, TRIANGLE_HINT, !focused);
    uiSetHintShown(&hints, R3_HINT, !focused);
@@ -443,40 +444,40 @@ static void initSearch(void)
    // when they are drawn, by their measured capitals, since the field's text may come out in FONT_POP.
    // "Page" and the "+" are labels, the numbers between them fixed-width digits: a count that grows as
    // pages arrive would otherwise shift the whole readout sideways with every digit that changes width.
-   uiInitLabel(&pageWordLabel, PAGE_WEIGHT, 0, 0, AUTO, PAGE_SIZE, activeTheme->textTertiary, TEXT_NOWRAP, "Page");
+   uiInitLabel(&pageWordLabel, PAGE_WEIGHT, 0, 0, AUTO, PAGE_SIZE, activeTheme->textTertiary, TEXT_NOWRAP, tr("Page"));
    uiInitLabel(&pagePlusLabel, PAGE_WEIGHT, 0, 0, AUTO, PAGE_SIZE, activeTheme->textTertiary, TEXT_NOWRAP, "+");
-   uiInitLabel(&videoWordLabel, PAGE_WEIGHT, 0, 0, AUTO, PAGE_SIZE, activeTheme->textTertiary, TEXT_NOWRAP, "Video");
+   uiInitLabel(&videoWordLabel, PAGE_WEIGHT, 0, 0, AUTO, PAGE_SIZE, activeTheme->textTertiary, TEXT_NOWRAP, tr("Video"));
    uiInitDigits(&pageDigits, PAGE_WEIGHT, PAGE_SIZE);
    int fieldTextW = CONTENT_RIGHT - FIELD_PAD - pageCountReserve() - FIELD_TEXT_GAP - FIELD_TEXT_X;
    uiInitTextLabel(&fieldLabel, FIELD_WEIGHT, 0, 0, fieldTextW, FIELD_TEXT, activeTheme->textPrimary, TEXT_NOWRAP_ELLIPSIS, "");
    for (int i = 0; i < SORT_OPTIONS_MAX; i++)
       uiInitLabel(&sortLabels[i], OPTION_WEIGHT, 0, 0, AUTO, OPTION_SIZE, activeTheme->textSecondary, TEXT_NOWRAP, NULL);
-   uiInitLabel(&statusLabel, STATUS_WEIGHT, 0, 0, AUTO, STATUS_SIZE, activeTheme->textSecondary, TEXT_NOWRAP, "Loading...");
+   uiInitLabel(&statusLabel, STATUS_WEIGHT, 0, 0, AUTO, STATUS_SIZE, activeTheme->textSecondary, TEXT_NOWRAP, tr("Loading..."));
    initIcon(&fieldIcon, ICON_SEARCH, FIELD_ICON_SIZE);
    search.noticeVisible = 0;
    search.fieldFocused  = 0;
    search.buttonFocused = 0;
-   uiInitLabel(&subscribeLabels[0], UI_WEIGHT_EXTRABOLD, 0, 0, AUTO, BUTTON_TEXT, activeTheme->onAccent, TEXT_NOWRAP, "Subscribe");
-   uiInitLabel(&subscribeLabels[1], UI_WEIGHT_EXTRABOLD, 0, 0, AUTO, BUTTON_TEXT, activeTheme->textPrimary, TEXT_NOWRAP, "Subscribed");
+   uiInitLabel(&subscribeLabels[0], UI_WEIGHT_EXTRABOLD, 0, 0, AUTO, BUTTON_TEXT, activeTheme->onAccent, TEXT_NOWRAP, tr("Subscribe"));
+   uiInitLabel(&subscribeLabels[1], UI_WEIGHT_EXTRABOLD, 0, 0, AUTO, BUTTON_TEXT, activeTheme->textPrimary, TEXT_NOWRAP, tr("Subscribed"));
    initIcon(&subscribedIcon, ICON_OK, BUTTON_ICON);
    search.noticePanelW  = search.screenW * 2 / 3;
    uiInitTextLabel(&noticeLabel, UI_BODY_WEIGHT, 0, 0, search.noticePanelW - 2 * NOTICE_PAD_X, NOTICE_TEXT, activeTheme->textPrimary, TEXT_WRAP, "");
    // the box's own line: the console's cross, where the old text spelled "Press X to close"
    uiInitHints(&noticeHints);
-   uiAddHint(&noticeHints, GLYPH_CROSS, "Close");
+   uiAddHint(&noticeHints, GLYPH_CROSS, tr("Close"));
 
    uiInitHints(&hints);
-   uiAddHint(&hints, GLYPH_CROSS,    "Play");
-   uiAddHint(&hints, GLYPH_CIRCLE,   "Back");
-   uiAddHint(&hints, GLYPH_SQUARE,   "Watch Later");
-   uiAddHint(&hints, GLYPH_TRIANGLE, "Channel");
-   uiAddHint(&hints, GLYPH_SELECT,   "Sort");
-   uiAddHint(&hints, GLYPH_R3,       "Download");
-   uiAddHint(&hints, GLYPH_L3,       "Add to playlist");
-   uiAddHint(&hints, GLYPH_START,    "Search");
+   uiAddHint(&hints, GLYPH_CROSS,    tr("Play"));
+   uiAddHint(&hints, GLYPH_CIRCLE,   tr("Back"));
+   uiAddHint(&hints, GLYPH_SQUARE,   tr("Watch Later"));
+   uiAddHint(&hints, GLYPH_TRIANGLE, tr("Channel"));
+   uiAddHint(&hints, GLYPH_SELECT,   tr("Sort"));
+   uiAddHint(&hints, GLYPH_R3,       tr("Download"));
+   uiAddHint(&hints, GLYPH_L3,       tr("Add to playlist"));
+   uiAddHint(&hints, GLYPH_START,    tr("Search"));
    uiAddHint(&hints, GLYPH_L2,       "");
-   uiAddHint(&hints, GLYPH_R2,       "Page");
-   uiAddHint(&hints, GLYPH_DPAD_LEFT, "Menu");   // the rail opens here as on Home
+   uiAddHint(&hints, GLYPH_R2,       tr("Page"));
+   uiAddHint(&hints, GLYPH_DPAD_LEFT, tr("Menu"));   // the rail opens here as on Home
    fitHintRow(&hints);
 
    initVideoGrid(&search.grid, uiGetFont(UI_CARD_TITLE_WEIGHT), CONTENT_X, GRID_TOP,
@@ -516,7 +517,7 @@ static void updateListHint(void)
    }
    if (mode == shown || search.fieldFocused || search.buttonFocused) return;
    shown = mode;
-   uiSetHintCaption(&hints, CROSS_HINT, mode == 1 ? "Open channel" : mode == 2 ? "Subscribe" : mode == 3 ? "Unsubscribe" : "Play");
+   uiSetHintCaption(&hints, CROSS_HINT, mode == 1 ? tr("Open channel") : mode == 2 ? tr("Subscribe") : mode == 3 ? tr("Unsubscribe") : tr("Play"));
    fitHintRow(&hints);
 }
 
@@ -532,7 +533,7 @@ static void updateSearch(void)
    static unsigned listsSeen;
    if (getAccountListsRevision() != listsSeen) { listsSeen = getAccountListsRevision(); updateTriangleHint(); }
    if (!search.noticeVisible) {
-      char failure[160];
+      char failure[512];
       if (takeAccountFailure(failure, sizeof failure)) showNotice(failure);
    }
 
@@ -586,7 +587,8 @@ static void updateSearch(void)
       updateVideoGrid(&search.grid);
       if (isPadButtonPressed(PAD_BTN_DOWN)) { if (search.channelId[0]) setButtonFocused(1); else setFieldFocused(0); return; }
       if (isPadButtonPressed(PAD_BTN_CROSS))
-         oskInputBegin("Search YouTube", search.channelId[0] ? "" : search.query, onFieldTyped);
+         oskInputBegin(i18nScript() == I18N_ARABIC ? "Search YouTube" : tr("Search YouTube"),   // (V3.1.0) the system's
+                       search.channelId[0] ? "" : search.query, onFieldTyped);                 // keyboard: no Arabic
       return;
    }
 
@@ -622,7 +624,7 @@ static void updateSearch(void)
       if (!selected) return;
       if (action == HOME_LIST_CHANNEL) { enterChannel(selected); return; }
       if (action == HOME_LIST_SUBSCRIBE) {
-         char message[256];
+         char message[1024];
          if (toggleHomeListSubscription(selected, message, sizeof message)) showNotice(message);
          return;
       }
@@ -786,7 +788,7 @@ static void drawSearch(void)
       if (usesList()) drawHomeList(&searchList, &search.grid);   // (Test 16)
       else            drawVideoGrid(&search.grid);
    } else {
-      setLabelText(&statusLabel, gridStage(&search.grid) == GRID_EMPTY ? "No results" : "Loading...");
+      setLabelText(&statusLabel, gridStage(&search.grid) == GRID_EMPTY ? tr("No results") : tr("Loading..."));
       uiDrawLabelAt(&statusLabel, CONTENT_X, uiLabelYForBaseline(&statusLabel, STATUS_BASELINE));
    }
    drawHeader();

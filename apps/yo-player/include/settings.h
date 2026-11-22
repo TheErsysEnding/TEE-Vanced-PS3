@@ -38,6 +38,10 @@ int getVp9Rsx(void);
 const char *getRsxTest(void);
 // key= from settings.txt before loadSettings has run: 1 with its first word in value (cut to cap - 1 bytes), 0 without it
 int readEarlySetting(const char *key, char *value, int cap);
+// (V3.1.0) settings.txt language=<code>: the menu's language (i18n.h). 1 with the code when one was chosen, 0 at the
+// first start (the picker asks). saveLanguageSetting writes it: 0 saved, -1 not (UI thread).
+int getLanguageSetting(char *code, int cap);
+int saveLanguageSetting(const char *code);
 // settings.txt download-quality=1440|1080|xmb: the R3 page's last choice (0, 1, 2 - downloads.h DownloadQuality)
 int getDownloadQuality(void);
 int setDownloadQuality(int quality);

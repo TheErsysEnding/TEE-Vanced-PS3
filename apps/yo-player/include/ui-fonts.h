@@ -119,6 +119,10 @@ int   uiCleanText(char *out, int outSize, const char *text);
 // asks libfont which glyphs the console's font set really has, the same lookup the renderer makes.
 int   uiTextIsLegible(const char *text);
 
+// (V3.1.0) how many characters of text FONT_POP has no glyph for (0 when the console's font cannot be asked): the
+// language picker leaves out a Japanese, Korean or Chinese menu the console's font set falls short of
+int   uiFallbackMissing(const char *text);
+
 // ---- labels ----
 // All of these take the same position/width/size/colour/wrap arguments as the library's initLabel (minus
 // its unused height). width is the wrap/clip width in px, or AUTO (0) for a single line up to 1024 px.
@@ -142,6 +146,15 @@ void uiInitTextLabel(Label *l, UiWeight weight, int x, int y, int width, int siz
 // (= ""), and may be the label's own l->text. Text longer than a Label holds (255 bytes) is cut at a
 // character boundary, never inside a UTF-8 sequence.
 void uiSetTextLabel(Label *l, UiWeight weight, const char *text);
+
+// (V3.1.0) Labels for a text longer than a Label holds (255 bytes) - a notice, a paragraph of explanation: translated,
+// such a text takes two or three times the bytes of the English (Russian and Arabic two a letter, Japanese three). The
+// whole text is rendered into the label's texture; l->text keeps only its start, so such a label's text is changed
+// with these again, never with setLabelText, and it is not restyled (uiSetLabelStyle would draw the start only). A
+// text that fits is handled exactly as by uiSetTextLabel / uiInitLabel.
+void uiSetLongTextLabel(Label *l, UiWeight weight, const char *text);   // EXTERNAL text (raw, cleaned, picked font)
+void uiInitLongLabel(Label *l, UiWeight weight, int x, int y, int width, int size, uint32_t color, TextWrap wrap,
+                     const char *text);                                 // FIXED text, as uiInitLabel
 
 // Re-renders a label's current text in another weight, size or colour (e.g. a row that turns 800 when
 // focused). A raw label (external text) gets its font picked again, any other label stays in Manrope.

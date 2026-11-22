@@ -1,0 +1,322 @@
+# Polish (ty). Plural forms: one (1) | few (2-4, 22-24 ...) | many (5-21, 25 ...).
+@name Polski
+@script latin
+@flag pl
+@order 6
+@plural pl
+1	„%s” wciąż się pobiera. Odtworzy się tutaj, gdy będzie gotowy.
+2	„%s” czeka na wcześniejsze pobrania. Odtworzy się tutaj, gdy będzie gotowy.
+3	Informacje
+4	Konto
+5	Dodaj do playlisty
+6	Pytaj
+7	Automatycznie odtwarzaj następny film
+8	Wstecz
+9	Anuluj
+10	Kategoria
+11	Zmień
+12	Kanał
+13	Wybierz
+14	Wybierz swój język
+15	Zamknij
+16	Kontynuuj oglądanie
+17	Nie udało się anulować subskrypcji kanału %s.
+18	Usuń
+19	Usunąć pobrany plik „%s” z konsoli?
+20	Pobierz
+21	Pobrane
+22	Niedokończone pobrania: %d („%s” i inne). Zacząć je od nowa czy usunąć?
+23	Zapychacze i dygresje
+24	Dla Ciebie
+25	Gry
+26	Historia
+27	Przypomnienie o interakcji
+28	Intro
+29	Zostaw
+30	Język
+31	Później
+32	Najnowszy: %s
+33	Polubione filmy
+34	Widok listy
+35	Na żywo
+36	Wczytywanie...
+37	Zaloguj się
+38	Menu
+39	Przenieść „%s” do kolumny Wideo w XMB? System przejmie plik: TEE Vanced nie będzie go już pokazywać ani odtwarzać. XMB odtwarza go w 720p60 lub 1080p30 (pobranie 1440p lub 1080p60 zostanie pobrane ponownie w tej postaci).
+40	Przenieś do XMB
+41	Muzyka
+42	Wiadomości
+43	Brak pobranych plików – R3 na dowolnym filmie go pobiera.
+44	Brak wyników
+45	Wył.
+46	Muzyka nie na temat
+47	Wł.
+48	Otwórz kanał
+49	Outro i ekrany końcowe
+50	Przycisk PS
+51	Strona
+52	Odtwórz
+53	Odtwarzanie
+54	Playlisty
+55	Podcasty
+56	Popularne
+57	Region
+58	Zacznij od nowa
+59	Zeskanuj: linki, transmisje\ni kontakt
+60	Szukaj
+61	Fragment
+62	Autopromocja
+63	Ustawienia
+64	Pomiń
+65	Sponsor
+66	Sport
+67	Zatrzymaj pobieranie
+68	Zatrzymać pobieranie „%s”? To, co już pobrano, zostanie odrzucone.
+69	Subskrybuj
+70	Subskrypcje
+71	TEE Vanced %s  ·  v%s jest już na GitHubie
+72	Wyszedł TEE Vanced v%s – to jest %s. Jest na GitHubie: TheErsysEnding/TEE-Vanced-PS3, Releases.
+73	Tego kanału nie było na liście subskrypcji.
+74	Nie udało się wysłać przycisku PS: konsola odmówiła rejestracji wirtualnego kontrolera.
+75	Własne teksty aplikacji. Tytuły i nazwy z YouTube zostają bez zmian.
+76	Przy starcie nie udało się utworzyć ani zapisać folderu danych, więc nic nie może zostać zapisane.\n\n%s
+77	Pobieranie „%s” nie zostało ukończone. Zacząć je od nowa czy usunąć?
+78	Ten kafelek nie ma ID kanału, więc nie ma subskrypcji do anulowania.
+79	Do XMB
+80	Na czasie
+81	Anuluj subskrypcję
+82	Anulować subskrypcję kanału %s?
+83	Subskrypcja anulowana – ale nie udało się zapisać, więc po restarcie kanał wróci.\n\n%s\n\nWolne miejsce: %lu KB
+84	Film
+85	Do obejrzenia
+86	Co się dzieje, gdy zaczyna się oznaczony fragment. Przy „Pytaj” pojawia się przycisk pominięcia na czas trwania fragmentu.
+87	Możesz to zmienić później w Ustawieniach.
+88	ten kanał
+89	1440p60 spada do 1080p60 w ciągu około dwóch sekund w ciężkiej scenie, a start zbyt ciężki dla 1440p od razu zaczyna się w 1080p60.
+90	4K30 to wersja beta: bardzo prawdopodobnie często spadnie do 1440p30. Ciężkie sceny w 4K to więcej, niż PS3 zdąży zdekodować.
+91	Filmy 4K30 startują w 1440p i przechodzą na 4K tam, gdzie film jest wystarczająco lekki.
+92	Arabskie i hebrajskie tytuły filmów są teraz wyświetlane, od prawej do lewej.
+93	Dalej
+94	Nowość: filmy 4K w 30 klatkach na sekundę, na SPE z dekoderem TEE VP9.
+95	Podzielcie się wrażeniami:
+96	Zeskanuj kod telefonem: linki, transmisje i kontakt.
+97	Wesprzyj TheErsysEnding:
+98	TEE Vanced %s  ·  co nowego
+99	Aplikacja w 22 językach, arabski od prawej do lewej: wybierz swój przy pierwszym uruchomieniu lub później w Ustawienia > Język.
+100	Co nowego
+101	%d ścieżka dźwiękowa || %d ścieżki dźwiękowe || %d ścieżek dźwiękowych
+102	Kanały obserwowane przez Twoje konto: %d, od A do Z. X otwiera kanał, Trójkąt anuluje subskrypcję. || Kanały obserwowane przez Twoje konto: %d, od A do Z. X otwiera kanał, Trójkąt anuluje subskrypcję. || Kanały obserwowane przez Twoje konto: %d, od A do Z. X otwiera kanał, Trójkąt anuluje subskrypcję.
+103	%d kanał, od A do Z || %d kanały, od A do Z || %d kanałów, od A do Z
+104	zostało %d min || zostały %d min || zostało %d min
+105	%d film || %d filmy || %d filmów
+106	%s (przetłumaczone automatycznie)
+107	%s – ale nie udało się zapisać, więc po restarcie zniknie.\n\n%s
+108	%s – ale nie udało się zapisać, więc po restarcie zniknie.\n\n%s\n\nWolne miejsce: %lu KB
+109	%s Sprawdź połączenie i spróbuj ponownie.
+110	%s dzień temu || %s dni temu || %s dni temu
+111	%s godzinę temu || %s godziny temu || %s godzin temu
+112	%s minutę temu || %s minuty temu || %s minut temu
+113	%s miesiąc temu || %s miesiące temu || %s miesięcy temu
+114	%s sekundę temu || %s sekundy temu || %s sekund temu
+115	%s subskrybent || %s subskrybenci || %s subskrybentów
+116	%s film || %s filmy || %s filmów
+117	%s wyświetlenie || %s wyświetlenia || %s wyświetleń
+118	%s ogląda || %s oglądają || %s ogląda
+119	%s tydzień temu || %s tygodnie temu || %s tygodni temu
+120	%s rok temu || %s lata temu || %s lat temu
+121	720p60 / 1080p30  ·  MP4 dla XMB
+122	Od A do Z
+123	Na stronie Google nie zezwolono na dostęp. Naciśnij X, aby spróbować ponownie.
+124	Dodaj tutaj
+125	Dodano do Do obejrzenia
+126	Wszystkie kanały
+127	Dźwięk
+128	Dźwięk %d/%d: %s
+129	Ścieżka dźwiękowa
+130	Dźwięk: %s  -  Kwadrat: %d ścieżka || Dźwięk: %s  -  Kwadrat: %d ścieżki || Dźwięk: %s  -  Kwadrat: %d ścieżek
+131	Australia
+132	Austria
+133	Auto (%s)
+134	Auto - %s
+135	Auto odtwarza w %s – wybierz %dp w opcjach odtwarzacza (START), by mieć najlepszą jakość.
+136	Autoodtwarzanie: wył.
+137	Autoodtwarzanie: wł.
+138	Wróć na żywo
+139	Tło
+140	Krycie tła
+141	Belgia
+142	Czarny
+143	Niebieski
+144	Brazylia
+145	Bułgaria
+146	Zajęte – spróbuj ponownie
+147	Kanada
+148	Rozdział
+149	Rozdział %d z %d
+150	Rozdziały
+151	Rozdziały: brak
+152	Sprawdzanie jakości...
+153	Wybierz konto Google i zezwól na dostęp
+154	Nie udało się odczytać tego pliku, więc nic nie zmieniono:\n\n%s
+155	Nie udało się odbudować strumienia
+156	Chorwacja
+157	Cyjan
+158	Czechy
+159	Usunąć playlistę %s i jej %d film? || Usunąć playlistę %s i jej %d filmy? || Usunąć playlistę %s i jej %d filmów?
+160	Dania
+161	Opis
+162	Gotowe
+163	Pobieranie nie powiodło się przy %d%%: „%s%s”
+164	Pobierz dla XMB
+165	Pobrano: „%s%s”
+166	Pobieranie
+167	Pobieranie „%s%s”
+168	Pobieranie · %d%%
+169	Wpisz ten kod
+170	Wszystkie kanały obserwowane przez Twoje konto, od A do Z.
+171	Finlandia
+172	Dla XMB film trafia do jego kolumny Wideo, a system przejmuje plik: TEE Vanced nie będzie go już pokazywać ani odtwarzać. XMB odtwarza go w 720p60 lub 1080p30.
+173	Francja
+174	Niemcy
+175	Pobieranie kodu z Google...
+176	Trafia do kolumny Wideo w XMB, która odtwarza go własnym odtwarzaczem konsoli.
+177	Tłumacz Google odrzucił napisy – spróbuj później
+178	Nie można połączyć się z Google. Naciśnij X, aby spróbować ponownie.
+179	Grecja
+180	Zielony
+181	Ukryj
+182	Węgry
+183	W kolumnie Wideo XMB: „%s%s”
+184	Irlandia
+185	Włochy
+186	Nie udało się pobrać szczegółów.
+187	Japonia
+188	Przejdź
+189	NA ŻYWO
+190	Najnowsze
+191	Magenta
+192	Meksyk
+193	Przesuń
+194	Nazwij playlistę
+195	Holandia
+196	Nowa
+197	Nowy kod
+198	Nowa playlista...
+199	Najpierw najnowsze filmy
+200	Brak rozdziałów
+201	Brak opisu.
+202	Brak innej jakości
+203	Brak playlist – naciśnij START, aby utworzyć, albo L3 na filmie, aby od razu dodać go do nowej listy.
+204	Brak napisów
+205	Brak wyświetleń
+206	Brak
+207	Norwegia
+208	Nic do odtworzenia
+209	Jeszcze nic – tu pojawią się Twoje wyszukiwania
+210	Najstarsze
+211	Na YouTube i na tej PS3
+212	Na tej PS3
+213	Na telefonie lub komputerze otwórz
+214	Otwórz
+215	Opcje
+216	Kontur
+217	Przycisk PS niedostępny
+218	Strona %d / %d%s
+219	Pauza
+220	Odtwarzane
+221	Odtwarzane w %s zgodnie z ustawieniem jakości (%dp).
+222	Odtwarzane w TEE Vanced (Pobrane), na TEE Decoder.
+223	Odtwarzane w TEE Vanced (Pobrane), z dźwiękiem Opus. Film bez 1440p dostaje 1080p60.
+224	Polska
+225	Portugalia
+226	Premiera %s
+227	Naciśnij
+228	Naciśnij R3, aby ukryć
+229	Jakość
+230	Jakość nieznana
+231	Jakość: %s
+232	Jakość: brak innej
+233	Ostatnie wyszukiwania
+234	Polecane dla Ciebie
+235	Czerwony
+236	Trafność
+237	Usunięto z Do obejrzenia
+238	Odtwórz ponownie
+239	Przewijanie
+240	Rumunia
+241	Rosja
+242	Zeskanuj telefonem
+243	Przewiń
+244	Szukaj w YouTube
+245	Wybierz
+246	Serbia
+247	Cień
+248	Zaloguj się do YouTube
+249	Wyloguj
+250	Zalogowano do YouTube. Te listy pochodzą z Twojego konta – tak jak Subskrypcje, Do obejrzenia, Historia i Playlisty w menu.
+251	Zalogowano. Twoje listy pochodzą teraz z Twojego konta YouTube.
+252	Rozmiar
+253	Pomiń: %s
+254	Pominięto: %s
+255	Sortuj
+256	Korea Południowa
+257	Hiszpania
+258	Transmisja %s
+259	Subskrybujesz
+260	Lista subskrypcji jest pełna – maksimum to %d kanałów.
+261	Styl napisów
+262	Napisy
+263	Napisy wyłączone
+264	Napisy niedostępne
+265	Napisy: %s
+266	Szwecja
+267	Szwajcaria
+268	Kolor tekstu
+269	Obramowanie tekstu
+270	Tyle playlist ta aplikacja przechowuje najwyżej.
+271	Ta playlista jest pełna.
+272	PS3 nie ma żadnego strumienia tego filmu, który mogłaby odtworzyć.
+273	Najlepsze, co PS3 z tego odtworzy.
+274	Najlepsze, co PS3 odtwarza. W najcięższych momentach może na kilka sekund spaść do 1080p60.
+275	Nie udało się wczytać listy kanałów. O wraca.
+276	Ten kanał nie ma użytecznego ID, więc nie można go subskrybować.
+277	Ten kanał nie ma użytecznego ID, więc nie można go subskrybować. (ID: „%s”)
+278	Ten kod wygasł. Naciśnij X, aby dostać nowy.
+279	W tej transmisji na żywo przewijanie jest wyłączone
+280	Ścieżka niedostępna - %s
+281	Przetłumaczone napisy niedostępne
+282	Tłumaczenie zatrzymane – reszta w języku oryginału
+283	Na czasie i Na żywo pochodzą z YouTube tego kraju; Wyszukiwanie i Sport zmieniają się tylko częściowo. Język samej aplikacji ustawisz w Ustawienia > Język.
+284	Turcja
+285	Pisz
+286	Ukraina
+287	Wielka Brytania
+288	Stany Zjednoczone
+289	Anulowano subskrypcję
+290	Wyświetlenia
+291	OBEJRZANE
+292	Czeka
+293	Czekam, aż się zalogujesz. Ta strona sama przejdzie dalej.
+294	Lista Do obejrzenia jest pełna
+295	Obejrzane
+296	Co oglądałeś na YouTube
+297	Biały
+298	Wycofuje logowanie tej konsoli w Google
+299	Żółty
+300	YouTube nie dodał filmu do Do obejrzenia.
+301	YouTube nie usunął filmu z Do obejrzenia.
+302	YouTube nie przyjął subskrypcji.
+303	YouTube nie przyjął anulowania subskrypcji.
+304	Twoje konto nie obserwuje żadnych kanałów.
+305	Twoje subskrypcje, Do obejrzenia, historia i polecenia będą wtedy pochodzić z Twojego konta YouTube. Hasło wpisujesz tylko na stronie Google.
+306	nie udało się otworzyć strumienia
+307	nie udało się ponownie otworzyć filmu
+308	nie udało się uruchomić procesu
+309	nie udało się zmienić ścieżki dźwiękowej
+310	w użyciu
+311	brak odtwarzalnego filmu MP4
+312	bez dźwięku
+313	nie udało się pobrać danych
+314	aby pisać
+315	nieznany link lub ID
+316	±1 min

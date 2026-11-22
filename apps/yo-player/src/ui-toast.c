@@ -1,6 +1,7 @@
 // ui-toast - a short word at the bottom left of a list page (see ui-toast.h).
 
 #include "ui-toast.h"
+#include "i18n.h"   // (V3.1.0) tr: the texts in the language in use
 #include "ui-draw.h"            // safe area, rounded fills, uiLabelYForCenter
 #include "ui-fonts.h"           // the shared fonts and uiInitLabel
 #include "ui-hints.h"           // UI_HINTS_BOTTOM_Y: the bottom hint row it stands above
@@ -30,11 +31,12 @@ static uint64_t shownUs;      // 0 = no word standing
 
 void uiShowToast(IconId id, const char *text)
 {
+   // (V3.1.0) the font picked for every word: the label outlives a change of the language (Japanese needs FONT_POP)
    if (!labelMade) {
-      uiInitLabel(&label, TOAST_WEIGHT, 0, 0, AUTO, TOAST_TEXT_SIZE, activeTheme->textPrimary, TEXT_NOWRAP, text);
+      uiInitTextLabel(&label, TOAST_WEIGHT, 0, 0, AUTO, TOAST_TEXT_SIZE, activeTheme->textPrimary, TEXT_NOWRAP, text);
       labelMade = 1;
    } else {
-      setLabelText(&label, text);
+      uiSetTextLabel(&label, TOAST_WEIGHT, text);
    }
    if (!iconMade || icon.id != id) {
       initIcon(&icon, id, TOAST_ICON_SIZE);
@@ -73,7 +75,7 @@ void uiDrawToast(void)
 
 void uiShowWatchLaterToast(int wasIn, int isIn)
 {
-   uiShowToast(ICON_CLOCK, isIn ? "Added to Watch Later" : wasIn ? "Removed from Watch Later" : "Watch Later is full");
+   uiShowToast(ICON_CLOCK, isIn ? tr("Added to Watch Later") : wasIn ? tr("Removed from Watch Later") : tr("Watch Later is full"));
 }
 
 void uiTermToast(void)

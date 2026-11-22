@@ -4,11 +4,15 @@
 #include "ui-fonts.h"
 #include "ui-assets.h"          // the embedded Manrope files
 #include "manrope-coverage.h"   // manropeHasCodepoint
+#include "i18n.h"               // (V3.1.0) the language in use: which font the app's own texts take
 #include "dbg.h"                // logInfo / logError
 #include <string.h>             // memcpy / memset
+#include <stdlib.h>             // (V3.1.0) malloc: a long text's cleaned copy
 
 static Font manrope[UI_WEIGHT_COUNT];
 static Font fallbackFont;       // FONT_POP
+static Font arabicFont;         // (V3.1.0) DejaVu Sans Bold, cut down: Arabic and Hebrew (opened when first needed)
+static int  arabicTried;
 static int  manropeOpen;        // how many weights opened
 static int  fontsReady;         // initUiFonts ran
 static int  fontsClosed;        // termUiFonts ran: never quietly open them again behind the exit path
@@ -55,12 +59,11 @@ static int readFontBounds(const unsigned char *data, unsigned int size, int *yMi
    return 0;
 }
 
-static void makeRoomForDescenders(UiWeight weight, const unsigned char *data, unsigned int size)
+static void makeRoomForDescenders(Font *font, const char *name, const unsigned char *data, unsigned int size)
 {
-   Font *font = &manrope[weight];
    int yMin, yMax;
    if (font->unitsPerEm <= 0 || !readFontBounds(data, size, &yMin, &yMax)) {
-      logWarn("[ui] %s: no line metrics to correct, so its descenders may be cut off\n", FONT_NAMES[weight]);
+      logWarn("[ui] %s: no line metrics to correct, so its descenders may be cut off\n", name);
       return;
    }
    int shift = yMax - yMin - font->unitsPerEm + font->hheaDescent;   // hheaDescent is negative
@@ -68,7 +71,7 @@ static void makeRoomForDescenders(UiWeight weight, const unsigned char *data, un
    if (shift > font->hheaAscent) shift = font->hheaAscent;
    if (shift <= 0) return;   // this font's texture already holds its deepest glyph
    logInfo("[ui] %s: line box %d of %d units higher for its descenders (box %d..%d, hhea %d..%d)\n",
-           FONT_NAMES[weight], shift, font->unitsPerEm, yMin, yMax, font->hheaDescent, font->hheaAscent);
+           name, shift, font->unitsPerEm, yMin, yMax, font->hheaDescent, font->hheaAscent);
    font->hheaAscent  -= shift;
    font->hheaDescent -= shift;
 }
@@ -76,7 +79,7 @@ static void makeRoomForDescenders(UiWeight weight, const unsigned char *data, un
 static void openManrope(UiWeight weight, const unsigned char *data, unsigned int size)
 {
    manrope[weight] = openFontMemory(data, size);   // keeps its own copy of the file (font.c)
-   if (manrope[weight].open) { manropeOpen++; makeRoomForDescenders(weight, data, size); }
+   if (manrope[weight].open) { manropeOpen++; makeRoomForDescenders(&manrope[weight], FONT_NAMES[weight], data, size); }
    else logError("[ui] %s did not open; its text uses the nearest other weight, or FONT_POP\n", FONT_NAMES[weight]);
 }
 
@@ -104,6 +107,7 @@ void termUiFonts(void)
    if (!fontsReady) return;
    for (int weight = 0; weight < UI_WEIGHT_COUNT; weight++) closeFont(&manrope[weight]);
    closeFont(&fallbackFont);
+   if (arabicFont.open) closeFont(&arabicFont);
    manropeOpen = 0;
    fontsReady  = 0;
    fontsClosed = 1;
@@ -122,10 +126,11 @@ int uiHasManrope(void)
    return manropeOpen > 0;
 }
 
-Font *uiGetFont(UiWeight weight)
+// Manrope in that weight, or the nearest that opened (FONT_POP when none did) - the font of every language Manrope draws
+static Font *manropeFont(UiWeight weight)
 {
    ensureFonts();
-   int wanted = ((int)weight >= 0 && weight < UI_WEIGHT_COUNT) ? (int)weight : (int)UI_WEIGHT_REGULAR;
+   int wanted =((int)weight >= 0 && weight < UI_WEIGHT_COUNT) ? (int)weight : (int)UI_WEIGHT_REGULAR;
    // A weight that failed to open borrows the nearest one that did - the heavier first at equal distance,
    // so a title never ends up lighter than the text under it - before the whole look drops to FONT_POP.
    for (int distance = 0; distance < UI_WEIGHT_COUNT; distance++) {
@@ -188,10 +193,72 @@ int uiTextFitsManrope(const char *text)
    return 1;
 }
 
+// (V3.1.0) DejaVu Sans Bold for Arabic and Hebrew: one of the 8 user-font slots (6 then) and a copy of its 88 KB, so it
+// opens only once something right-to-left is shown (the Arabic menu, its name in the picker, such a title)
+static Font *arabic(void)
+{
+   if (!arabicTried && fontsReady && !fontsClosed) {
+      arabicTried = 1;
+      arabicFont = openFontMemory(dejavuSansBoldData, dejavuSansBoldDataSize);
+      if (arabicFont.open) makeRoomForDescenders(&arabicFont, "DejaVu Sans Bold", dejavuSansBoldData, dejavuSansBoldDataSize);
+      logInfo("[ui] DejaVu Sans Bold (Arabic, Hebrew): %s\n", arabicFont.open ? "open" : "did not open");
+   }
+   return arabicFont.open ? &arabicFont : NULL;
+}
+
+// (V3.1.0) a letter of a right-to-left script: Hebrew, Arabic (and its supplements) and their presentation forms - the
+// renderer joins Arabic and lays such a line out right to left (font.c); DejaVu has the glyphs
+static int isRtlLetter(uint32_t c)
+{
+   return (c >= 0x05D0 && c <= 0x05F2) || (c >= 0x0620 && c <= 0x064A) || (c >= 0x066E && c <= 0x06D3) ||
+          (c >= 0x06FA && c <= 0x06FF) || (c >= 0x0750 && c <= 0x077F) || (c >= 0xFB1D && c <= 0xFDFF) ||
+          (c >= 0xFE70 && c <= 0xFEFC);
+}
+
+static int hasRtlText(const char *text)
+{
+   if (!text) return 0;
+   const unsigned char *p = (const unsigned char *)text;
+   while (*p) {
+      if (*p < 0xD6) { p++; continue; }   // nothing below U+0590 starts with a byte past 0xD5
+      uint32_t code;
+      if (nextCodepoint(&p, &code) && isRtlLetter(code)) return 1;
+   }
+   return 0;
+}
+
+// (V3.1.0) the app's own texts in the language in use: Manrope; FONT_POP for Japanese, Korean, Chinese; DejaVu Sans Bold
+// for Arabic (in every weight - it has the one)
+Font *uiGetFont(UiWeight weight)
+{
+   ensureFonts();
+   I18nScript script = i18nScript();
+   if (script == I18N_CJK && fallbackFont.open) return &fallbackFont;
+   if (script == I18N_ARABIC && arabic()) return &arabicFont;
+   return manropeFont(weight);
+}
+
+// (V3.1.0) a fixed text's font: the language's - or, for a text in another script (the picker shows each language's name
+// in its own), the one that draws it
+int uiFallbackMissing(const char *text);   // below
+
+static Font *labelFont(UiWeight weight, const char *text)
+{
+   if (hasRtlText(text) && arabic()) return &arabicFont;
+   Font *font = uiGetFont(weight);
+   if (font != &fallbackFont && font != &arabicFont && text && !uiTextFitsManrope(text)) return &fallbackFont;
+   // a Japanese, Korean or Chinese menu draws in FONT_POP, which lacks letters Manrope has ("Čeština", "Tiếng Việt",
+   // Greek accents in the picker): such a text in Manrope
+   if (font == &fallbackFont && text && manropeOpen > 0 && uiTextFitsManrope(text) && uiFallbackMissing(text) > 0)
+      return manropeFont(weight);
+   return font;
+}
+
 Font *uiPickFont(UiWeight weight, const char *text)
 {
    ensureFonts();
-   if (manropeOpen > 0 && uiTextFitsManrope(text)) return uiGetFont(weight);
+   if (hasRtlText(text) && arabic()) return &arabicFont;   // (V3.1.0) an Arabic or Hebrew title: DejaVu
+   if (manropeOpen > 0 && uiTextFitsManrope(text)) return manropeFont(weight);
    return &fallbackFont;
 }
 
@@ -545,6 +612,7 @@ int uiTextIsLegible(const char *text)
 {
    if (!text || !text[0]) return 1;
    ensureFonts();
+   if (hasRtlText(text) && arabic()) return 1;                 // (V3.1.0) Arabic or Hebrew: DejaVu draws it
    if (manropeOpen > 0 && uiTextFitsManrope(text)) return 1;   // drawn in Manrope, which has every character
    if (!fallbackFont.open || !fallbackGlyphsKnown()) return 1;
    cellFontSetScalePixel(&fallbackFont.font, (float)UI_MIN_TEXT_SIZE, (float)UI_MIN_TEXT_SIZE);
@@ -573,10 +641,28 @@ static void copyLabelText(char *out, const char *text)
    uiCleanText(out, LABEL_MAX_TEXT, text);
 }
 
+// (V3.1.0) how many characters of text FONT_POP has no glyph for (0 when that cannot be told): the language picker
+// leaves out a CJK language the console's font set cannot draw
+int uiFallbackMissing(const char *text)
+{
+   if (!text || !text[0]) return 0;
+   ensureFonts();
+   if (!fallbackFont.open || !fallbackGlyphsKnown()) return 0;
+   cellFontSetScalePixel(&fallbackFont.font, (float)UI_MIN_TEXT_SIZE, (float)UI_MIN_TEXT_SIZE);
+   int missing = 0;
+   const unsigned char *p = (const unsigned char *)text;
+   while (*p) {
+      uint32_t code;
+      nextCodepoint(&p, &code);
+      if (code >= 0x80 && code != 0xB7 && !fallbackHasGlyph(code)) missing++;
+   }
+   return missing;
+}
+
 void uiInitLabel(Label *l, UiWeight weight, int x, int y, int width, int size, uint32_t color, TextWrap wrap,
                  const char *text)
 {
-   initLabel(l, uiGetFont(weight), x, y, width, AUTO, size, color, wrap, text);
+   initLabel(l, labelFont(weight, text), x, y, width, AUTO, size, color, wrap, text);
 }
 
 void uiInitTextLabel(Label *l, UiWeight weight, int x, int y, int width, int size, uint32_t color,
@@ -602,9 +688,49 @@ void uiSetTextLabel(Label *l, UiWeight weight, const char *text)
    setLabelText(l, clipped);
 }
 
+// (V3.1.0) the start of a long text as l->text keeps it: cut to a Label's 255 bytes at a character boundary
+static void keepTextStart(Label *l, const char *text)
+{
+   int n = 0, last = 0;
+   const unsigned char *p = (const unsigned char *)text;
+   while (p[n] && n < LABEL_MAX_TEXT - 1) {
+      int len = p[n] < 0x80 ? 1 : p[n] >= 0xF0 ? 4 : p[n] >= 0xE0 ? 3 : 2;
+      if (n + len > LABEL_MAX_TEXT - 1) break;
+      n += len;
+      last = n;
+   }
+   memcpy(l->text, text, (size_t)last);
+   l->text[last] = 0;
+}
+
+void uiSetLongTextLabel(Label *l, UiWeight weight, const char *text)
+{
+   size_t length = text ? strlen(text) : 0;
+   if (length < LABEL_MAX_TEXT) { uiSetTextLabel(l, weight, text); return; }
+   char *clean = (char *)malloc(length + 1);
+   if (!clean) { uiSetTextLabel(l, weight, text); return; }   // cut to 255 bytes rather than nothing
+   uiCleanText(clean, (int)length + 1, text);
+   Font *font = uiPickFont(weight, clean);
+   freeLabel(l);
+   l->font = font;
+   l->raw  = 1;
+   renderFontRaw(&l->tt, font, l->size, clean, l->color, l->width, l->wrap);
+   keepTextStart(l, clean);
+   free(clean);
+}
+
+void uiInitLongLabel(Label *l, UiWeight weight, int x, int y, int width, int size, uint32_t color, TextWrap wrap,
+                     const char *text)
+{
+   if (!text || strlen(text) < LABEL_MAX_TEXT) { uiInitLabel(l, weight, x, y, width, size, color, wrap, text); return; }
+   initLabel(l, labelFont(weight, text), x, y, width, AUTO, size, color, wrap, NULL);
+   renderFont(&l->tt, l->font, size, text, color, width, wrap);
+   keepTextStart(l, text);
+}
+
 void uiSetLabelStyle(Label *l, UiWeight weight, int size, uint32_t color)
 {
-   Font *font = l->raw ? uiPickFont(weight, l->text) : uiGetFont(weight);
+   Font *font = l->raw ? uiPickFont(weight, l->text) : labelFont(weight, l->text);
    if (font == l->font && size == l->size && color == l->color) return;
 
    char text[LABEL_MAX_TEXT];

@@ -2,6 +2,7 @@
 // the file format + parsing is the shared simple-lib-core settings-file.h standard.
 
 #include "settings.h"
+#include "i18n.h"   // (V3.1.0) tr: the texts in the language in use
 #include "app-paths.h"
 #include "settings-file.h"
 #include "dbg.h"
@@ -37,7 +38,7 @@ static const char *DEFAULT_SETTINGS =
    "region=US\n"
    "# the country whose YouTube the lists come from: Trending and Live follow it, Search and Sports only\n"
    "# partly. a two-letter code as listed in Settings > Region, e.g. US, GB, DE, AT, CH, IT, TR, RU.\n"
-   "# the app itself stays in English.\n"
+   "# the app's own language is language= (Settings > Language), set at the first start.\n"
    "\n"
    "video-decoder=auto\n"
    "# auto = the TEE Decoder (TEE's own H.264 decoder on the SPEs: 1080p60) where it can decode the video,\n"
@@ -91,6 +92,7 @@ static int vp9ReleaseEarly = 1;              // ... vp9-release=: early / late (
 static int gfxShare = 0;                     // (V3.1.0 Test 4) gfx-share=: off / on (not in the file: experimental)
 static int vp9Rsx = 0;                       // ... vp9-rsx=: off / 1440 / on
 static char rsxTest[16];                     // ... rsx-test=: a test's word, "" for none
+static char languageSetting[16];             // (V3.1.0) language=: the menu's language, "" before the first choice
 
 // ---- content region ----
 
@@ -102,39 +104,39 @@ static char rsxTest[16];                     // ... rsx-test=: a test's word, ""
 // Korea stays only while its Hangul titles prove legible on the console; deleting its line is the whole change -
 // nothing else refers to a position in this table.
 static const ContentRegion REGIONS[] = {
-   { "DE", "Germany", "de" },
-   { "AT", "Austria", "de" },
-   { "CH", "Switzerland", "de" },
-   { "AU", "Australia", "en" },
-   { "BE", "Belgium", "nl" },
-   { "BR", "Brazil", "pt" },
-   { "BG", "Bulgaria", "bg" },
-   { "CA", "Canada", "en" },
-   { "HR", "Croatia", "hr" },
-   { "CZ", "Czechia", "cs" },
-   { "DK", "Denmark", "da" },
-   { "FI", "Finland", "fi" },
-   { "FR", "France", "fr" },
-   { "GR", "Greece", "el" },
-   { "HU", "Hungary", "hu" },
-   { "IE", "Ireland", "en" },
-   { "IT", "Italy", "it" },
-   { "JP", "Japan", "ja" },
-   { "MX", "Mexico", "es" },
-   { "NL", "Netherlands", "nl" },
-   { "NO", "Norway", "no" },
-   { "PL", "Poland", "pl" },
-   { "PT", "Portugal", "pt" },
-   { "RO", "Romania", "ro" },
-   { "RU", "Russia", "ru" },
-   { "RS", "Serbia", "sr" },
-   { "KR", "South Korea", "ko" },
-   { "ES", "Spain", "es" },
-   { "SE", "Sweden", "sv" },
-   { "TR", "Turkey", "tr" },
-   { "UA", "Ukraine", "uk" },
-   { "GB", "United Kingdom", "en" },
-   { "US", "United States", "en" },   // the default: what every earlier build sent
+   { "DE", N_("Germany"), "de" },
+   { "AT", N_("Austria"), "de" },
+   { "CH", N_("Switzerland"), "de" },
+   { "AU", N_("Australia"), "en" },
+   { "BE", N_("Belgium"), "nl" },
+   { "BR", N_("Brazil"), "pt" },
+   { "BG", N_("Bulgaria"), "bg" },
+   { "CA", N_("Canada"), "en" },
+   { "HR", N_("Croatia"), "hr" },
+   { "CZ", N_("Czechia"), "cs" },
+   { "DK", N_("Denmark"), "da" },
+   { "FI", N_("Finland"), "fi" },
+   { "FR", N_("France"), "fr" },
+   { "GR", N_("Greece"), "el" },
+   { "HU", N_("Hungary"), "hu" },
+   { "IE", N_("Ireland"), "en" },
+   { "IT", N_("Italy"), "it" },
+   { "JP", N_("Japan"), "ja" },
+   { "MX", N_("Mexico"), "es" },
+   { "NL", N_("Netherlands"), "nl" },
+   { "NO", N_("Norway"), "no" },
+   { "PL", N_("Poland"), "pl" },
+   { "PT", N_("Portugal"), "pt" },
+   { "RO", N_("Romania"), "ro" },
+   { "RU", N_("Russia"), "ru" },
+   { "RS", N_("Serbia"), "sr" },
+   { "KR", N_("South Korea"), "ko" },
+   { "ES", N_("Spain"), "es" },
+   { "SE", N_("Sweden"), "sv" },
+   { "TR", N_("Turkey"), "tr" },
+   { "UA", N_("Ukraine"), "uk" },
+   { "GB", N_("United Kingdom"), "en" },
+   { "US", N_("United States"), "en" },   // the default: what every earlier build sent
 };
 #define REGION_COUNT ((int)(sizeof REGIONS / sizeof REGIONS[0]))
 
@@ -244,22 +246,22 @@ static void migrateSubtitleSetting(const char *path, char *text, int cap, int le
 
 typedef struct { const char *name, *value; uint32_t number; } StyleChoice;   // shown, saved, what it is
 static const StyleChoice STYLE_COLORS[] = {          // the eight YouTube offers, for the text and its background
-   { "White", "white", 0xFFFFFF }, { "Yellow", "yellow", 0xFFFF00 }, { "Green", "green", 0x00FF00 },
-   { "Cyan", "cyan", 0x00FFFF }, { "Blue", "blue", 0x0000FF }, { "Magenta", "magenta", 0xFF00FF },
-   { "Red", "red", 0xFF0000 }, { "Black", "black", 0x000000 },
+   { N_("White"), "white", 0xFFFFFF }, { N_("Yellow"), "yellow", 0xFFFF00 }, { N_("Green"), "green", 0x00FF00 },
+   { N_("Cyan"), "cyan", 0x00FFFF }, { N_("Blue"), "blue", 0x0000FF }, { N_("Magenta"), "magenta", 0xFF00FF },
+   { N_("Red"), "red", 0xFF0000 }, { N_("Black"), "black", 0x000000 },
 };
 static const StyleChoice STYLE_BACKGROUNDS[] = {
-   { "Black", "black", 0x000000 }, { "White", "white", 0xFFFFFF }, { "Yellow", "yellow", 0xFFFF00 },
-   { "Green", "green", 0x00FF00 }, { "Cyan", "cyan", 0x00FFFF }, { "Blue", "blue", 0x0000FF },
-   { "Magenta", "magenta", 0xFF00FF }, { "Red", "red", 0xFF0000 },
+   { N_("Black"), "black", 0x000000 }, { N_("White"), "white", 0xFFFFFF }, { N_("Yellow"), "yellow", 0xFFFF00 },
+   { N_("Green"), "green", 0x00FF00 }, { N_("Cyan"), "cyan", 0x00FFFF }, { N_("Blue"), "blue", 0x0000FF },
+   { N_("Magenta"), "magenta", 0xFF00FF }, { N_("Red"), "red", 0xFF0000 },
 };
 static const StyleChoice STYLE_OPACITIES[] = {       // the alpha: 80% is near the plate subtitles always had
    { "0%", "0", 0 }, { "20%", "20", 51 }, { "40%", "40", 102 }, { "60%", "60", 153 }, { "80%", "80", 204 },
    { "100%", "100", 255 },
 };
 static const StyleChoice STYLE_EDGES[] = {
-   { "None", "none", SUBTITLE_EDGE_NONE }, { "Shadow", "shadow", SUBTITLE_EDGE_SHADOW },
-   { "Outline", "outline", SUBTITLE_EDGE_OUTLINE },
+   { N_("None"), "none", SUBTITLE_EDGE_NONE }, { N_("Shadow"), "shadow", SUBTITLE_EDGE_SHADOW },
+   { N_("Outline"), "outline", SUBTITLE_EDGE_OUTLINE },
 };
 static const StyleChoice STYLE_SIZES[] = {           // per cent of the 30 px subtitles always had
    { "75%", "75", 22 }, { "100%", "100", 30 }, { "125%", "125", 38 }, { "150%", "150", 45 }, { "200%", "200", 60 },
@@ -403,6 +405,8 @@ void loadSettings(void)
    }
    const char *test = findSettingValue(text, "rsx-test");
    if (test) copySettingWord(test, rsxTest, sizeof rsxTest);
+   const char *language = findSettingValue(text, "language");   // (V3.1.0) the menu's language: i18n.c asks for it
+   if (language) copySettingWord(language, languageSetting, sizeof languageSetting);
    logInfo("[settings] video-decoder %s, tee-decoder-spes %d, vp9-spes %d, display-sync %s, log %s, vp9-release %s, gfx-share %s, "
            "vp9-rsx %s%s%s\n", videoDecoder == VIDEO_DECODER_SONY ? "sony" : "auto", teeDecoderSpes, vp9Spes,
            displaySyncByFlips ? "flips" : "wall", logAsync ? "async" : "sync", vp9ReleaseEarly ? "early" : "late",
@@ -482,6 +486,21 @@ static int saveSetting(const char *key, const char *value)
 
 static int saveRegion(const char *code) { return saveSetting("region", code); }
 
+// (V3.1.0) the menu's language
+int getLanguageSetting(char *code, int cap)
+{
+   if (cap <= 0) return 0;
+   strCopy(code, cap, languageSetting);
+   return languageSetting[0] != 0;
+}
+
+int saveLanguageSetting(const char *code)
+{
+   if (!code || !code[0]) return -1;
+   strCopy(languageSetting, sizeof languageSetting, code);
+   return saveSetting("language", code);
+}
+
 int getQualityCap(void) { return qualityCap; }
 int getUpdateCheck(void) { return updateCheck; }
 
@@ -556,7 +575,7 @@ int getSubtitleStyleChoiceCount(SubtitleStyleField field) { return styleField(fi
 const char *getSubtitleStyleChoiceName(SubtitleStyleField field, int choice)
 {
    if (!styleField(field) || choice < 0 || choice >= STYLE_FIELDS[field].count) return "";
-   return STYLE_FIELDS[field].choices[choice].name;
+   return tr(STYLE_FIELDS[field].choices[choice].name);   // (V3.1.0) "Yellow" in the language in use; "80%" as it is
 }
 
 void setSubtitleStyleChoice(SubtitleStyleField field, int choice)

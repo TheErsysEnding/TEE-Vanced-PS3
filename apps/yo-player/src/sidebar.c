@@ -9,6 +9,7 @@
 #include "ui/label.h"
 #include "ui/icon-font.h"
 #include "ui-fonts.h"         // uiInitLabel / uiLabelYForCenter: the entry names are Manrope like all UI text
+#include "i18n.h"             // (V3.1.0) tr: the names in the language in use
 #include "ui-draw.h"          // rounded fills, uiWithAlpha, UI_SCREEN_W
 #include "account.h"          // signed in or not: the account entry's name and icon
 #include "downloads.h"        // getDownloadStatus: the download indicator
@@ -86,8 +87,8 @@ static const IconId ITEM_ICONS[SIDE_COUNT] = {
 };
 
 static const char *ITEM_NAMES[SIDE_COUNT] = {
-   "Search", "For you", "Trending", "Live", "Subscriptions", "Continue watching",
-   "Playlists", "Watch Later", "History", "Downloads", "Login", "Settings",
+   N_("Search"), N_("For you"), N_("Trending"), N_("Live"), N_("Subscriptions"), N_("Continue watching"),
+   N_("Playlists"), N_("Watch Later"), N_("History"), N_("Downloads"), N_("Login"), N_("Settings"),
 };
 
 static Icon  icons[SIDE_COUNT];
@@ -106,42 +107,68 @@ static int   panelWidth = PANEL_MIN_W;   // PANEL_MIN_W, or wider when the longe
 int isSidebarItemEnabled(SidebarItem item) { (void)item; return 1; }   // every entry leads somewhere now
 const char *sidebarItemName(SidebarItem item)
 {
-   if (item == SIDE_ACCOUNT && isAccountSignedIn()) return "Account";
-   return (item >= 0 && item < SIDE_COUNT) ? ITEM_NAMES[item] : "";
+   if (item == SIDE_ACCOUNT && isAccountSignedIn()) return tr("Account");
+   return (item >= 0 && item < SIDE_COUNT) ? tr(ITEM_NAMES[item]) : "";
 }
 
 // the account entry follows the sign-in; every other entry is what it always is
 static Icon  *entryIcon(int index)  { return index == SIDE_ACCOUNT && isAccountSignedIn() ? &accountIcon : &icons[index]; }
 static Label *entryLabel(int index) { return index == SIDE_ACCOUNT && isAccountSignedIn() ? &accountLabel : &labels[index]; }
 
-void initSidebar(void)
+// (V3.1.0) the entries' names in the language in use, and the panel as wide as the longest needs
+static void makeNames(void)
 {
-   focused = 0;
-   current = picked = SIDE_SUBS;
    panelWidth = PANEL_MIN_W;
-
-   uiInitLabel(&logoLabel, UI_WEIGHT_EXTRABOLD, 0, 0, AUTO, LOGO_TEXT, activeTheme->onAccent, TEXT_NOWRAP, "TEE");
-   uiInitLabel(&wordmarkLabel, UI_WEIGHT_EXTRABOLD, 0, 0, AUTO, WORDMARK_TEXT, activeTheme->textPrimary, TEXT_NOWRAP, "Vanced");
    for (int i = 0; i < SIDE_COUNT; i++) {
-      initIcon(&icons[i], ITEM_ICONS[i], ICON_SIZE);
-      uiInitLabel(&labels[i], LABEL_WEIGHT, 0, 0, AUTO, LABEL_SIZE, TEXT_TINTABLE, TEXT_NOWRAP, ITEM_NAMES[i]);
+      uiInitLabel(&labels[i], LABEL_WEIGHT, 0, 0, AUTO, LABEL_SIZE, TEXT_TINTABLE, TEXT_NOWRAP, tr(ITEM_NAMES[i]));
       // The panel takes its longest name whole: "Continue watching" at 24/700 needs about 350 px where the
       // design's panel is 300, and an ellipsis in a menu of nine fixed words would only hide which entry it is.
       int needed = LABEL_X + labels[i].tt.tex.w + ROW_PAD_R + ROW_X;
       if (needed > panelWidth) panelWidth = needed;
    }
-   initIcon(&accountIcon, ICON_LOCK_OPEN, ICON_SIZE);
-   initIcon(&dlIcon, ICON_DOWNLOAD, DL_ICON_SIZE);
+   uiInitLabel(&accountLabel, LABEL_WEIGHT, 0, 0, AUTO, LABEL_SIZE, TEXT_TINTABLE, TEXT_NOWRAP, tr("Account"));
+   int needed = LABEL_X + accountLabel.tt.tex.w + ROW_PAD_R + ROW_X;
+   if (needed > panelWidth) panelWidth = needed;
    uiInitLabel(&dlCountLabel, UI_WEIGHT_EXTRABOLD, 0, 0, AUTO, DL_COUNT_SIZE, TEXT_TINTABLE, TEXT_NOWRAP, "");
    uiInitLabel(&dlTextLabel, LABEL_WEIGHT, 0, 0, AUTO, DL_TEXT_SIZE, TEXT_TINTABLE, TEXT_NOWRAP, "");
-   uiInitLabel(&accountLabel, LABEL_WEIGHT, 0, 0, AUTO, LABEL_SIZE, TEXT_TINTABLE, TEXT_NOWRAP, "Account");
+   dlCountText[0] = 0;
+}
+
+static void freeNames(void)
+{
+   for (int i = 0; i < SIDE_COUNT; i++) freeLabel(&labels[i]);
+   freeLabel(&accountLabel);
+   freeLabel(&dlCountLabel);
+   freeLabel(&dlTextLabel);
+}
+
+void initSidebar(void)
+{
+   focused = 0;
+   current = picked = SIDE_SUBS;
+
+   // the name is the name in every language - Manrope always (uiInitTextLabel keeps ASCII in it), as the XMB shows it
+   uiInitTextLabel(&logoLabel, UI_WEIGHT_EXTRABOLD, 0, 0, AUTO, LOGO_TEXT, activeTheme->onAccent, TEXT_NOWRAP, "TEE");
+   uiInitTextLabel(&wordmarkLabel, UI_WEIGHT_EXTRABOLD, 0, 0, AUTO, WORDMARK_TEXT, activeTheme->textPrimary, TEXT_NOWRAP, "Vanced");
+   for (int i = 0; i < SIDE_COUNT; i++) initIcon(&icons[i], ITEM_ICONS[i], ICON_SIZE);
+   initIcon(&accountIcon, ICON_LOCK_OPEN, ICON_SIZE);
+   initIcon(&dlIcon, ICON_DOWNLOAD, DL_ICON_SIZE);
+   makeNames();
+}
+
+// (V3.1.0) after the language changed (Settings > Language): the names anew, where the rail is stays as it is
+void relabelSidebar(void)
+{
+   freeNames();
+   makeNames();
 }
 
 void termSidebar(void)
 {
-   for (int i = 0; i < SIDE_COUNT; i++) { freeIcon(&icons[i]); freeLabel(&labels[i]); }
+   for (int i = 0; i < SIDE_COUNT; i++) freeIcon(&icons[i]);
+   freeNames();
    freeIcon(&accountIcon);
-   freeLabel(&accountLabel);
+   freeIcon(&dlIcon);
    freeLabel(&logoLabel);
    freeLabel(&wordmarkLabel);
 }

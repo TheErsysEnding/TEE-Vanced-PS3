@@ -9,6 +9,7 @@
 // negotiate (it is RSA-only). Under the system (cellHttp) transport this host would be unreachable.
 
 #include "sponsorblock.h"
+#include "i18n.h"   // (V3.1.0) tr: the texts in the language in use
 #include "http.h"
 #include "dbg.h"
 
@@ -25,9 +26,9 @@ static const char *CATEGORY_API_NAMES[SPONSOR_CATEGORY_COUNT] = {
 // The long names (the Ember settings design, close to SponsorBlock's own wording), used everywhere a
 // category is named: the settings rows, the "Skip ..." offer and the "Skipped ..." toast. The short forms
 // ("Interaction", "Outro") did not say what actually gets skipped.
-static const char *CATEGORY_LABELS[SPONSOR_CATEGORY_COUNT] = {
-   "Sponsor", "Self-promotion", "Interaction reminder", "Intro", "Outro and end cards", "Off-topic music",
-   "Filler and tangents"
+static const char *CATEGORY_LABELS[SPONSOR_CATEGORY_COUNT] = {   // (V3.1.0) in the language in use: tr()
+   N_("Sponsor"), N_("Self-promotion"), N_("Interaction reminder"), N_("Intro"), N_("Outro and end cards"),
+   N_("Off-topic music"), N_("Filler and tangents")
 };
 // The Ember design's category colours (UEBERGABE 3.1). These are the one set of colours that does not come
 // from the theme - they identify a category wherever it appears (timeline, settings, legend), so a theme
@@ -54,7 +55,7 @@ unsigned getSponsorCategoryColor(SponsorCategory category)
 
 const char *getSponsorCategoryName(SponsorCategory category)
 {
-   return ((int)category >= 0 && category < SPONSOR_CATEGORY_COUNT) ? CATEGORY_LABELS[category] : "Segment";
+   return ((int)category >= 0 && category < SPONSOR_CATEGORY_COUNT) ? tr(CATEGORY_LABELS[category]) : tr("Segment");
 }
 
 // the category enum for a "category":"..." within [from,end), or -1 if it's one we don't handle.

@@ -1,0 +1,319 @@
+# TEE Vanced: the English texts of the app and their numbers (tools/geni18n.py keeps this file).
+# A number stays for good; a translation file says "number<TAB>text". A plural text is "one || other".
+# * = no longer in the code.
+1	"%s" is still downloading. It plays here once it is in.
+2	"%s" waits for the downloads before it. It plays here once it is in.
+3	About
+4	Account
+5	Add to playlist
+6	Ask
+7	Autoplay next video
+8	Back
+9	Cancel
+10	Category
+11	Change
+12	Channel
+13	Choose
+14	Choose your language
+15	Close
+16	Continue watching
+17	Could not unsubscribe from %s.
+18	Delete
+19	Delete the download "%s" from the console?
+20	Download
+21	Downloads
+22	Downloads that did not finish: %d ("%s" and more). Start them again from the beginning, or delete them?
+23	Filler and tangents
+24	For you
+25	Gaming
+26	History
+27	Interaction reminder
+28	Intro
+29	Keep
+30	Language
+31	Later
+32	Latest: %s
+33	Liked videos
+34	List view
+35	Live
+36	Loading...
+37	Login
+38	Menu
+39	Move "%s" into the XMB's Video column? The system takes the file: TEE Vanced will not list or play it afterwards. The XMB plays it at 720p60 or 1080p30 (a 1440p or 1080p60 download is fetched again in that form).
+40	Move to the XMB
+41	Music
+42	News
+43	No downloads yet - R3 on any video downloads it.
+44	No results
+45	Off
+46	Off-topic music
+47	On
+48	Open channel
+49	Outro and end cards
+50	PS button
+51	Page
+52	Play
+53	Playback
+54	Playlists
+55	Podcasts
+56	Popular
+57	Region
+58	Restart
+59	Scan for links, streams\nand contact
+60	Search
+61	Segment
+62	Self-promotion
+63	Settings
+64	Skip
+65	Sponsor
+66	Sports
+67	Stop download
+68	Stop downloading "%s"? What is in so far is thrown away.
+69	Subscribe
+70	Subscriptions
+71	TEE Vanced %s  ·  v%s is out on GitHub
+72	TEE Vanced v%s is out - this is %s. It is on GitHub: TheErsysEnding/TEE-Vanced-PS3, Releases.
+73	That channel was not in the subscription list.
+74	The PS button could not be sent: this console refused to register a virtual controller.
+75	The app's own texts. Titles and names from YouTube stay as they are.
+76	The data folder could not be created or written at startup, so nothing can be saved.\n\n%s
+77	The download of "%s" did not finish. Start it again from the beginning, or delete it?
+78	This tile has no channel id, so there is nothing to unsubscribe from.
+79	To XMB
+80	Trending
+81	Unsubscribe
+82	Unsubscribe from %s?
+83	Unsubscribed - but it could not be saved, so the channel is back after a restart.\n\n%s\n\nFree space: %lu KB
+84	Video
+85	Watch Later
+86	What happens when a marked segment starts. Ask shows a skip button for as long as the segment runs.
+87	You can change it later in Settings.
+88	this channel
+89	1440p60 drops to 1080p60 within about two seconds in a busy scene, and a start too heavy for 1440p begins in 1080p60 at once.
+90	4K30 is a beta: it will very likely fall back to 1440p30 often. Busy scenes in 4K are more than the PS3 can decode in time.
+91	4K30 videos start in 1440p and go up to 4K where the video is light enough.
+92	Arabic and Hebrew video titles are shown now, right to left.
+93	Continue
+94	New: 4K videos at 30 frames a second, on the SPEs with the TEE VP9 decoder.
+95	Please share your experience with it:
+96	Scan the code with your phone: links, streams and contact.
+97	Support TheErsysEnding:
+98	TEE Vanced %s  ·  what's new
+99	The app in 22 languages, Arabic right to left: choose yours at the first start, or later in Settings > Language.
+100	What's new
+101	%d audio track || %d audio tracks
+102	%d channel your account follows, A to Z. X opens a channel, Triangle unsubscribes. || %d channels your account follows, A to Z. X opens a channel, Triangle unsubscribes.
+103	%d channel, A to Z || %d channels, A to Z
+104	%d min left || %d min left
+105	%d video || %d videos
+106	%s (auto-translated)
+107	%s - but it could not be saved, so it will be gone after a restart.\n\n%s
+108	%s - but it could not be saved, so it will be gone after a restart.\n\n%s\n\nFree space: %lu KB
+109	%s Check the connection and try again.
+110	%s day ago || %s days ago
+111	%s hour ago || %s hours ago
+112	%s minute ago || %s minutes ago
+113	%s month ago || %s months ago
+114	%s second ago || %s seconds ago
+115	%s subscriber || %s subscribers
+116	%s video || %s videos
+117	%s view || %s views
+118	%s watching || %s watching
+119	%s week ago || %s weeks ago
+120	%s year ago || %s years ago
+121	720p60 / 1080p30  ·  MP4 for the XMB
+122	A to Z
+123	Access was not allowed on Google's page. Press X to try again.
+124	Add here
+125	Added to Watch Later
+126	All channels
+127	Audio
+128	Audio %d/%d: %s
+129	Audio track
+130	Audio: %s  -  Square: %d track || Audio: %s  -  Square: %d tracks
+131	Australia
+132	Austria
+133	Auto (%s)
+134	Auto - %s
+135	Auto plays it at %s - choose %dp in the player's options (START) for its best.
+136	Autoplay: Off
+137	Autoplay: On
+138	Back to live
+139	Background
+140	Background opacity
+141	Belgium
+142	Black
+143	Blue
+144	Brazil
+145	Bulgaria
+146	Busy - try again
+147	Canada
+148	Chapter
+149	Chapter %d of %d
+150	Chapters
+151	Chapters: none
+152	Checking the quality...
+153	Choose your Google account and allow access
+154	Could not read this file, so nothing was changed:\n\n%s
+155	Couldn't rebuild the stream
+156	Croatia
+157	Cyan
+158	Czechia
+159	Delete the playlist %s and its %d video? || Delete the playlist %s and its %d videos?
+160	Denmark
+161	Description
+162	Done
+163	Download failed at %d%%: "%s%s"
+164	Download for the XMB
+165	Downloaded "%s%s"
+166	Downloading
+167	Downloading "%s%s"
+168	Downloading · %d%%
+169	Enter this code
+170	Every channel your account follows, A to Z.
+171	Finland
+172	For the XMB, the video goes to its Video column, and the system takes the file: TEE Vanced will not list or play it afterwards. The XMB plays it at 720p60 or 1080p30.
+173	France
+174	Germany
+175	Getting a code from Google...
+176	Goes to the XMB's Video column, which plays it with the console's own player.
+177	Google Translate refused the subtitles - try later
+178	Google could not be reached. Press X to try again.
+179	Greece
+180	Green
+181	Hide
+182	Hungary
+183	In the XMB's Video column: "%s%s"
+184	Ireland
+185	Italy
+186	Its details could not be fetched.
+187	Japan
+188	Jump
+189	LIVE
+190	Latest
+191	Magenta
+192	Mexico
+193	Move
+194	Name the playlist
+195	Netherlands
+196	New
+197	New code
+198	New playlist...
+199	Newest uploads first
+200	No chapters
+201	No description.
+202	No other quality
+203	No playlists yet - press START to make one, or L3 on any video to file it straight into a new list.
+204	No subtitles
+205	No views
+206	None
+207	Norway
+208	Nothing it can play
+209	Nothing yet - your searches will be listed here
+210	Oldest
+211	On YouTube and on this PS3
+212	On this PS3
+213	On your phone or computer, open
+214	Open
+215	Options
+216	Outline
+217	PS button not available
+218	Page %d / %d%s
+219	Pause
+220	Playing
+221	Plays at %s with your quality setting (%dp).
+222	Plays in TEE Vanced (Downloads), on the TEE Decoder.
+223	Plays in TEE Vanced (Downloads), with its Opus sound. A video without 1440p gets 1080p60.
+224	Poland
+225	Portugal
+226	Premiered %s
+227	Press
+228	Press R3 to hide
+229	Quality
+230	Quality not known
+231	Quality: %s
+232	Quality: no other
+233	Recent searches
+234	Recommended for you
+235	Red
+236	Relevance
+237	Removed from Watch Later
+238	Replay
+239	Rewind
+240	Romania
+241	Russia
+242	Scan with your phone
+243	Scroll
+244	Search YouTube
+245	Select
+246	Serbia
+247	Shadow
+248	Sign in to YouTube
+249	Sign out
+250	Signed in to YouTube. These lists come from your account - so do Subscriptions, Watch Later, History and Playlists in the menu.
+251	Signed in. Your lists now come from your YouTube account.
+252	Size
+253	Skip %s
+254	Skipped %s
+255	Sort
+256	South Korea
+257	Spain
+258	Streamed %s
+259	Subscribed
+260	Subscription list is full - %d channels is the maximum.
+261	Subtitle style
+262	Subtitles
+263	Subtitles off
+264	Subtitles unavailable
+265	Subtitles: %s
+266	Sweden
+267	Switzerland
+268	Text color
+269	Text edge
+270	That is as many playlists as this app keeps.
+271	That playlist is full.
+272	The PS3 has no stream of it that it can play.
+273	The best the PS3 plays of it.
+274	The best the PS3 plays. In its busiest moments it can drop to 1080p60 for a few seconds.
+275	The channel list could not be loaded. O goes back.
+276	This channel has no usable id, so it cannot be subscribed to.
+277	This channel has no usable id, so it cannot be subscribed to. (id: "%s")
+278	This code has run out. Press X for a new one.
+279	This live stream has its rewind turned off
+280	Track unavailable - %s
+281	Translated subtitles unavailable
+282	Translation stopped - the rest in the original language
+283	Trending and Live come from this country's YouTube; Search and Sports change only partly. The app's own language is set under Settings > Language.
+284	Turkey
+285	Type
+286	Ukraine
+287	United Kingdom
+288	United States
+289	Unsubscribed
+290	Views
+291	WATCHED
+292	Waiting
+293	Waiting for you to sign in. This page goes on by itself.
+294	Watch Later is full
+295	Watched
+296	What you watched on YouTube
+297	White
+298	Withdraws this console's sign-in at Google
+299	Yellow
+300	YouTube did not add the video to Watch Later.
+301	YouTube did not remove the video from Watch Later.
+302	YouTube did not take the subscription.
+303	YouTube did not take the unsubscribe.
+304	Your account follows no channels.
+305	Your subscriptions, Watch Later, history and recommendations then come from your YouTube account. Your password is only ever typed on Google's own page.
+306	couldn't open stream
+307	couldn't reopen the video
+308	couldn't start worker
+309	couldn't switch audio track
+310	in use
+311	no playable mp4 video
+312	no sound
+313	resolve failed
+314	to type
+315	unrecognised link or id
+316	±1 min

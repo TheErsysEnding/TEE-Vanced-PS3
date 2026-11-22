@@ -30,6 +30,7 @@
 #include "ui-fonts.h"
 #include "ui-draw.h"
 #include "ui-clock.h"
+#include "i18n.h"           // (V3.1.0) the app's texts in the language chosen at the first start
 #include "bridge-client.h"
 #include "dbg.h"
 #include "video-player.h"   // (V3.1.0 Test 3) the display's counters and the player's switches
@@ -84,6 +85,7 @@ int main(int argc, char **argv)
 
    initStats(5, 5, 14, activeTheme->textSecondary);
    loadSettings();         // user-editable settings.txt (created with defaults on first launch)
+   initI18n();             // (V3.1.0) the app's language (language= in the settings; none yet: Home asks first)
    // (V3.1.0 Test 3) the player's switches, and the log on a thread of its own (a job file may ask for log=sync)
    setVideoDisplaySync(getDisplaySyncByFlips());
    setVideoVp9ReleaseEarly(getVp9ReleaseEarly());

@@ -1,0 +1,6 @@
+# English: the texts as the code writes them (no translations here).
+@name English
+@script latin
+@flag gb
+@order 0
+@plural one

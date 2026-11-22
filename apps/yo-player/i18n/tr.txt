@@ -1,0 +1,322 @@
+# Turkish (sen). Plural: Turkish keeps the noun singular after a number - both forms the same.
+@name Türkçe
+@script latin
+@flag tr
+@order 7
+@plural one
+1	"%s" hâlâ iniyor. Bitince burada oynatılır.
+2	"%s" önceki indirmeleri bekliyor. Bitince burada oynatılır.
+3	Hakkında
+4	Hesap
+5	Oynatma listesine ekle
+6	Sor
+7	Sonraki videoyu otomatik oynat
+8	Geri
+9	İptal
+10	Kategori
+11	Değiştir
+12	Kanal
+13	Seç
+14	Dilini seç
+15	Kapat
+16	İzlemeye devam et
+17	%s aboneliğinden çıkılamadı.
+18	Sil
+19	"%s" indirmesi konsoldan silinsin mi?
+20	İndir
+21	İndirilenler
+22	Bitmeyen indirmeler: %d ("%s" ve diğerleri). Baştan yeniden başlatılsın mı, yoksa silinsin mi?
+23	Dolgu ve konu dışı
+24	Sizin için
+25	Oyun
+26	Geçmiş
+27	Etkileşim hatırlatması
+28	Giriş
+29	Koru
+30	Dil
+31	Sonra
+32	En yeni: %s
+33	Beğenilen videolar
+34	Liste görünümü
+35	Canlı
+36	Yükleniyor...
+37	Giriş yap
+38	Menü
+39	"%s" XMB'nin Video sütununa taşınsın mı? Dosyayı sistem alır: TEE Vanced onu artık listelemez ve oynatmaz. XMB onu 720p60 veya 1080p30 oynatır (1440p veya 1080p60 indirme bu biçimde yeniden indirilir).
+40	XMB'ye taşı
+41	Müzik
+42	Haberler
+43	Henüz indirme yok – bir videoda R3 onu indirir.
+44	Sonuç yok
+45	Kapalı
+46	Konu dışı müzik
+47	Açık
+48	Kanalı aç
+49	Kapanış ve bitiş ekranları
+50	PS tuşu
+51	Sayfa
+52	Oynat
+53	Oynatma
+54	Oynatma listeleri
+55	Podcast'ler
+56	Popüler
+57	Bölge
+58	Yeniden başlat
+59	Bağlantılar, yayınlar ve\niletişim için tara
+60	Ara
+61	Bölüm
+62	Kendi tanıtımı
+63	Ayarlar
+64	Atla
+65	Sponsor
+66	Spor
+67	İndirmeyi durdur
+68	"%s" indirmesi durdurulsun mu? Şimdiye kadar inen kısım atılır.
+69	Abone ol
+70	Abonelikler
+71	TEE Vanced %s  ·  v%s GitHub'da çıktı
+72	TEE Vanced v%s çıktı – bu sürüm %s. GitHub'da: TheErsysEnding/TEE-Vanced-PS3, Releases.
+73	Bu kanal abonelik listesinde değildi.
+74	PS tuşu gönderilemedi: konsol sanal bir kumandayı kaydetmeyi reddetti.
+75	Uygulamanın kendi metinleri. YouTube'daki başlıklar ve adlar olduğu gibi kalır.
+76	Veri klasörü açılışta oluşturulamadı veya yazılamadı, bu yüzden hiçbir şey kaydedilemiyor.\n\n%s
+77	"%s" indirmesi bitmedi. Baştan yeniden başlatılsın mı, yoksa silinsin mi?
+78	Bu kutucuğun kanal kimliği yok, bu yüzden çıkılacak bir abonelik yok.
+79	XMB'ye
+80	Trendler
+81	Abonelikten çık
+82	%s aboneliğinden çıkılsın mı?
+83	Abonelikten çıkıldı – ama kaydedilemedi, yeniden başlatınca kanal geri gelir.\n\n%s\n\nBoş alan: %lu KB
+84	Video
+85	Daha sonra izle
+86	İşaretli bir bölüm başladığında ne olacağı. "Sor" ile bölüm sürdükçe bir atlama düğmesi görünür.
+87	Bunu daha sonra Ayarlar'dan değiştirebilirsin.
+88	bu kanal
+89	1440p60 yoğun bir sahnede yaklaşık iki saniye içinde 1080p60'a düşer, 1440p için fazla ağır bir başlangıç da hemen 1080p60 ile başlar.
+90	4K30 bir beta: büyük olasılıkla sık sık 1440p30'a düşecek. 4K'daki yoğun sahneler, PS3'ün zamanında çözebileceğinden fazladır.
+91	4K30 videolar 1440p ile başlar ve video yeterince hafif olduğunda 4K'ya çıkar.
+92	Arapça ve İbranice video başlıkları artık sağdan sola gösteriliyor.
+93	Devam
+94	Yeni: saniyede 30 karelik 4K videolar, SPE'lerde TEE VP9 kod çözücüyle.
+95	Lütfen deneyimlerinizi paylaşın:
+96	Kodu telefonunla tara: bağlantılar, yayınlar ve iletişim.
+97	TheErsysEnding'i destekle:
+98	TEE Vanced %s  ·  yenilikler
+99	Uygulama 22 dilde, Arapça sağdan sola: dilini ilk açılışta ya da sonra Ayarlar > Dil'den seç.
+100	Yenilikler
+101	%d ses parçası || %d ses parçası
+102	Hesabının takip ettiği %d kanal, A'dan Z'ye. X kanalı açar, Üçgen abonelikten çıkar. || Hesabının takip ettiği %d kanal, A'dan Z'ye. X kanalı açar, Üçgen abonelikten çıkar.
+103	%d kanal, A'dan Z'ye || %d kanal, A'dan Z'ye
+104	%d dk kaldı || %d dk kaldı
+105	%d video || %d video
+106	%s (otomatik çeviri)
+107	%s – ama kaydedilemedi, yeniden başlatınca kaybolur.\n\n%s
+108	%s – ama kaydedilemedi, yeniden başlatınca kaybolur.\n\n%s\n\nBoş alan: %lu KB
+109	%s Bağlantıyı kontrol edip yeniden dene.
+110	%s gün önce || %s gün önce
+111	%s saat önce || %s saat önce
+112	%s dakika önce || %s dakika önce
+113	%s ay önce || %s ay önce
+114	%s saniye önce || %s saniye önce
+115	%s abone || %s abone
+116	%s video || %s video
+117	%s görüntüleme || %s görüntüleme
+118	%s kişi izliyor || %s kişi izliyor
+119	%s hafta önce || %s hafta önce
+120	%s yıl önce || %s yıl önce
+121	720p60 / 1080p30  ·  XMB için MP4
+122	A'dan Z'ye
+123	Google sayfasında erişime izin verilmedi. Yeniden denemek için X'e bas.
+124	Buraya ekle
+125	Daha sonra izle'ye eklendi
+126	Tüm kanallar
+127	Ses
+128	Ses %d/%d: %s
+129	Ses parçası
+130	Ses: %s  -  Kare: %d parça || Ses: %s  -  Kare: %d parça
+131	Avustralya
+132	Avusturya
+133	Otomatik (%s)
+134	Otomatik - %s
+135	Otomatik onu %s oynatır – en iyi kalite için oynatıcı seçeneklerinde (START) %dp seç.
+136	Otomatik oynatma: kapalı
+137	Otomatik oynatma: açık
+138	Canlıya dön
+139	Arka plan
+140	Arka plan opaklığı
+141	Belçika
+142	Siyah
+143	Mavi
+144	Brezilya
+145	Bulgaristan
+146	Meşgul – yeniden dene
+147	Kanada
+148	Bölüm
+149	Bölüm %d / %d
+150	Bölümler
+151	Bölümler: yok
+152	Kalite kontrol ediliyor...
+153	Google hesabını seç ve erişime izin ver
+154	Bu dosya okunamadı, bu yüzden hiçbir şey değişmedi:\n\n%s
+155	Yayın yeniden kurulamadı
+156	Hırvatistan
+157	Camgöbeği
+158	Çekya
+159	%s oynatma listesi ve %d videosu silinsin mi? || %s oynatma listesi ve %d videosu silinsin mi?
+160	Danimarka
+161	Açıklama
+162	Bitti
+163	İndirme %d%% noktasında başarısız: "%s%s"
+164	XMB için indir
+165	İndirildi: "%s%s"
+166	İndiriliyor
+167	İndiriliyor: "%s%s"
+168	İndiriliyor · %d%%
+169	Bu kodu gir
+170	Hesabının takip ettiği tüm kanallar, A'dan Z'ye.
+171	Finlandiya
+172	XMB için video onun Video sütununa gider ve dosyayı sistem alır: TEE Vanced onu artık listelemez ve oynatmaz. XMB onu 720p60 veya 1080p30 oynatır.
+173	Fransa
+174	Almanya
+175	Google'dan kod alınıyor...
+176	XMB'nin Video sütununa gider; orada konsolun kendi oynatıcısıyla oynatılır.
+177	Google Çeviri altyazıları reddetti – sonra dene
+178	Google'a ulaşılamadı. Yeniden denemek için X'e bas.
+179	Yunanistan
+180	Yeşil
+181	Gizle
+182	Macaristan
+183	XMB'nin Video sütununda: "%s%s"
+184	İrlanda
+185	İtalya
+186	Ayrıntıları alınamadı.
+187	Japonya
+188	Atla
+189	CANLI
+190	En yeni
+191	Eflatun
+192	Meksika
+193	Hareket
+194	Oynatma listesine ad ver
+195	Hollanda
+196	Yeni
+197	Yeni kod
+198	Yeni oynatma listesi...
+199	Önce en yeni yüklemeler
+200	Bölüm yok
+201	Açıklama yok.
+202	Başka kalite yok
+203	Henüz oynatma listesi yok – yeni bir tane için START'a, bir videoyu doğrudan yeni listeye koymak için L3'e bas.
+204	Altyazı yok
+205	Görüntüleme yok
+206	Yok
+207	Norveç
+208	Oynatılabilecek bir şey yok
+209	Henüz bir şey yok – aramaların burada görünecek
+210	En eski
+211	YouTube'da ve bu PS3'te
+212	Bu PS3'te
+213	Telefonunda veya bilgisayarında aç
+214	Aç
+215	Seçenekler
+216	Dış çizgi
+217	PS tuşu kullanılamıyor
+218	Sayfa %d / %d%s
+219	Duraklat
+220	Oynatılıyor
+221	Kalite ayarına göre %s oynatılıyor (%dp).
+222	TEE Vanced'de (İndirilenler), TEE Decoder ile oynatılır.
+223	TEE Vanced'de (İndirilenler), Opus sesiyle oynatılır. 1440p'si olmayan bir video 1080p60 alır.
+224	Polonya
+225	Portekiz
+226	Prömiyer %s
+227	Yazmak için
+228	Gizlemek için R3'e bas
+229	Kalite
+230	Kalite bilinmiyor
+231	Kalite: %s
+232	Kalite: başka yok
+233	Son aramalar
+234	Sizin için önerilenler
+235	Kırmızı
+236	Alaka
+237	Daha sonra izle'den kaldırıldı
+238	Tekrar oynat
+239	Geri sarma
+240	Romanya
+241	Rusya
+242	Telefonunla tara
+243	Kaydır
+244	YouTube'da ara
+245	Seç
+246	Sırbistan
+247	Gölge
+248	YouTube'a giriş yap
+249	Çıkış yap
+250	YouTube'a giriş yapıldı. Bu listeler hesabından geliyor – menüdeki Abonelikler, Daha sonra izle, Geçmiş ve Oynatma listeleri de öyle.
+251	Giriş yapıldı. Listelerin artık YouTube hesabından geliyor.
+252	Boyut
+253	%s atla
+254	%s atlandı
+255	Sırala
+256	Güney Kore
+257	İspanya
+258	Yayınlandı: %s
+259	Abone olundu
+260	Abonelik listesi dolu – en fazla %d kanal.
+261	Altyazı stili
+262	Altyazılar
+263	Altyazılar kapalı
+264	Altyazı yok
+265	Altyazılar: %s
+266	İsveç
+267	İsviçre
+268	Metin rengi
+269	Metin kenarı
+270	Bu uygulama daha fazla oynatma listesi saklamıyor.
+271	Bu oynatma listesi dolu.
+272	PS3'ün oynatabileceği bir akışı yok.
+273	PS3'ün oynatabildiği en iyisi.
+274	PS3'ün oynatabildiği en iyisi. En yoğun anlarda birkaç saniyeliğine 1080p60'a düşebilir.
+275	Kanal listesi yüklenemedi. O geri döner.
+276	Bu kanalın kullanılabilir bir kimliği yok, bu yüzden abone olunamaz.
+277	Bu kanalın kullanılabilir bir kimliği yok, bu yüzden abone olunamaz. (Kimlik: "%s")
+278	Bu kodun süresi doldu. Yenisi için X'e bas.
+279	Bu canlı yayında geri sarma kapalı
+280	Parça yok - %s
+281	Çevrilmiş altyazı yok
+282	Çeviri durdu – kalanı orijinal dilde
+283	Trendler ve Canlı bu ülkenin YouTube'undan gelir; Arama ve Spor yalnızca kısmen değişir. Uygulamanın kendi dilini Ayarlar > Dil'den ayarlarsın.
+284	Türkiye
+285	Yaz
+286	Ukrayna
+287	Birleşik Krallık
+288	Amerika Birleşik Devletleri
+289	Abonelikten çıkıldı
+290	Görüntüleme
+291	İZLENDİ
+292	Bekliyor
+293	Giriş yapman bekleniyor. Bu sayfa kendiliğinden devam eder.
+294	Daha sonra izle dolu
+295	İzlendi
+296	YouTube'da izlediklerin
+297	Beyaz
+298	Bu konsolun Google'daki girişini geri çeker
+299	Sarı
+300	YouTube videoyu Daha sonra izle'ye eklemedi.
+301	YouTube videoyu Daha sonra izle'den kaldırmadı.
+302	YouTube aboneliği kabul etmedi.
+303	YouTube abonelikten çıkmayı kabul etmedi.
+304	Hesabın hiçbir kanalı takip etmiyor.
+305	Aboneliklerin, Daha sonra izle, geçmiş ve öneriler o zaman YouTube hesabından gelir. Şifreni yalnızca Google'ın kendi sayfasına yazarsın.
+306	akış açılamadı
+307	video yeniden açılamadı
+308	işlem başlatılamadı
+309	ses parçası değiştirilemedi
+310	kullanımda
+311	oynatılabilir MP4 video yok
+312	ses yok
+313	çözümlenemedi
+314	tuşuna bas
+315	tanınmayan bağlantı veya kimlik
+316	±1 dk

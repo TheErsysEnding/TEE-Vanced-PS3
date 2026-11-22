@@ -6,6 +6,7 @@
 // before. X downloads, O goes back.
 
 #include "screens/download-choice.h"
+#include "i18n.h"   // (V3.1.0) tr: the texts in the language in use
 #include "downloads.h"
 #include "settings.h"           // getDownloadQuality / setDownloadQuality, getVp9Spes
 #include "ui-hints.h"           // UiHints; brings ui-draw.h and ui-fonts.h
@@ -37,7 +38,7 @@
 static const char *CHOICE_NAMES[DOWNLOAD_QUALITY_COUNT] = {
    "1440p 60 fps  ·  VP9",
    "1080p 60 fps  ·  H.264",
-   "720p60 / 1080p30  ·  MP4 for the XMB",
+   N_("720p60 / 1080p30  ·  MP4 for the XMB"),
 };
 
 static SearchResult pendingItem;
@@ -66,30 +67,30 @@ static void initDownloadChoice(void)
                                       (float)(activeTheme->hintFill >> 24) / 255.0f);
 
    uiInitLabel(&titleLabel, UI_PAGE_TITLE_WEIGHT, CONTENT_X, 0, UI_SAFE_RIGHT - CONTENT_X, UI_PAGE_TITLE_SIZE,
-               activeTheme->textPrimary, TEXT_NOWRAP_ELLIPSIS, "Download");
+               activeTheme->textPrimary, TEXT_NOWRAP_ELLIPSIS, tr("Download"));
    uiInitTextLabel(&videoLabel, UI_WEIGHT_SEMIBOLD, 0, 0, UI_SAFE_RIGHT - CONTENT_X, 24, activeTheme->textSecondary,
                    TEXT_NOWRAP_ELLIPSIS, pendingItem.title);
    const char *notes[DOWNLOAD_QUALITY_COUNT] = {
-      "Plays in TEE Vanced (Downloads), with its Opus sound. A video without 1440p gets 1080p60.",
-      "Plays in TEE Vanced (Downloads), on the TEE Decoder.",
-      "Goes to the XMB's Video column, which plays it with the console's own player.",
+      tr("Plays in TEE Vanced (Downloads), with its Opus sound. A video without 1440p gets 1080p60."),
+      tr("Plays in TEE Vanced (Downloads), on the TEE Decoder."),
+      tr("Goes to the XMB's Video column, which plays it with the console's own player."),
    };
    for (int i = 0; i < DOWNLOAD_QUALITY_COUNT; i++) {
       uiInitLabel(&nameLabels[i], UI_WEIGHT_EXTRABOLD, 0, 0, LIST_W - 2 * ROW_PAD - ICON_SIZE - ICON_GAP, NAME_SIZE,
-                  activeTheme->textPrimary, TEXT_NOWRAP_ELLIPSIS, CHOICE_NAMES[i]);
+                  activeTheme->textPrimary, TEXT_NOWRAP_ELLIPSIS, tr(CHOICE_NAMES[i]));
       uiInitLabel(&noteLabels[i], UI_WEIGHT_SEMIBOLD, 0, 0, LIST_W - 2 * ROW_PAD - ICON_SIZE - ICON_GAP, NOTE_SIZE,
                   activeTheme->textSecondary, TEXT_NOWRAP_ELLIPSIS, notes[i]);
    }
    initIcon(&rowIcon, ICON_DOWNLOAD, ICON_SIZE);
-   uiInitLabel(&warningLabel, UI_BODY_WEIGHT, 0, 0, state.screenW * 2 / 3 - 88, 24, activeTheme->textPrimary, TEXT_WRAP,
-               "For the XMB, the video goes to its Video column, and the system takes the file: TEE Vanced will not "
-               "list or play it afterwards. The XMB plays it at 720p60 or 1080p30.");
+   uiInitLongLabel(&warningLabel, UI_BODY_WEIGHT, 0, 0, state.screenW * 2 / 3 - 88, 24, activeTheme->textPrimary, TEXT_WRAP,
+                   tr("For the XMB, the video goes to its Video column, and the system takes the file: TEE Vanced will not "
+                      "list or play it afterwards. The XMB plays it at 720p60 or 1080p30."));
    uiInitHints(&warningHints);
-   uiAddHint(&warningHints, GLYPH_CROSS,  "Download for the XMB");
-   uiAddHint(&warningHints, GLYPH_CIRCLE, "Back");
+   uiAddHint(&warningHints, GLYPH_CROSS,  tr("Download for the XMB"));
+   uiAddHint(&warningHints, GLYPH_CIRCLE, tr("Back"));
    uiInitHints(&hints);
-   uiAddHint(&hints, GLYPH_CROSS,  "Download");
-   uiAddHint(&hints, GLYPH_CIRCLE, "Cancel");
+   uiAddHint(&hints, GLYPH_CROSS,  tr("Download"));
+   uiAddHint(&hints, GLYPH_CIRCLE, tr("Cancel"));
    memset(&navigateRepeat, 0, sizeof navigateRepeat);
 }
 

@@ -17,6 +17,8 @@
 #include "downloads.h"
 #include "update-check.h"   // (V3.0.0 Test 12) a newer release is out: said once a start
 #include "screens/welcome-screen.h"   // (Test 15) a new version's changes, once
+#include "screens/language-screen.h"  // (V3.1.0) the first start asks for the language
+#include "i18n.h"                     // (V3.1.0) tr: the page's texts in the language in use
 #include "bench.h"                    // (V3.1.0 Test 3) isBenchActive: no welcome while a bench job runs
 #include "screens/home-list.h"        // (Test 15) DOWN: the list view, with the selection's details
 #include "channel-avatars.h"          // (Test 15) the channels' pictures on the cards, the hero and the list
@@ -97,7 +99,7 @@
 #define NOTICE_TEXT       24    // body text, 22-24/400
 #define NOTICE_RADIUS     26    // the radius the row ring (UI_RING_ROW) round the box is made for
 
-static const char *TrendingNames[TREND_COUNT] = { "Gaming", "Sports", "Podcasts" };
+static const char *TrendingNames[TREND_COUNT] = { N_("Gaming"), N_("Sports"), N_("Podcasts") };
 
 // home categories = the trending feeds plus a Subscriptions feed and the Watch Later queue.
 //
@@ -119,7 +121,7 @@ static const char *TrendingNames[TREND_COUNT] = { "Gaming", "Sports", "Podcasts"
 // within minutes, so it is never cached (loadCategory, cacheCurrent). L1/R1 keep to these six (switchCategory).
 // Keep LiveNames in the order of LiveCategory (extractor.h).
 #define HOME_LIVE_FIRST  HOME_CAT_COUNT
-static const char *LiveNames[LIVE_COUNT] = { "Popular", "Gaming", "Sports", "Podcasts", "News", "Music" };
+static const char *LiveNames[LIVE_COUNT] = { N_("Popular"), N_("Gaming"), N_("Sports"), N_("Podcasts"), N_("News"), N_("Music") };
 
 static int isLiveCategory(int category)
 {
@@ -133,6 +135,9 @@ static unsigned downloadsRevisionSeen;
 static char     pendingDeleteId[16];   // the download the notice asks about ...
 static char     pendingMoveId[16];     // ... or the one it asks to move into the XMB
 static char     pendingCancelId[16];   // ... or the one on its way it asks to stop (V3.0.0)
+static unsigned homeLanguageSeen;        // (V3.1.0) the language the page's labels are in (i18nRevision)
+static int      homeStartCategory = HOME_SUBS;   // (V3.1.0) the page initHome opens: Subscriptions, or the one a new
+                                                 // language rebuilt
 #define SQUARE_HINT 1                  // Square's slot in the top hint row: "To XMB" on the Downloads page
 
 // each category's fully-loaded results, so returning to a tab skips the feed fetch (thumbnails still refetch).
@@ -216,7 +221,7 @@ static int fetchSubscriptionChannels(SearchResults *out)
       if (!page || getChannelVideos(channels[c].id, NULL, page) != 0) continue;   // keep the stored name
       if (page->channelName[0]) strCopy(item->title, sizeof item->title, page->channelName);
       if (page->count > 0)   // (V3.0.0) the tile is the channel's picture (its page gave it); the latest upload in words
-         snprintf(item->author, sizeof item->author, "Latest: %s", page->items[0].title);
+         snprintf(item->author, sizeof item->author, tr("Latest: %s"), page->items[0].title);
    }
    free(page);
    free(channels);
@@ -293,7 +298,7 @@ static int fetchSubscriptionsFromFeed(const char *token, SearchResults *out)
          strCopy(tile->channelId, sizeof tile->channelId, video->channelId);
          strCopy(tile->title, sizeof tile->title, video->author[0] ? video->author : video->channelId);
          strCopy(tile->videoId, sizeof tile->videoId, video->videoId);   // tile art: the latest upload (no picture here)
-         snprintf(tile->author, sizeof tile->author, "Latest: %s", video->title);
+         snprintf(tile->author, sizeof tile->author, tr("Latest: %s"), video->title);
       }
       strCopy(next, MAX_CONTINUATION, page->continuation);
       if (!next[0]) break;
@@ -463,19 +468,19 @@ static void fitLiveChips(void)
 static void setHeading(void)
 {
    char heading[128];
-   if      (home.category == HOME_FORYOU)     snprintf(heading, sizeof heading, "For you");
-   else if (home.category == HOME_SUBS)       snprintf(heading, sizeof heading, "Subscriptions");
-   else if (home.category == HOME_CONTINUE)   snprintf(heading, sizeof heading, "Continue watching");
-   else if (home.category == HOME_WATCHLATER) snprintf(heading, sizeof heading, "Watch Later");
-   else if (home.category == HOME_HISTORY)    snprintf(heading, sizeof heading, "History");
-   else if (home.category == HOME_DOWNLOADS)  snprintf(heading, sizeof heading, "Downloads");
+   if      (home.category == HOME_FORYOU)     snprintf(heading, sizeof heading, "%s", tr("For you"));
+   else if (home.category == HOME_SUBS)       snprintf(heading, sizeof heading, "%s", tr("Subscriptions"));
+   else if (home.category == HOME_CONTINUE)   snprintf(heading, sizeof heading, "%s", tr("Continue watching"));
+   else if (home.category == HOME_WATCHLATER) snprintf(heading, sizeof heading, "%s", tr("Watch Later"));
+   else if (home.category == HOME_HISTORY)    snprintf(heading, sizeof heading, "%s", tr("History"));
+   else if (home.category == HOME_DOWNLOADS)  snprintf(heading, sizeof heading, "%s", tr("Downloads"));
    else if (home.category == HOME_PLAYLIST)
       snprintf(heading, sizeof heading, "%s", playlistIsAccount ? accountPlaylistTitle : getPlaylistName(openPlaylist));
-   else if (isLiveCategory(home.category))    snprintf(heading, sizeof heading, "Live");       // the category: a chip
-   else                                       snprintf(heading, sizeof heading, "Trending");   // the category: a chip
-   uiSetHintCaption(&hintsTop, CROSS_HINT,    subsAreChannels() ? "Open channel" : "Play");
-   uiSetHintCaption(&hintsTop, TRIANGLE_HINT, subsAreChannels() ? "Unsubscribe"  :
-                                              home.category == HOME_DOWNLOADS ? "Delete" : "Channel");
+   else if (isLiveCategory(home.category))    snprintf(heading, sizeof heading, "%s", tr("Live"));       // the category: a chip
+   else                                       snprintf(heading, sizeof heading, "%s", tr("Trending"));   // the category: a chip
+   uiSetHintCaption(&hintsTop, CROSS_HINT,    subsAreChannels() ? tr("Open channel") : tr("Play"));
+   uiSetHintCaption(&hintsTop, TRIANGLE_HINT, subsAreChannels() ? tr("Unsubscribe")  :
+                                              home.category == HOME_DOWNLOADS ? tr("Delete") : tr("Channel"));
    // YouTube's For you tiles name no channel (no id anywhere in them), so Triangle has nothing to open there
    uiSetHintShown(&hintsTop, TRIANGLE_HINT, home.category != HOME_FORYOU);
    // A live stream cannot be downloaded, and a Live page holds nothing else: R3 does nothing there (updateHome),
@@ -485,7 +490,7 @@ static void setHeading(void)
    // (V3.0.0) a Subscriptions tile is a channel's picture, no video: nothing to download, file or watch later
    uiSetHintShown(&hintsBottom, 1, !subsAreChannels());   // L3, Add to playlist
    uiSetHintShown(&hintsTop, SQUARE_HINT, !subsAreChannels());
-   uiSetHintCaption(&hintsTop, SQUARE_HINT, home.category == HOME_DOWNLOADS ? "To XMB" : "Watch Later");
+   uiSetHintCaption(&hintsTop, SQUARE_HINT, home.category == HOME_DOWNLOADS ? tr("To XMB") : tr("Watch Later"));
    listHintsMode = -1;   // (Test 15) the list's hints are set again for the new page (updateListHints)
    fitTitleWidth();   // after the captions: the row's new width decides how far the title may run
    // on the playlist tab the heading is the playlist's name - the user's text, so raw and checked for Manrope
@@ -565,7 +570,7 @@ static void cacheCurrent(void)
 // Japanese channel name falls back to FONT_POP instead of rendering blank in Manrope.
 static void showNotice(const char *text)
 {
-   uiSetTextLabel(&noticeLabel, UI_BODY_WEIGHT, text);
+   uiSetLongTextLabel(&noticeLabel, UI_BODY_WEIGHT, text);   // (V3.1.0) translated, a notice can pass 255 bytes
    home.noticeIsConfirm = 0;   // answered by closeHints
    home.noticeVisible   = 1;
 }
@@ -576,7 +581,7 @@ static void showNotice(const char *text)
 static const char *pendingChannelName(char *out, int cap)
 {
    uiCleanText(out, cap, home.pendingUnsubName);
-   return out[0] && uiTextIsLegible(out) ? out : "this channel";
+   return out[0] && uiTextIsLegible(out) ? out : tr("this channel");
 }
 
 // Triangle on a subscription tile. The tile's TITLE is the channel name; its author is "Latest: <newest
@@ -585,14 +590,14 @@ static const char *pendingChannelName(char *out, int cap)
 // is rebuilt before the answer arrives.
 static void askUnsubscribe(const SearchResult *item)
 {
-   if (!item->channelId[0]) { showNotice("This tile has no channel id, so there is nothing to unsubscribe from."); return; }
+   if (!item->channelId[0]) { showNotice(tr("This tile has no channel id, so there is nothing to unsubscribe from.")); return; }
    strCopy(home.pendingUnsubId,   sizeof home.pendingUnsubId,   item->channelId);
    strCopy(home.pendingUnsubName, sizeof home.pendingUnsubName, item->title);
 
-   char name[CHANNEL_NAME_LEN], message[256];
-   snprintf(message, sizeof message, "Unsubscribe from %s?", pendingChannelName(name, (int)sizeof name));
-   uiSetTextLabel(&noticeLabel, UI_BODY_WEIGHT, message);
-   uiSetHintCaption(&confirmHints, 0, "Unsubscribe");   // (the same box asks about a download: "Delete")
+   char name[CHANNEL_NAME_LEN], message[512];
+   snprintf(message, sizeof message, tr("Unsubscribe from %s?"), pendingChannelName(name, (int)sizeof name));
+   uiSetLongTextLabel(&noticeLabel, UI_BODY_WEIGHT, message);
+   uiSetHintCaption(&confirmHints, 0, tr("Unsubscribe"));   // (the same box asks about a download: "Delete")
    home.noticeIsConfirm = 1;   // answered by confirmHints
    home.noticeVisible   = 1;
 }
@@ -625,17 +630,17 @@ static void unsubscribeConfirmed(void)
    int rc = setSubscribed(home.pendingUnsubId, NULL, 0);
 
    if (rc != SUBSCRIBE_OK) {
-      char name[CHANNEL_NAME_LEN], message[256];
+      char name[CHANNEL_NAME_LEN], message[1024];
       if (rc == SUBSCRIBE_ERR_WRITE && !isStorageWritable())
          snprintf(message, sizeof message,
-                  "The data folder could not be created or written at startup, so nothing can be saved.\n\n%s",
+                  tr("The data folder could not be created or written at startup, so nothing can be saved.\n\n%s"),
                   getSubscriptionsPath());
       else if (rc == SUBSCRIBE_ERR_WRITE)
          snprintf(message, sizeof message,
-                  "Unsubscribed - but it could not be saved, so the channel is back after a restart.\n\n%s\n\nFree space: %lu KB",
+                  tr("Unsubscribed - but it could not be saved, so the channel is back after a restart.\n\n%s\n\nFree space: %lu KB"),
                   getSubscriptionsPath(), getStorageFreeKB());
       else
-         snprintf(message, sizeof message, "Could not unsubscribe from %s.", pendingChannelName(name, (int)sizeof name));
+         snprintf(message, sizeof message, tr("Could not unsubscribe from %s."), pendingChannelName(name, (int)sizeof name));
       showNotice(message);
       return;   // the list on screen still matches what is stored, so leave it alone
    }
@@ -643,7 +648,7 @@ static void unsubscribeConfirmed(void)
    // setSubscribed also answers OK for a channel that was not in the list at all, and that case does not
    // move the revision - so the revision, not the return code, is what proves something was removed.
    if (getSubscriptionsRevision() == revisionBefore) {
-      showNotice("That channel was not in the subscription list.");
+      showNotice(tr("That channel was not in the subscription list."));
       return;
    }
    subsRevisionSeen = getSubscriptionsRevision();
@@ -775,8 +780,8 @@ static void updateListHints(void)
    listHintsMode = mode;
    uiSetHintShown(&hintsBottom, LIST_HINT, mode == 0 && listAllowed());
    uiSetHintShown(&hintsBottom, BACK_HINT, mode != 0);
-   uiSetHintCaption(&hintsTop, CROSS_HINT, mode == 2 ? "Open channel" : mode == 3 ? "Subscribe" : mode == 4 ? "Unsubscribe"
-                                           : subsAreChannels() ? "Open channel" : "Play");
+   uiSetHintCaption(&hintsTop, CROSS_HINT, mode == 2 ? tr("Open channel") : mode == 3 ? tr("Subscribe") : mode == 4 ? tr("Unsubscribe")
+                                           : subsAreChannels() ? tr("Open channel") : tr("Play"));
    fitTitleWidth();   // a new width drops the title's texture: rendered again here, as setHeading does
    uiSetTextLabel(&titleLabel, UI_PAGE_TITLE_WEIGHT, currentHeading);
    if (isLiveCategory(home.category)) fitLiveChips();
@@ -788,7 +793,7 @@ static void toggleListSubscription(const SearchResult *item)
 {
    if (!item->channelId[0]) return;
    categoryCached[HOME_SUBS] = 0;
-   char message[256];
+   char message[1024];
    if (toggleHomeListSubscription(item, message, sizeof message)) showNotice(message);
    if (isAccountSignedIn()) accountChangesSeen = getAccountChangesRevision();   // handled here, not by a reload
 }
@@ -800,21 +805,21 @@ static void initHome(void)
 
    // the hints first: the title's width budget is worked out from the top row's (see fitTitleWidth)
    uiInitHints(&hintsTop);
-   uiAddHint(&hintsTop, GLYPH_CROSS,    "Play");          // CROSS_HINT
-   uiAddHint(&hintsTop, GLYPH_SQUARE,   "Watch Later");
-   uiAddHint(&hintsTop, GLYPH_TRIANGLE, "Channel");       // TRIANGLE_HINT
+   uiAddHint(&hintsTop, GLYPH_CROSS,    tr("Play"));          // CROSS_HINT
+   uiAddHint(&hintsTop, GLYPH_SQUARE,   tr("Watch Later"));
+   uiAddHint(&hintsTop, GLYPH_TRIANGLE, tr("Channel"));       // TRIANGLE_HINT
    uiInitHints(&hintsBottom);
-   uiAddHint(&hintsBottom, GLYPH_R3,        "Download");      // R3_HINT
-   uiAddHint(&hintsBottom, GLYPH_L3,        "Add to playlist");
-   uiAddHint(&hintsBottom, GLYPH_START,     "Settings");
+   uiAddHint(&hintsBottom, GLYPH_R3,        tr("Download"));      // R3_HINT
+   uiAddHint(&hintsBottom, GLYPH_L3,        tr("Add to playlist"));
+   uiAddHint(&hintsBottom, GLYPH_START,     tr("Settings"));
    uiAddHint(&hintsBottom, GLYPH_L1,        "");
-   uiAddHint(&hintsBottom, GLYPH_R1,        "Category");
+   uiAddHint(&hintsBottom, GLYPH_R1,        tr("Category"));
    uiAddHint(&hintsBottom, GLYPH_L2,        "");
-   uiAddHint(&hintsBottom, GLYPH_R2,        "Page");
-   uiAddHint(&hintsBottom, GLYPH_SELECT,    "PS button");
-   uiAddHint(&hintsBottom, GLYPH_DPAD_LEFT, "Menu");
-   uiAddHint(&hintsBottom, GLYPH_DPAD_DOWN, "List view");   // LIST_HINT (Test 15)
-   uiAddHint(&hintsBottom, GLYPH_CIRCLE,    "Back");        // BACK_HINT (Test 15)
+   uiAddHint(&hintsBottom, GLYPH_R2,        tr("Page"));
+   uiAddHint(&hintsBottom, GLYPH_SELECT,    tr("PS button"));
+   uiAddHint(&hintsBottom, GLYPH_DPAD_LEFT, tr("Menu"));
+   uiAddHint(&hintsBottom, GLYPH_DPAD_DOWN, tr("List view"));   // LIST_HINT (Test 15)
+   uiAddHint(&hintsBottom, GLYPH_CIRCLE,    tr("Back"));        // BACK_HINT (Test 15)
    // The bottom row has the whole width right of the rail to itself. Its captions never change, and the
    // glyphs are loaded before any screen, so its width is final here.
    fitHintRow(&hintsBottom, UI_SAFE_RIGHT - CONTENT_X);
@@ -826,15 +831,15 @@ static void initHome(void)
    // text on the playlist tab; its width is set by fitTitleWidth on every heading.
    uiInitTextLabel(&titleLabel, UI_PAGE_TITLE_WEIGHT, CONTENT_X, 0, TITLE_MIN_W, UI_PAGE_TITLE_SIZE,
                    activeTheme->textPrimary, TEXT_NOWRAP_ELLIPSIS, "");
-   uiInitLabel(&statusLabel,   STATUS_WEIGHT, 0, 0, AUTO, STATUS_SIZE, activeTheme->textSecondary, TEXT_NOWRAP, "Loading...");
-   uiInitLabel(&pageWordLabel, PAGE_WEIGHT,   0, 0, AUTO, PAGE_SIZE,   activeTheme->textSecondary, TEXT_NOWRAP, "Page");
+   uiInitLabel(&statusLabel,   STATUS_WEIGHT, 0, 0, AUTO, STATUS_SIZE, activeTheme->textSecondary, TEXT_NOWRAP, tr("Loading..."));
+   uiInitLabel(&pageWordLabel, PAGE_WEIGHT,   0, 0, AUTO, PAGE_SIZE,   activeTheme->textSecondary, TEXT_NOWRAP, tr("Page"));
    uiInitLabel(&pagePlusLabel, PAGE_WEIGHT,   0, 0, AUTO, PAGE_SIZE,   activeTheme->textSecondary, TEXT_NOWRAP, "+");
-   uiInitLabel(&videoWordLabel, PAGE_WEIGHT,  0, 0, AUTO, PAGE_SIZE,   activeTheme->textSecondary, TEXT_NOWRAP, "Video");
+   uiInitLabel(&videoWordLabel, PAGE_WEIGHT,  0, 0, AUTO, PAGE_SIZE,   activeTheme->textSecondary, TEXT_NOWRAP, tr("Video"));
    uiInitDigits(&pageDigits, PAGE_WEIGHT, PAGE_SIZE);
    for (int c = 0; c < TREND_COUNT; c++)
-      uiInitLabel(&chipLabels[c], CHIP_WEIGHT, 0, 0, AUTO, CHIP_SIZE, TEXT_TINTABLE, TEXT_NOWRAP, TrendingNames[c]);
+      uiInitLabel(&chipLabels[c], CHIP_WEIGHT, 0, 0, AUTO, CHIP_SIZE, TEXT_TINTABLE, TEXT_NOWRAP, tr(TrendingNames[c]));
    for (int c = 0; c < LIVE_COUNT; c++)
-      uiInitLabel(&liveChipLabels[c], CHIP_WEIGHT, 0, 0, AUTO, CHIP_SIZE, TEXT_TINTABLE, TEXT_NOWRAP, LiveNames[c]);
+      uiInitLabel(&liveChipLabels[c], CHIP_WEIGHT, 0, 0, AUTO, CHIP_SIZE, TEXT_TINTABLE, TEXT_NOWRAP, tr(LiveNames[c]));
    home.liveChipPad   = CHIP_PAD_X;   // as designed until a Live heading works out what fits (fitLiveChips)
    home.liveChipFirst = 0;
    home.liveChipLast  = LIVE_COUNT - 1;
@@ -846,14 +851,14 @@ static void initHome(void)
                    activeTheme->textPrimary, TEXT_WRAP, "");
    // the answers with the console's own glyphs, as in the other boxes; O closes a plain notice too, as ever
    uiInitHints(&closeHints);
-   uiAddHint(&closeHints, GLYPH_CROSS, "Close");
+   uiAddHint(&closeHints, GLYPH_CROSS, tr("Close"));
    uiInitHints(&confirmHints);
-   uiAddHint(&confirmHints, GLYPH_CROSS,  "Unsubscribe");
-   uiAddHint(&confirmHints, GLYPH_CIRCLE, "Cancel");
+   uiAddHint(&confirmHints, GLYPH_CROSS,  tr("Unsubscribe"));
+   uiAddHint(&confirmHints, GLYPH_CIRCLE, tr("Cancel"));
    uiInitHints(&interruptedHints);
-   uiAddHint(&interruptedHints, GLYPH_CROSS,    "Restart");
-   uiAddHint(&interruptedHints, GLYPH_TRIANGLE, "Delete");
-   uiAddHint(&interruptedHints, GLYPH_CIRCLE,   "Later");
+   uiAddHint(&interruptedHints, GLYPH_CROSS,    tr("Restart"));
+   uiAddHint(&interruptedHints, GLYPH_TRIANGLE, tr("Delete"));
+   uiAddHint(&interruptedHints, GLYPH_CIRCLE,   tr("Later"));
 
    home.pendingReload = 0;
 
@@ -877,8 +882,25 @@ static void initHome(void)
    accountRevisionSeen = getAccountRevision();
    accountChangesSeen = getAccountChangesRevision();
    home.forYouAfterSignIn = 0;
-   home.category = HOME_SUBS;   // always start on Subscriptions - the account's, while signed in
+   home.category = homeStartCategory;   // Subscriptions - the account's, while signed in (or the page a new language
+   homeStartCategory = HOME_SUBS;       // rebuilt, V3.1.0)
+   homeLanguageSeen = i18nRevision();
    loadCategory();
+}
+
+static void termHome(void);
+
+// (V3.1.0) the language changed - the first start's picker, or Settings > Language: the page and all on it anew in it,
+// the same page with its cards (cacheCurrent), the rail and the list view too
+static void relabelHome(void)
+{
+   // the Subscriptions tiles carry the old language's "Latest: ..." in their own text: that page is fetched anew
+   if (home.category != HOME_SUBS) cacheCurrent();
+   categoryCached[HOME_SUBS] = 0;
+   homeStartCategory = home.category;
+   termHome();
+   initHome();
+   logInfo("[home] the page anew in %s\n", i18nCode(i18nIndex()));
 }
 
 // LEFT belongs to the grid while there is a card to the left of the selection, and to the rail from the
@@ -959,7 +981,7 @@ static int actOnSection(int section)
    case HOME_SECTION_SUBSCRIPTIONS: category = HOME_SUBS;       break;
    case HOME_SECTION_WATCH_LATER:   category = HOME_WATCHLATER; break;
    case HOME_SECTION_HISTORY:       category = HOME_HISTORY;    break;
-   case HOME_SECTION_LIKED:         onAccountPlaylistOpened("LL", "Liked videos"); return 1;
+   case HOME_SECTION_LIKED:         onAccountPlaylistOpened("LL", tr("Liked videos")); return 1;
    case HOME_SECTION_PLAYLISTS:     openPlaylists(onPlaylistOpened, onAccountPlaylistOpened); return 0;
    default: return 0;
    }
@@ -972,6 +994,14 @@ static int actOnSection(int section)
 
 static void updateHome(void)
 {
+   // (V3.1.0) the first start asks for the language before anything else - not while a bench job runs, with nobody at
+   // the console to answer - and a new language (that picker, or Settings > Language) makes the page anew in it
+   static int languageChecked;
+   if (!languageChecked && !isBenchActive()) {
+      languageChecked = 1;
+      if (!i18nWasChosen()) { openLanguagePicker(1); return; }
+   }
+   if (homeLanguageSeen != i18nRevision()) { relabelHome(); return; }
    // (Test 15) once a run, first thing: a version not welcomed yet shows its changes and the support page. (V3.1.0
    // Test 3) Not while a bench job runs, with nobody at the console to read them: they wait for the job's end
    static int welcomeChecked;
@@ -999,7 +1029,7 @@ static void updateHome(void)
    // the account's channels and Watch Later, loaded once per sign-in; a change YouTube refused says so here
    syncAccountLists();
    if (!home.noticeVisible) {
-      char failure[160];
+      char failure[512];
       if (takeAccountFailure(failure, sizeof failure)) showNotice(failure);
    }
    // (V3.0.0 Test 12) a newer release on GitHub: said once a start, when no other notice is up
@@ -1007,9 +1037,9 @@ static void updateHome(void)
    char newer[16];
    if (!updateTold && !home.noticeVisible && getNewerRelease(newer, sizeof newer)) {
       updateTold = 1;
-      char message[256];
-      snprintf(message, sizeof message, "TEE Vanced v%s is out - this is %s. It is on GitHub: TheErsysEnding/TEE-Vanced-PS3, "
-               "Releases.", newer, APP_VERSION);
+      char message[512];
+      snprintf(message, sizeof message, tr("TEE Vanced v%s is out - this is %s. It is on GitHub: TheErsysEnding/TEE-Vanced-PS3, "
+               "Releases."), newer, APP_VERSION);
       showNotice(message);
    }
 
@@ -1022,11 +1052,11 @@ static void updateHome(void)
       char title[160];
       int count = findInterruptedDownloads(title, sizeof title);
       if (count > 0) {
-         char message[320];
-         if (count == 1) snprintf(message, sizeof message, "The download of \"%s\" did not finish. Start it again "
-                                  "from the beginning, or delete it?", title);
-         else snprintf(message, sizeof message, "%d downloads did not finish (\"%s\" and %d more). Start them again from "
-                       "the beginning, or delete them?", count, title, count - 1);
+         char message[1024];
+         if (count == 1) snprintf(message, sizeof message, tr("The download of \"%s\" did not finish. Start it again "
+                                  "from the beginning, or delete it?"), title);
+         else snprintf(message, sizeof message, tr("Downloads that did not finish: %d (\"%s\" and more). Start them again "
+                       "from the beginning, or delete them?"), count, title);
          showNotice(message);
          home.noticeInterrupted = 1;
       }
@@ -1107,7 +1137,7 @@ static void updateHome(void)
    // SELECT presses the PS button for pads that have none the console listens to (DualShock 4 / DualSense).
    if (isPadButtonPressed(PAD_BTN_SELECT)) {
       if (pressPsButton() != 0)
-         showNotice("The PS button could not be sent: this console refused to register a virtual controller.");
+         showNotice(tr("The PS button could not be sent: this console refused to register a virtual controller."));
       return;
    }
 
@@ -1158,7 +1188,7 @@ static void updateHome(void)
       if (wantPending >= 0) {
          uiSetHintShown(&hintsTop, CROSS_HINT, !wantPending);
          uiSetHintShown(&hintsTop, SQUARE_HINT, !wantPending);
-         uiSetHintCaption(&hintsTop, TRIANGLE_HINT, wantPending ? "Stop download" : "Delete");
+         uiSetHintCaption(&hintsTop, TRIANGLE_HINT, wantPending ? tr("Stop download") : tr("Delete"));
       } else {
          uiSetHintShown(&hintsTop, CROSS_HINT, 1);
          uiSetHintShown(&hintsTop, SQUARE_HINT, !subsAreChannels());
@@ -1177,19 +1207,19 @@ static void updateHome(void)
    }
    if (home.category == HOME_DOWNLOADS && selected->downloadState) {   // (V3.0.0) on its way: Triangle stops it
       if (isPadButtonPressed(PAD_BTN_TRIANGLE)) {
-         char message[256];
-         snprintf(message, sizeof message, "Stop downloading \"%s\"? What is in so far is thrown away.", selected->title);
+         char message[1024];
+         snprintf(message, sizeof message, tr("Stop downloading \"%s\"? What is in so far is thrown away."), selected->title);
          strCopy(pendingCancelId, sizeof pendingCancelId, selected->videoId);
          showNotice(message);
-         uiSetHintCaption(&confirmHints, 0, "Stop download");
+         uiSetHintCaption(&confirmHints, 0, tr("Stop download"));
          home.noticeIsConfirm = 1;
          return;
       }
       if (isPadButtonPressed(PAD_BTN_CROSS)) {
-         char message[256];
+         char message[1024];
          snprintf(message, sizeof message, selected->downloadState == 1
-                  ? "\"%s\" is still downloading. It plays here once it is in."
-                  : "\"%s\" waits for the downloads before it. It plays here once it is in.", selected->title);
+                  ? tr("\"%s\" is still downloading. It plays here once it is in.")
+                  : tr("\"%s\" waits for the downloads before it. It plays here once it is in."), selected->title);
          showNotice(message);
          return;
       }
@@ -1197,11 +1227,11 @@ static void updateHome(void)
    }
    if (home.category == HOME_DOWNLOADS) {   // (V3.0.0) X plays it from disk, Triangle deletes it
       if (isPadButtonPressed(PAD_BTN_TRIANGLE)) {
-         char message[256];
-         snprintf(message, sizeof message, "Delete the download \"%s\" from the console?", selected->title);
+         char message[1024];
+         snprintf(message, sizeof message, tr("Delete the download \"%s\" from the console?"), selected->title);
          strCopy(pendingDeleteId, sizeof pendingDeleteId, selected->videoId);
          showNotice(message);
-         uiSetHintCaption(&confirmHints, 0, "Delete");
+         uiSetHintCaption(&confirmHints, 0, tr("Delete"));
          home.noticeIsConfirm = 1;
          return;
       }
@@ -1214,13 +1244,13 @@ static void updateHome(void)
       }
       if (isPadButtonPressed(PAD_BTN_R3)) return;   // already downloaded
       if (isPadButtonPressed(PAD_BTN_SQUARE)) {     // into the XMB's Video column, after the warning
-         char message[320];
-         snprintf(message, sizeof message, "Move \"%s\" into the XMB's Video column? The system takes the file: TEE "
+         char message[1024];
+         snprintf(message, sizeof message, tr("Move \"%s\" into the XMB's Video column? The system takes the file: TEE "
                   "Vanced will not list or play it afterwards. The XMB plays it at 720p60 or 1080p30 (a 1440p or "
-                  "1080p60 download is fetched again in that form).", selected->title);
+                  "1080p60 download is fetched again in that form)."), selected->title);
          strCopy(pendingMoveId, sizeof pendingMoveId, selected->videoId);
          showNotice(message);
-         uiSetHintCaption(&confirmHints, 0, "Move to the XMB");
+         uiSetHintCaption(&confirmHints, 0, tr("Move to the XMB"));
          home.noticeIsConfirm = 1;
          return;
       }
@@ -1395,8 +1425,8 @@ static void drawHome(void)
    if (isHomeListShown(&homeList)) drawHomeList(&homeList, &home.grid);   // (Test 15) over the cards, eased in and out
    if (!ready) {
       // where the cards will be, clear of the collapsed rail; under the panel while the menu is open
-      setLabelText(&statusLabel, gridStage(&home.grid) != GRID_EMPTY ? "Loading..." : home.category == HOME_DOWNLOADS
-                                 ? "No downloads yet - R3 on any video downloads it." : "No results");
+      setLabelText(&statusLabel, gridStage(&home.grid) != GRID_EMPTY ? tr("Loading...") : home.category == HOME_DOWNLOADS
+                                 ? tr("No downloads yet - R3 on any video downloads it.") : tr("No results"));
       uiDrawLabelAt(&statusLabel, CONTENT_X, uiLabelYForBaseline(&statusLabel, STATUS_BASELINE));
    }
    drawHeader();

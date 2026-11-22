@@ -1,0 +1,322 @@
+# German (Du, as TEE Witch). The numbers are keys.txt's; the 28 TEE Witch has are merged in (merge-tr.py).
+@name Deutsch
+@script latin
+@flag de
+@order 1
+@plural one
+1	„%s“ wird noch heruntergeladen. Es läuft hier, sobald es fertig ist.
+2	„%s“ wartet auf die Downloads davor. Es läuft hier, sobald es fertig ist.
+3	Info
+4	Konto
+5	Zur Playlist hinzufügen
+6	Fragen
+7	Nächstes Video automatisch abspielen
+8	Zurück
+9	Abbrechen
+10	Kategorie
+11	Ändern
+12	Kanal
+13	Wählen
+14	Wähle deine Sprache
+15	Schließen
+16	Weiterschauen
+17	Das Abo von %s konnte nicht beendet werden.
+18	Löschen
+19	Den Download „%s“ von der Konsole löschen?
+20	Herunterladen
+21	Downloads
+22	Nicht fertig gewordene Downloads: %d („%s“ und weitere). Von vorn neu starten oder löschen?
+23	Füller und Abschweifungen
+24	Für dich
+25	Gaming
+26	Verlauf
+27	Interaktionserinnerung
+28	Intro
+29	Behalten
+30	Sprache
+31	Später
+32	Neuestes: %s
+33	Videos mit „Mag ich“
+34	Listenansicht
+35	Live
+36	Lädt...
+37	Anmelden
+38	Menü
+39	„%s“ in die Video-Spalte des XMB verschieben? Das System übernimmt die Datei: TEE Vanced zeigt und spielt sie danach nicht mehr. Das XMB spielt sie in 720p60 oder 1080p30 (ein 1440p- oder 1080p60-Download wird dafür neu geladen).
+40	Ins XMB verschieben
+41	Musik
+42	Nachrichten
+43	Noch keine Downloads – R3 auf einem Video lädt es herunter.
+44	Keine Ergebnisse
+45	Aus
+46	Musik ohne Bezug
+47	An
+48	Kanal öffnen
+49	Outro und Abspann
+50	PS-Taste
+51	Seite
+52	Abspielen
+53	Wiedergabe
+54	Playlists
+55	Podcasts
+56	Beliebt
+57	Region
+58	Neu starten
+59	Scannen für Links, Streams\nund Kontakt
+60	Suche
+61	Abschnitt
+62	Eigenwerbung
+63	Einstellungen
+64	Überspringen
+65	Sponsor
+66	Sport
+67	Download stoppen
+68	Download von „%s“ stoppen? Was bisher geladen ist, wird verworfen.
+69	Abonnieren
+70	Abos
+71	TEE Vanced %s  ·  v%s ist auf GitHub erschienen
+72	TEE Vanced v%s ist erschienen – das hier ist %s. Es liegt auf GitHub: TheErsysEnding/TEE-Vanced-PS3, Releases.
+73	Dieser Kanal war nicht in der Abo-Liste.
+74	Die PS-Taste konnte nicht gesendet werden: Die Konsole hat keinen virtuellen Controller zugelassen.
+75	Die eigenen Texte der App. Titel und Namen von YouTube bleiben, wie sie sind.
+76	Der Datenordner konnte beim Start nicht angelegt oder beschrieben werden, daher lässt sich nichts speichern.\n\n%s
+77	Der Download von „%s“ wurde nicht fertig. Von vorn neu starten oder löschen?
+78	Diese Kachel hat keine Kanal-ID, daher gibt es kein Abo zu beenden.
+79	Ins XMB
+80	Trends
+81	Abo beenden
+82	Abo von %s beenden?
+83	Abo beendet – aber es konnte nicht gespeichert werden, nach einem Neustart ist der Kanal wieder da.\n\n%s\n\nFreier Speicher: %lu KB
+84	Video
+85	Später ansehen
+86	Was passiert, wenn ein markierter Abschnitt beginnt. Bei „Fragen“ erscheint ein Überspringen-Knopf, solange der Abschnitt läuft.
+87	Du kannst sie später in den Einstellungen ändern.
+88	diesen Kanal
+89	1440p60 fällt in einer unruhigen Szene innerhalb von etwa zwei Sekunden auf 1080p60 zurück, und ein Start, der für 1440p zu schwer ist, beginnt sofort in 1080p60.
+90	4K30 ist eine Beta: Es fällt sehr wahrscheinlich oft auf 1440p30 zurück. Unruhige Szenen in 4K sind mehr, als die PS3 rechtzeitig decodieren kann.
+91	4K30-Videos starten in 1440p und gehen auf 4K, wo das Video leicht genug ist.
+92	Arabische und hebräische Videotitel werden jetzt angezeigt, von rechts nach links.
+93	Weiter
+94	Neu: 4K-Videos mit 30 Bildern pro Sekunde, auf den SPEs mit dem TEE-VP9-Decoder.
+95	Bitte teilt eure Erfahrungen damit:
+96	Scanne den Code mit dem Handy: Links, Streams und Kontakt.
+97	Unterstütze TheErsysEnding:
+98	TEE Vanced %s  ·  Was ist neu
+99	Die App in 22 Sprachen, Arabisch von rechts nach links: Wähle deine beim ersten Start oder später unter Einstellungen > Sprache.
+100	Was ist neu
+101	%d Tonspur || %d Tonspuren
+102	%d Kanal, dem dein Konto folgt, von A bis Z. X öffnet einen Kanal, Dreieck beendet das Abo. || %d Kanäle, denen dein Konto folgt, von A bis Z. X öffnet einen Kanal, Dreieck beendet das Abo.
+103	%d Kanal, A bis Z || %d Kanäle, A bis Z
+104	noch %d Min. || noch %d Min.
+105	%d Video || %d Videos
+106	%s (automatisch übersetzt)
+107	%s – aber es konnte nicht gespeichert werden und ist nach einem Neustart weg.\n\n%s
+108	%s – aber es konnte nicht gespeichert werden und ist nach einem Neustart weg.\n\n%s\n\nFreier Speicher: %lu KB
+109	%s Prüfe die Verbindung und versuche es erneut.
+110	vor %s Tag || vor %s Tagen
+111	vor %s Stunde || vor %s Stunden
+112	vor %s Minute || vor %s Minuten
+113	vor %s Monat || vor %s Monaten
+114	vor %s Sekunde || vor %s Sekunden
+115	%s Abonnent || %s Abonnenten
+116	%s Video || %s Videos
+117	%s Aufruf || %s Aufrufe
+118	%s schaut zu || %s schauen zu
+119	vor %s Woche || vor %s Wochen
+120	vor %s Jahr || vor %s Jahren
+121	720p60 / 1080p30  ·  MP4 fürs XMB
+122	A bis Z
+123	Der Zugriff wurde auf der Google-Seite nicht erlaubt. Drücke X, um es erneut zu versuchen.
+124	Hier hinzufügen
+125	Zu „Später ansehen“ hinzugefügt
+126	Alle Kanäle
+127	Audio
+128	Audio %d/%d: %s
+129	Tonspur
+130	Audio: %s  –  Viereck: %d Spur || Audio: %s  –  Viereck: %d Spuren
+131	Australien
+132	Österreich
+133	Auto (%s)
+134	Auto – %s
+135	Auto spielt es in %s – wähle %dp in den Optionen des Players (START) für die beste Qualität.
+136	Autoplay: Aus
+137	Autoplay: An
+138	Zurück zu live
+139	Hintergrund
+140	Deckkraft des Hintergrunds
+141	Belgien
+142	Schwarz
+143	Blau
+144	Brasilien
+145	Bulgarien
+146	Beschäftigt – versuche es erneut
+147	Kanada
+148	Kapitel
+149	Kapitel %d von %d
+150	Kapitel
+151	Kapitel: keine
+152	Qualität wird geprüft...
+153	Wähle dein Google-Konto und erlaube den Zugriff
+154	Diese Datei ließ sich nicht lesen, daher wurde nichts geändert:\n\n%s
+155	Der Stream konnte nicht neu aufgebaut werden
+156	Kroatien
+157	Cyan
+158	Tschechien
+159	Die Playlist %s mit %d Video löschen? || Die Playlist %s mit %d Videos löschen?
+160	Dänemark
+161	Beschreibung
+162	Fertig
+163	Download bei %d%% fehlgeschlagen: „%s%s“
+164	Fürs XMB herunterladen
+165	Heruntergeladen: „%s%s“
+166	Lädt herunter
+167	Lädt „%s%s“ herunter
+168	Lädt herunter · %d%%
+169	Gib diesen Code ein
+170	Alle Kanäle, denen dein Konto folgt, von A bis Z.
+171	Finnland
+172	Fürs XMB kommt das Video in dessen Video-Spalte, und das System übernimmt die Datei: TEE Vanced zeigt und spielt sie danach nicht mehr. Das XMB spielt sie in 720p60 oder 1080p30.
+173	Frankreich
+174	Deutschland
+175	Code wird von Google geholt...
+176	Kommt in die Video-Spalte des XMB, die es mit dem Player der Konsole abspielt.
+177	Google Translate hat die Untertitel abgelehnt – versuche es später
+178	Google war nicht erreichbar. Drücke X, um es erneut zu versuchen.
+179	Griechenland
+180	Grün
+181	Ausblenden
+182	Ungarn
+183	In der Video-Spalte des XMB: „%s%s“
+184	Irland
+185	Italien
+186	Die Details konnten nicht geladen werden.
+187	Japan
+188	Springen
+189	LIVE
+190	Neueste
+191	Magenta
+192	Mexiko
+193	Bewegen
+194	Playlist benennen
+195	Niederlande
+196	Neu
+197	Neuer Code
+198	Neue Playlist...
+199	Neueste Uploads zuerst
+200	Keine Kapitel
+201	Keine Beschreibung.
+202	Keine andere Qualität
+203	Noch keine Playlists – drücke START für eine neue, oder L3 auf einem Video, um es direkt in eine neue Liste zu legen.
+204	Keine Untertitel
+205	Keine Aufrufe
+206	Keine
+207	Norwegen
+208	Nichts Abspielbares
+209	Noch nichts – deine Suchen erscheinen hier
+210	Älteste
+211	Auf YouTube und auf dieser PS3
+212	Auf dieser PS3
+213	Öffne auf dem Handy oder Computer
+214	Öffnen
+215	Optionen
+216	Kontur
+217	PS-Taste nicht verfügbar
+218	Seite %d / %d%s
+219	Pause
+220	Läuft
+221	Läuft in %s mit deiner Qualitätseinstellung (%dp).
+222	Läuft in TEE Vanced (Downloads), auf dem TEE Decoder.
+223	Läuft in TEE Vanced (Downloads), mit Opus-Ton. Ein Video ohne 1440p bekommt 1080p60.
+224	Polen
+225	Portugal
+226	Premiere %s
+227	Drücke
+228	R3 zum Ausblenden
+229	Qualität
+230	Qualität unbekannt
+231	Qualität: %s
+232	Qualität: keine andere
+233	Letzte Suchen
+234	Für dich empfohlen
+235	Rot
+236	Relevanz
+237	Aus „Später ansehen“ entfernt
+238	Nochmal
+239	Zurückspulen
+240	Rumänien
+241	Russland
+242	Mit dem Handy scannen
+243	Blättern
+244	Auf YouTube suchen
+245	Auswählen
+246	Serbien
+247	Schatten
+248	Bei YouTube anmelden
+249	Abmelden
+250	Bei YouTube angemeldet. Diese Listen kommen von deinem Konto – genau wie Abos, Später ansehen, Verlauf und Playlists im Menü.
+251	Angemeldet. Deine Listen kommen jetzt von deinem YouTube-Konto.
+252	Größe
+253	%s überspringen
+254	%s übersprungen
+255	Sortieren
+256	Südkorea
+257	Spanien
+258	Gestreamt %s
+259	Abonniert
+260	Die Abo-Liste ist voll – %d Kanäle sind das Maximum.
+261	Untertitelstil
+262	Untertitel
+263	Untertitel aus
+264	Untertitel nicht verfügbar
+265	Untertitel: %s
+266	Schweden
+267	Schweiz
+268	Textfarbe
+269	Textrand
+270	Mehr Playlists behält diese App nicht.
+271	Diese Playlist ist voll.
+272	Die PS3 hat keinen Stream davon, den sie abspielen kann.
+273	Das Beste, was die PS3 davon spielt.
+274	Das Beste, was die PS3 spielt. In den unruhigsten Momenten kann es für ein paar Sekunden auf 1080p60 fallen.
+275	Die Kanalliste konnte nicht geladen werden. O geht zurück.
+276	Dieser Kanal hat keine brauchbare ID, daher kann er nicht abonniert werden.
+277	Dieser Kanal hat keine brauchbare ID, daher kann er nicht abonniert werden. (ID: „%s“)
+278	Dieser Code ist abgelaufen. Drücke X für einen neuen.
+279	Bei diesem Livestream ist das Zurückspulen ausgeschaltet
+280	Spur nicht verfügbar – %s
+281	Übersetzte Untertitel nicht verfügbar
+282	Übersetzung gestoppt – der Rest in der Originalsprache
+283	Trends und Live kommen vom YouTube dieses Landes; Suche und Sport ändern sich nur teilweise. Die Sprache der App selbst stellst du unter Einstellungen > Sprache ein.
+284	Türkei
+285	Tippen
+286	Ukraine
+287	Vereinigtes Königreich
+288	Vereinigte Staaten
+289	Abo beendet
+290	Aufrufe
+291	GESEHEN
+292	Wartet
+293	Warte auf deine Anmeldung. Diese Seite geht von selbst weiter.
+294	„Später ansehen“ ist voll
+295	Gesehen
+296	Was du auf YouTube angesehen hast
+297	Weiß
+298	Zieht die Anmeldung dieser Konsole bei Google zurück
+299	Gelb
+300	YouTube hat das Video nicht zu „Später ansehen“ hinzugefügt.
+301	YouTube hat das Video nicht aus „Später ansehen“ entfernt.
+302	YouTube hat das Abo nicht angenommen.
+303	YouTube hat das Beenden des Abos nicht angenommen.
+304	Dein Konto folgt keinen Kanälen.
+305	Deine Abos, Später ansehen, Verlauf und Empfehlungen kommen dann von deinem YouTube-Konto. Dein Passwort gibst du nur auf Googles eigener Seite ein.
+306	Stream konnte nicht geöffnet werden
+307	Video konnte nicht neu geöffnet werden
+308	Worker konnte nicht starten
+309	Tonspur konnte nicht gewechselt werden
+310	aktiv
+311	kein abspielbares MP4-Video
+312	kein Ton
+313	Auflösen fehlgeschlagen
+314	zum Tippen
+315	unbekannter Link oder ID
+316	±1 Min.

@@ -38,6 +38,21 @@ four font files as C arrays):
 The font is not covered by the Apache License of this project; the OFL applies
 to it wherever it is used.
 
+For Arabic and Hebrew text the app embeds DejaVu Sans Bold, cut down to the
+characters it needs (apps/yo-player/src/assets/dejavu-sans-bold.c, made with
+tools/subset-font.py from DejaVu Fonts 2.37):
+
+  DejaVu Fonts - https://dejavu-fonts.github.io
+  Fonts are (c) Bitstream (see below). DejaVu changes are in public domain.
+  Bitstream Vera license (see apps/yo-player/src/assets/DejaVu-LICENSE.txt)
+
+The cut-down font keeps DejaVu's name, which holds neither "Bitstream" nor
+"Vera", as that license asks of a changed font. It is not covered by the Apache
+License of this project.
+
+The flags of the language picker (apps/yo-player/src/assets/flags.c) are drawn
+from their geometry by tools/make-flags.py; no image is taken from anywhere.
+
 The app includes the TEE Decoder (libs/simple-lib-av/src/tee_decoder/), an
 H.264 decoder for the PS3's SPEs. It is TheErsysEnding's own work, not part of
 the upstream project, and not covered by the Apache License of this project:

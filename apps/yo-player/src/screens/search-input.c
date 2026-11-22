@@ -6,6 +6,7 @@
 // passive: this screen is pushed and Circle is Back here, so the rail only says where you are.
 
 #include "screens/search-input.h"
+#include "i18n.h"   // (V3.1.0) tr: the texts in the language in use
 #include "storage.h"
 #include "sidebar.h"            // the rail: collapsed, or open over the screen while it has the focus
 #include "screens/home.h"       // updateRailOverScreen: LEFT opens the rail here as on Home
@@ -129,10 +130,13 @@ static void onTyped(const char *text)
 // and does nothing on the field, so its hint is there only while a query has the focus - "Delete" under
 // the field promised an action that row does not have. Renders only when the row changes from the field to
 // a query or back.
+// (V3.1.0) the console's keyboard shows its title in the system's fonts, which have no Arabic: English there
+static const char *oskTitle(void) { return i18nScript() == I18N_ARABIC ? "Search YouTube" : tr("Search YouTube"); }
+
 static void updateRowHints(void)
 {
    int onQuery = state.selected != ROW_FIELD;
-   uiSetHintCaption(&hints, CROSS_HINT, onQuery ? "Search" : "Type");
+   uiSetHintCaption(&hints, CROSS_HINT, onQuery ? tr("Search") : tr("Type"));
    uiSetHintShown(&hints, SQUARE_HINT, onQuery);
 }
 
@@ -160,22 +164,22 @@ static void initSearchInput(void)
    // when they are drawn, by their measured capitals: a query may come out in FONT_POP, which sits at another
    // height in its texture than Manrope.
    uiInitTextLabel(&fieldLabel,  FIELD_WEIGHT, 0, 0, TEXT_W, FIELD_TEXT, activeTheme->textPrimary, TEXT_NOWRAP_ELLIPSIS, "");
-   uiInitLabel(&pressLabel,      FIELD_WEIGHT, 0, 0, AUTO, FIELD_TEXT, activeTheme->textTertiary, TEXT_NOWRAP, "Press");
-   uiInitLabel(&toTypeLabel,     FIELD_WEIGHT, 0, 0, AUTO, FIELD_TEXT, activeTheme->textTertiary, TEXT_NOWRAP, "to type");
-   uiInitLabel(&idleLabel,       FIELD_WEIGHT, 0, 0, AUTO, FIELD_TEXT, activeTheme->textTertiary, TEXT_NOWRAP, "Search YouTube");
-   uiInitLabel(&recentLabel,     UI_WEIGHT_BOLD, 0, 0, AUTO, RECENT_TEXT, activeTheme->textTertiary, TEXT_NOWRAP, "Recent searches");
-   uiInitLabel(&emptyLabel,      UI_BODY_WEIGHT, 0, 0, AUTO, UI_BODY_SIZE, activeTheme->textSecondary, TEXT_NOWRAP, "Nothing yet - your searches will be listed here");
+   uiInitLabel(&pressLabel,      FIELD_WEIGHT, 0, 0, AUTO, FIELD_TEXT, activeTheme->textTertiary, TEXT_NOWRAP, tr("Press"));
+   uiInitLabel(&toTypeLabel,     FIELD_WEIGHT, 0, 0, AUTO, FIELD_TEXT, activeTheme->textTertiary, TEXT_NOWRAP, tr("to type"));
+   uiInitLabel(&idleLabel,       FIELD_WEIGHT, 0, 0, AUTO, FIELD_TEXT, activeTheme->textTertiary, TEXT_NOWRAP, tr("Search YouTube"));
+   uiInitLabel(&recentLabel,     UI_WEIGHT_BOLD, 0, 0, AUTO, RECENT_TEXT, activeTheme->textTertiary, TEXT_NOWRAP, tr("Recent searches"));
+   uiInitLabel(&emptyLabel,      UI_BODY_WEIGHT, 0, 0, AUTO, UI_BODY_SIZE, activeTheme->textSecondary, TEXT_NOWRAP, tr("Nothing yet - your searches will be listed here"));
    for (int i = 0; i < MAX_SEARCH_HISTORY; i++)
       uiInitTextLabel(&rowLabels[i], ROW_WEIGHT, 0, 0, TEXT_W, ROW_TEXT, activeTheme->textPrimary, TEXT_NOWRAP_ELLIPSIS, "");
    initIcon(&fieldIcon, ICON_SEARCH, FIELD_ICON_SIZE);
    initIcon(&rowIcon,   ICON_CLOCK,  ROW_ICON_SIZE);
 
    uiInitHints(&hints);
-   uiAddHint(&hints, GLYPH_CROSS,  "Type");     // CROSS_HINT: "Search" on a remembered query (updateRowHints)
-   uiAddHint(&hints, GLYPH_CIRCLE, "Back");
-   uiAddHint(&hints, GLYPH_SQUARE, "Delete");   // SQUARE_HINT: only on a remembered query (updateRowHints)
-   uiAddHint(&hints, GLYPH_START,  "Type");
-   uiAddHint(&hints, GLYPH_DPAD_LEFT, "Menu");   // the rail opens here as on Home
+   uiAddHint(&hints, GLYPH_CROSS,  tr("Type"));     // CROSS_HINT: "Search" on a remembered query (updateRowHints)
+   uiAddHint(&hints, GLYPH_CIRCLE, tr("Back"));
+   uiAddHint(&hints, GLYPH_SQUARE, tr("Delete"));   // SQUARE_HINT: only on a remembered query (updateRowHints)
+   uiAddHint(&hints, GLYPH_START,  tr("Type"));
+   uiAddHint(&hints, GLYPH_DPAD_LEFT, tr("Menu"));   // the rail opens here as on Home
 
    setFieldText(pendingInitial);
    reloadHistory();
@@ -196,7 +200,7 @@ static void updateSearchInput(void)
    }
 
    if (isPadButtonPressed(PAD_BTN_CIRCLE)) { popScreen(); return; }
-   if (isPadButtonPressed(PAD_BTN_START))  { oskInputBegin("Search YouTube", state.query, onTyped); return; }
+   if (isPadButtonPressed(PAD_BTN_START))  { oskInputBegin(oskTitle(), state.query, onTyped); return; }
 
    int last = state.historyCount;   // row index of the last entry (0 when there is no history)
    if      (isRepeatDue(&navigateRepeat, getPadButtonState(PAD_BTN_DOWN))) state.selected++;
@@ -207,7 +211,7 @@ static void updateSearchInput(void)
 
    if (isPadButtonPressed(PAD_BTN_CROSS)) {
       // on the field: type. on a remembered query: search it straight away.
-      if (state.selected == ROW_FIELD) oskInputBegin("Search YouTube", state.query, onTyped);
+      if (state.selected == ROW_FIELD) oskInputBegin(oskTitle(), state.query, onTyped);
       else                             confirm(state.history[state.selected - 1]);
       return;
    }

@@ -1,0 +1,322 @@
+# Indonesian (kamu). One form for every number.
+@name Bahasa Indonesia
+@script latin
+@flag id
+@order 17
+@plural none
+1	"%s" masih diunduh. Video diputar di sini begitu selesai.
+2	"%s" menunggu unduhan sebelumnya. Video diputar di sini begitu selesai.
+3	Tentang
+4	Akun
+5	Tambahkan ke playlist
+6	Tanya
+7	Putar video berikutnya otomatis
+8	Kembali
+9	Batal
+10	Kategori
+11	Ubah
+12	Kanal
+13	Pilih
+14	Pilih bahasamu
+15	Tutup
+16	Lanjutkan menonton
+17	Tidak bisa berhenti berlangganan %s.
+18	Hapus
+19	Hapus unduhan "%s" dari konsol?
+20	Unduh
+21	Unduhan
+22	Unduhan yang belum selesai: %d ("%s" dan lainnya). Mulai lagi dari awal atau hapus?
+23	Pengisi dan menyimpang
+24	Untuk Anda
+25	Game
+26	Histori
+27	Pengingat interaksi
+28	Intro
+29	Simpan
+30	Bahasa
+31	Nanti
+32	Terbaru: %s
+33	Video yang disukai
+34	Tampilan daftar
+35	Live
+36	Memuat...
+37	Login
+38	Menu
+39	Pindahkan "%s" ke kolom Video XMB? Sistem mengambil filenya: TEE Vanced tidak akan menampilkan atau memutarnya lagi. XMB memutarnya di 720p60 atau 1080p30 (unduhan 1440p atau 1080p60 diunduh ulang dalam format itu).
+40	Pindahkan ke XMB
+41	Musik
+42	Berita
+43	Belum ada unduhan – R3 pada video mana pun mengunduhnya.
+44	Tidak ada hasil
+45	Mati
+46	Musik di luar topik
+47	Nyala
+48	Buka channel
+49	Penutup dan layar akhir
+50	Tombol PS
+51	Halaman
+52	Putar
+53	Pemutaran
+54	Playlist
+55	Podcast
+56	Populer
+57	Wilayah
+58	Mulai ulang
+59	Pindai untuk tautan, live\ndan kontak
+60	Cari
+61	Segmen
+62	Promosi diri
+63	Pengaturan
+64	Lewati
+65	Sponsor
+66	Olahraga
+67	Hentikan unduhan
+68	Hentikan unduhan "%s"? Yang sudah terunduh akan dibuang.
+69	Subscribe
+70	Subscription
+71	TEE Vanced %s  ·  v%s sudah ada di GitHub
+72	TEE Vanced v%s sudah rilis – ini %s. Ada di GitHub: TheErsysEnding/TEE-Vanced-PS3, Releases.
+73	Channel itu tidak ada di daftar subscription.
+74	Tombol PS tidak bisa dikirim: konsol menolak mendaftarkan kontroler virtual.
+75	Teks aplikasi itu sendiri. Judul dan nama dari YouTube tetap seperti aslinya.
+76	Folder data tidak bisa dibuat atau ditulis saat mulai, jadi tidak ada yang bisa disimpan.\n\n%s
+77	Unduhan "%s" belum selesai. Mulai lagi dari awal atau hapus?
+78	Kotak ini tidak punya ID channel, jadi tidak ada langganan untuk dihentikan.
+79	Ke XMB
+80	Trending
+81	Berhenti subscribe
+82	Berhenti subscribe %s?
+83	Berhenti subscribe – tetapi tidak bisa disimpan, channel kembali setelah mulai ulang.\n\n%s\n\nRuang kosong: %lu KB
+84	Video
+85	Tonton Nanti
+86	Apa yang terjadi saat segmen bertanda dimulai. Dengan "Tanya", tombol lewati muncul selama segmen berlangsung.
+87	Kamu bisa mengubahnya nanti di Pengaturan.
+88	channel ini
+89	1440p60 turun ke 1080p60 dalam sekitar dua detik di adegan berat, dan awal yang terlalu berat untuk 1440p langsung mulai di 1080p60.
+90	4K30 masih beta: kemungkinan besar sering turun ke 1440p30. Adegan berat di 4K melebihi yang bisa didekode PS3 tepat waktu.
+91	Video 4K30 mulai di 1440p dan naik ke 4K di bagian yang cukup ringan.
+92	Judul video berbahasa Arab dan Ibrani kini ditampilkan, dari kanan ke kiri.
+93	Lanjut
+94	Baru: video 4K 30 frame per detik, di SPE dengan dekoder TEE VP9.
+95	Bagikan pengalaman kalian:
+96	Pindai kode dengan ponsel: tautan, live, dan kontak.
+97	Dukung TheErsysEnding:
+98	TEE Vanced %s  ·  yang baru
+99	Aplikasi dalam 22 bahasa, bahasa Arab dari kanan ke kiri: pilih bahasamu saat pertama kali mulai atau nanti di Setelan > Bahasa.
+100	Yang baru
+101	%d trek audio
+102	%d channel yang diikuti akunmu, A sampai Z. X membuka channel, Segitiga berhenti subscribe.
+103	%d channel, A sampai Z
+104	sisa %d mnt
+105	%d video
+106	%s (terjemahan otomatis)
+107	%s – tetapi tidak bisa disimpan, akan hilang setelah mulai ulang.\n\n%s
+108	%s – tetapi tidak bisa disimpan, akan hilang setelah mulai ulang.\n\n%s\n\nRuang kosong: %lu KB
+109	%s Periksa koneksi lalu coba lagi.
+110	%s hari yang lalu
+111	%s jam yang lalu
+112	%s menit yang lalu
+113	%s bulan yang lalu
+114	%s detik yang lalu
+115	%s subscriber
+116	%s video
+117	%s x ditonton
+118	%s menonton
+119	%s minggu yang lalu
+120	%s tahun yang lalu
+121	720p60 / 1080p30  ·  MP4 untuk XMB
+122	A sampai Z
+123	Akses tidak diizinkan di halaman Google. Tekan X untuk mencoba lagi.
+124	Tambahkan di sini
+125	Ditambahkan ke Tonton Nanti
+126	Semua channel
+127	Audio
+128	Audio %d/%d: %s
+129	Trek audio
+130	Audio: %s  -  Kotak: %d trek
+131	Australia
+132	Austria
+133	Otomatis (%s)
+134	Otomatis - %s
+135	Otomatis memutarnya di %s – pilih %dp di opsi pemutar (START) untuk kualitas terbaik.
+136	Putar otomatis: mati
+137	Putar otomatis: aktif
+138	Kembali ke live
+139	Latar
+140	Opasitas latar
+141	Belgia
+142	Hitam
+143	Biru
+144	Brasil
+145	Bulgaria
+146	Sibuk – coba lagi
+147	Kanada
+148	Bab
+149	Bab %d dari %d
+150	Bab
+151	Bab: tidak ada
+152	Memeriksa kualitas...
+153	Pilih akun Google-mu dan izinkan akses
+154	File ini tidak bisa dibaca, jadi tidak ada yang diubah:\n\n%s
+155	Tidak bisa menyusun ulang streaming
+156	Kroasia
+157	Sian
+158	Ceko
+159	Hapus playlist %s beserta %d video?
+160	Denmark
+161	Deskripsi
+162	Selesai
+163	Unduhan gagal di %d%%: "%s%s"
+164	Unduh untuk XMB
+165	Terunduh: "%s%s"
+166	Mengunduh
+167	Mengunduh "%s%s"
+168	Mengunduh · %d%%
+169	Masukkan kode ini
+170	Semua channel yang diikuti akunmu, A sampai Z.
+171	Finlandia
+172	Untuk XMB, video masuk ke kolom Video-nya dan sistem mengambil filenya: TEE Vanced tidak akan menampilkan atau memutarnya lagi. XMB memutarnya di 720p60 atau 1080p30.
+173	Prancis
+174	Jerman
+175	Mengambil kode dari Google...
+176	Masuk ke kolom Video XMB, yang memutarnya dengan pemutar konsol.
+177	Google Terjemahan menolak subtitle – coba lagi nanti
+178	Google tidak bisa dihubungi. Tekan X untuk mencoba lagi.
+179	Yunani
+180	Hijau
+181	Sembunyikan
+182	Hungaria
+183	Di kolom Video XMB: "%s%s"
+184	Irlandia
+185	Italia
+186	Detailnya tidak bisa diambil.
+187	Jepang
+188	Lompat
+189	LIVE
+190	Terbaru
+191	Magenta
+192	Meksiko
+193	Pindah
+194	Beri nama playlist
+195	Belanda
+196	Baru
+197	Kode baru
+198	Playlist baru...
+199	Upload terbaru dulu
+200	Tidak ada bab
+201	Tidak ada deskripsi.
+202	Tidak ada kualitas lain
+203	Belum ada playlist – tekan START untuk membuat, atau L3 pada video untuk langsung memasukkannya ke daftar baru.
+204	Tidak ada subtitle
+205	Belum ditonton
+206	Tidak ada
+207	Norwegia
+208	Tidak ada yang bisa diputar
+209	Belum ada – pencarianmu akan muncul di sini
+210	Terlama
+211	Di YouTube dan di PS3 ini
+212	Di PS3 ini
+213	Di ponsel atau komputer, buka
+214	Buka
+215	Opsi
+216	Garis tepi
+217	Tombol PS tidak tersedia
+218	Halaman %d / %d%s
+219	Jeda
+220	Diputar
+221	Diputar di %s sesuai setelan kualitasmu (%dp).
+222	Diputar di TEE Vanced (Unduhan), di TEE Decoder.
+223	Diputar di TEE Vanced (Unduhan), dengan suara Opus. Video tanpa 1440p mendapat 1080p60.
+224	Polandia
+225	Portugal
+226	Tayang perdana %s
+227	Tekan
+228	Tekan R3 untuk menyembunyikan
+229	Kualitas
+230	Kualitas tidak diketahui
+231	Kualitas: %s
+232	Kualitas: tidak ada lain
+233	Pencarian terbaru
+234	Direkomendasikan untuk Anda
+235	Merah
+236	Relevansi
+237	Dihapus dari Tonton Nanti
+238	Putar ulang
+239	Mundur
+240	Rumania
+241	Rusia
+242	Pindai dengan ponsel
+243	Gulir
+244	Cari di YouTube
+245	Pilih
+246	Serbia
+247	Bayangan
+248	Login ke YouTube
+249	Keluar akun
+250	Sudah login ke YouTube. Daftar ini berasal dari akunmu – begitu juga Subscription, Tonton Nanti, Histori, dan Playlist di menu.
+251	Sudah login. Daftarmu kini berasal dari akun YouTube.
+252	Ukuran
+253	Lewati %s
+254	Dilewati: %s
+255	Urutkan
+256	Korea Selatan
+257	Spanyol
+258	Disiarkan %s
+259	Sudah subscribe
+260	Daftar subscription penuh – maksimum %d channel.
+261	Gaya subtitle
+262	Subtitle
+263	Subtitle mati
+264	Subtitle tidak tersedia
+265	Subtitle: %s
+266	Swedia
+267	Swiss
+268	Warna teks
+269	Tepi teks
+270	Aplikasi ini tidak menyimpan playlist lebih banyak lagi.
+271	Playlist itu sudah penuh.
+272	PS3 tidak punya stream video ini yang bisa diputarnya.
+273	Yang terbaik yang bisa diputar PS3 dari video ini.
+274	Yang terbaik yang bisa diputar PS3. Di saat paling berat bisa turun ke 1080p60 selama beberapa detik.
+275	Daftar channel tidak bisa dimuat. O untuk kembali.
+276	Channel ini tidak punya ID yang bisa dipakai, jadi tidak bisa di-subscribe.
+277	Channel ini tidak punya ID yang bisa dipakai, jadi tidak bisa di-subscribe. (ID: "%s")
+278	Kode ini sudah kedaluwarsa. Tekan X untuk kode baru.
+279	Live ini mematikan fitur mundur
+280	Trek tidak tersedia - %s
+281	Subtitle terjemahan tidak tersedia
+282	Terjemahan dihentikan – sisanya dalam bahasa asli
+283	Trending dan Live berasal dari YouTube negara ini; Pencarian dan Olahraga hanya berubah sebagian. Bahasa aplikasi itu sendiri diatur di Setelan > Bahasa.
+284	Turki
+285	Ketik
+286	Ukraina
+287	Inggris Raya
+288	Amerika Serikat
+289	Berhenti subscribe
+290	Ditonton
+291	DITONTON
+292	Menunggu
+293	Menunggu kamu login. Halaman ini lanjut sendiri.
+294	Tonton Nanti sudah penuh
+295	Ditonton
+296	Yang kamu tonton di YouTube
+297	Putih
+298	Mencabut login konsol ini di Google
+299	Kuning
+300	YouTube tidak menambahkan video ke Tonton Nanti.
+301	YouTube tidak menghapus video dari Tonton Nanti.
+302	YouTube tidak menerima subscription.
+303	YouTube tidak menerima berhenti subscribe.
+304	Akunmu tidak mengikuti channel apa pun.
+305	Subscription, Tonton Nanti, histori, dan rekomendasimu nantinya berasal dari akun YouTube-mu. Sandi hanya diketik di halaman Google sendiri.
+306	tidak bisa membuka stream
+307	tidak bisa membuka ulang video
+308	tidak bisa memulai proses
+309	tidak bisa mengganti trek audio
+310	dipakai
+311	tidak ada video MP4 yang bisa diputar
+312	tanpa suara
+313	gagal mengambil data
+314	untuk mengetik
+315	tautan atau ID tidak dikenal
+316	±1 mnt

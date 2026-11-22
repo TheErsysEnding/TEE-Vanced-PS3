@@ -3,6 +3,26 @@
 Every release listed here was installed and used on a real PS3 (EVILNAT 4.92 DEX)
 before it was tagged. Anything that had not been is said so plainly.
 
+## v3.1.0 4K30 beta — not released yet
+
+- **22 languages.** The first start asks for the language (English is where the cursor starts), with each country's
+  flag and each language's own name; Settings > Language changes it later, and every page is made anew in it at once.
+  English, German, Spanish, French, Italian, Portuguese (Brazil), Polish, Turkish, Dutch, Swedish, Czech, Romanian,
+  Hungarian, Greek, Russian, Ukrainian, Vietnamese, Indonesian, Japanese, Korean, Simplified Chinese and Arabic. The
+  Spanish follows the wording of JuAnKLiMoN's Spanish translation (GitHub PR #8). Japanese, Korean and Chinese are drawn
+  in the console's own font; a language the console's font set has no characters for is left out of the list.
+  YouTube's own words in the meta lines ("1.2M views", "3 weeks ago", "52K watching") are put into the language too, in
+  the plural form it takes for the number (Russian three forms, Arabic six).
+- **Arabic right to left, the layout as it is.** The letters are joined (Arabic Presentation Forms, lam-alef) and each
+  line runs right to left; wrapped text breaks in reading order, a cut line loses its end and shows "..." where it
+  ends. Menus, rail and alignment stay left to right. Arabic and Hebrew video titles, blank until now, are shown the
+  same way (DejaVu Sans Bold, cut down to 88 KB).
+- The languages are kept deflated in the app (81 KB for all of them) and only the one in use is unpacked: with 4K
+  playing the console has about 3 MB to spare.
+- **4K30, a beta**: a page after the language asks for experiences with it (linktr.ee/theersysending) - it will very
+  likely fall back to 1440p30 often. Faster fallback from 4K and from 1440p60 in busy scenes, and a start too heavy for
+  1440p60 begins in 1080p60 (the V3.1.0 test builds).
+
 ## v3.0.4 — not released yet
 
 ### The test builds
